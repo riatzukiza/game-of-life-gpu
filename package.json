@@ -1,0 +1,21 @@
+{
+    "name": "no-name",
+    "version": "0.0.1",
+    "description": "undescribed",
+    "main": "main.js",
+    "bin": {},
+    "scripts": {},
+    "dependencies": {
+        "deeplearn": "*",
+        "kit": "git@github.com:riatzukiza/kit.git",
+        "kit-file-system": "git@github.com:riatzukiza/kit-file-system.git",
+        "kit-html": "git@github.com:riatzukiza/kit-html.git",
+        "kit-events": "git@github.com:riatzukiza/kit-events.git",
+        "kit-http": "git@github.com:riatzukiza/kit-http.git",
+        "kit-interface": "git@github.com:riatzukiza/kit-interface.git",
+        "kit-repl": "git@github.com:riatzukiza/kit-repl.git",
+        "mathjs": "*",
+        "source-map-support": "^0.4.11",
+        "webgl": "git@bitbucket.org:kettlelogic/andy_webgl.git"
+    }
+}

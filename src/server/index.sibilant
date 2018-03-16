@@ -1,0 +1,25 @@
+(include "kit/header")
+(import-namespace kit)
+
+(include "kit-interface/header")
+(import-namespace interface)
+
+(include "./node_modules/kit-http/header.sibilant")
+
+(import-namespace http)
+
+(include "./node_modules/kit-html/header.sibilant")
+(import-namespace markup)
+
+;;(use-html-template app "/apps/gol" "./templates/gol")
+
+(macro controller (...body)
+       `(markup (.script (quote (scoped ...@body)))))
+
+(with-http-route
+ (app "/gol")
+ (with-markup-to-stream res
+  (.html
+   
+   (.body)))
+ )
