@@ -12,6 +12,8 @@
 
 (require! dl 'deeplearn
           m 'mathjs)
+
+(var running? true)
 (def window.onload ()
 
      (var canvas (.create-element document 'canvas))
@@ -42,7 +44,6 @@
                  ( dl.cast
                    ( dl.reshape  state0-tensor [1 H W 1])
                    "float32")))
-     (var running? true)
      (def step ()
           (state.assign
            (dl.tidy (-> (var neighbors (dl.conv2d state kernel [1 1 1 1] "same"))

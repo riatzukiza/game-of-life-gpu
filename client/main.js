@@ -40,8 +40,9 @@ Object.prototype.each = (function Object$prototype$each$(f) {
 });
 var dl = require("deeplearn"),
     m = require("mathjs");
+var running__QUERY = true;
 window.onload = (function window$onload$() {
-  /* window.onload eval.sibilant:15:0 */
+  /* window.onload eval.sibilant:17:0 */
 
   var canvas = document.createElement("canvas");
   document.body.appendChild(canvas);
@@ -50,7 +51,7 @@ window.onload = (function window$onload$() {
   canvas.height = H;
   canvas.width = W;
   var rgb = (function rgb$(r, g, b) {
-    /* rgb eval.sibilant:31:5 */
+    /* rgb eval.sibilant:33:5 */
   
     return { 
       r,
@@ -61,9 +62,8 @@ window.onload = (function window$onload$() {
   var kernel = dl.reshape(dl.tensor2d([ [ 1, 1, 1 ], [ 1, 0, 1 ], [ 1, 1, 1 ] ]), [ 3, 3, 1, 1 ]);
   var state0Tensor = dl.randomUniform([ H, W ]).greater(dl.scalar(0.5, "float32"));
   var state = dl.variable(dl.cast(dl.reshape(state0Tensor, [ 1, H, W, 1 ]), "float32"));
-  var running__QUERY = true;
   var step = (function step$() {
-    /* step eval.sibilant:46:5 */
+    /* step eval.sibilant:47:5 */
   
     return state.assign(dl.tidy((() => {
     	
@@ -78,7 +78,7 @@ window.onload = (function window$onload$() {
   var red = rgb(255, 0, 0);
   var gameField = colored(red, [ H, W ], state);
   var start = (function start$() {
-    /* start eval.sibilant:63:5 */
+    /* start eval.sibilant:64:5 */
   
     return dl.nextFrame().then((() => {
     	
