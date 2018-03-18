@@ -42,12 +42,11 @@ var {
     mimeTypes = require("mime-types"),
     Path = require("path");
 var staticDir = FileSystem.load("./");
-var PORT = 8000;
-var app = create(Http.MiddleWare)(),
-    static = create(Http.MiddleWare)();
+var PORT = (process.env.PORT || 8000);
+var app = create(Http.MiddleWare)();
 var server = create(Http.Server)(PORT);
 var serveStaticFiles = (function serveStaticFiles$(sys) {
-  /* serve-static-files eval.sibilant:31:0 */
+  /* serve-static-files eval.sibilant:30:0 */
 
   return async function serve({ 
     request,
