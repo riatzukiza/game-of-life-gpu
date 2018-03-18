@@ -14,13 +14,13 @@
                                                           x) v)))
   (def get ([x y] ) (then (this.state.data) d (get d (+ (* y (first this.shape))
                                                          x))))
-  (def-generic render (canvas shape  state image-data ctx)
+  (def-generic render (canvas   state shape image-data ctx)
+
 
     (if! (not running?) (return false))
 
     (var [height width] shape)
 
-    (var d (state.buffer))
     (then (state.data) d
 
           (var j 0 k 0)

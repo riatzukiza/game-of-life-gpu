@@ -42,13 +42,18 @@
                    ( dl.reshape  state0-tensor [1 H W 1])
                    "float32")))
      (def step ()
-          (state.assign
-           (dl.tidy (-> (var neighbors (dl.conv2d state kernel [1 1 1 1] "same"))
-                        (var survive (dl.logical-and (dl.equal state (dl.scalar 1 "float32"))
-                                                     (dl.equal neighbors (dl.scalar 2 "float32")))
-                             born (dl.equal neighbors (dl.scalar 3 "float32")))
-                        (dl.cast (dl.logical-or survive born)
-                                    "float32")))))
+          (var new-state (dl.tidy (-> (var neighbors (dl.conv2d state kernel [1 1 1 1] "same"))
+                                      (var survive (dl.logical-and (dl.equal state (dl.scalar 1 "float32"))
+                                                                   (dl.equal neighbors (dl.scalar 2 "float32")))
+                                           born (dl.equal neighbors (dl.scalar 3 "float32")))
+
+                                      (dl.cast (dl.logical-or survive born)
+                                               "float32"))))
+          (state.assign new-state)
+
+          (.dispose new-state)
+          state
+          )
 
      (var black (rgb 0 0 0 ))
      (var red (rgb 255 0 0))
@@ -62,8 +67,12 @@
           (.then (dl.next-frame)
                  (->
                   (if! (not running?) (return false))
-                  (step)
-                  (.render game-field canvas)
+
+
+                  (.render game-field canvas
+
+                           (step)
+                           )
 
                   (start))))
 

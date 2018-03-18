@@ -48,14 +48,13 @@ var Field = Interface.define("Field", {
       }));
     
    },
-  render( canvas = this.canvas,shape = this.shape,state = this.state,imageData = this.imageData,ctx = this.ctx ){ 
+  render( canvas = this.canvas,state = this.state,shape = this.shape,imageData = this.imageData,ctx = this.ctx ){ 
     
       if( !(running__QUERY) ){ 
         return false;
        };
       var height = shape[0],
           width = shape[1];
-      var d = state.buffer();
       return state.data().then(((d) => {
       	
         var j = 0,
