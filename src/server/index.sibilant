@@ -22,7 +22,7 @@
           Path 'path)
 
 (var static-dir (.load File-system "./"))
-(var PORT 8000)
+(var PORT (or process.env.PORT 8000))
 
 (var app ((create Http.Middle-ware))
      static ((create Http.Middle-ware)))
