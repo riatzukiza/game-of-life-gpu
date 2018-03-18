@@ -44,6 +44,13 @@
              (.set-header response "Content-Type" mime)
            (.pipe file.read-stream response)))))
 
+(define js Interface
+
+  (client (.load File-system "./client")))
+
+(define html Interface
+  (files (.load File-system "./html")))
+
 
 (.use app "/html" (serve-static-files html.files))
 (.use app "/js" (serve-static-files js.client))

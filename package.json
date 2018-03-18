@@ -4,7 +4,8 @@
     "description": "undescribed",
     "main": "main.js",
     "bin": {},
-    "scripts": {},
+    "scripts": {
+        "start":"node ./server/index.js"},
     "dependencies": {
         "deeplearn": "*",
         "kit": "git+https://github.com/riatzukiza/kit.git",

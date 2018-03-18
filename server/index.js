@@ -75,6 +75,12 @@ var serveStaticFiles = (function serveStaticFiles$(sys) {
   
   };
 });
+var js = Interface.define("js", { 
+  client:FileSystem.load("./client")
+ });
+var html = Interface.define("html", { 
+  files:FileSystem.load("./html")
+ });
 app.use("/html", serveStaticFiles(html.files));
 app.use("/js", serveStaticFiles(js.client));
 server.use(app);
