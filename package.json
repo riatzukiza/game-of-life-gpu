@@ -7,16 +7,16 @@
     "scripts": {},
     "dependencies": {
         "deeplearn": "*",
-        "kit": "https://github.com/riatzukiza/kit.git",
-        "kit-events": "https://github.com;riatzukiza/kit-events.git",
-        "kit-file-system": "https://github.com/riatzukiza/kit-file-system.git",
-        "kit-html": "https://github.com/riatzukiza/kit-html.git",
-        "kit-http": "https://github.com/riatzukiza/kit-http.git",
-        "kit-interface": "https://github.com/riatzukiza/kit-interface.git",
-        "kit-repl": "https://github.com/riatzukiza/kit-repl.git",
+        "kit": "git+https://github.com/riatzukiza/kit.git",
+        "kit-events": "git+https://github.com;riatzukiza/kit-events.git",
+        "kit-file-system": "git+https://github.com/riatzukiza/kit-file-system.git",
+        "kit-html": "git+https://github.com/riatzukiza/kit-html.git",
+        "kit-http": "git+https://github.com/riatzukiza/kit-http.git",
+        "kit-interface": "git+https://github.com/riatzukiza/kit-interface.git",
+        "kit-repl": "git+https://github.com/riatzukiza/kit-repl.git",
         "mathjs": "*",
         "mime-types": "^2.1.18",
         "source-map-support": "^0.4.11",
-        "webgl": "https://bitbucket.org/kettlelogic/andy_webgl.git"
+        "webgl": "git+https://bitbucket.org/kettlelogic/andy_webgl.git"
     }
 }
