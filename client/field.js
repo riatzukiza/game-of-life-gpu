@@ -23,29 +23,16 @@ var {
 var { 
   Interface
  } = require("kit-interface");
+async function imageify(state){
+
+  
+
+};
 var Field = Interface.define("Field", { 
   init( canvas = this.canvas,shape = [ 0, 0 ],state = dl.ones(shape),imageData = (new ImageData(shape[1], shape[0])),ctx = canvas.getContext("2d") ){ 
     
       this.canvas = canvas;this.shape = shape;this.state = state;this.imageData = imageData;this.ctx = ctx;
       return this;
-    
-   },
-  set( [ x, y ],v ){ 
-    
-      return this.state.data().then(((d) => {
-      	
-        return d[((y * this.shape[0]) + x)] = v;
-      
-      }));
-    
-   },
-  get( [ x, y ] ){ 
-    
-      return this.state.data().then(((d) => {
-      	
-        return d[((y * this.shape[0]) + x)];
-      
-      }));
     
    },
   render( canvas = this.canvas,state = this.state,shape = this.shape,imageData = this.imageData,ctx = this.ctx ){ 

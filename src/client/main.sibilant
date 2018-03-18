@@ -1,6 +1,8 @@
 (include "kit/header"
-         "kit-interface/header")
+         "kit-interface/header"
+         "./inc/async")
 
+(import-namespace async)
 (import-namespace kit)
 (import-namespace interface)
 
@@ -10,70 +12,55 @@
 ;; (include "kit-html/src/dom")
 ;; (import-namespace dom)
 
+(macro def-tidy (name args ...body)
+       `(def @name @args
+             (dl.tidy (-> ...@body))))
+
 (require! dl 'deeplearn
           m 'mathjs)
 
 (var running? true)
+
+(var W window.inner-width H window.inner-height)
+
+(def rgb (r g b ) (lit  r g b ))
+
+
+(var kernel (pipe (dl.tensor2d [[1 1 1]
+                                [1 0 1]
+                                [1 1 1]])
+                  (dl.reshape [3 3 1 1])))
+
+(var state0-tensor (.greater (dl.random-uniform [H W])
+                             (.scalar dl 0.5 "float32")))
+(var state (dl.variable ( dl.cast ( dl.reshape  state0-tensor [1 H W 1])
+              "float32")))
+
+(def-tidy next-generation ()
+  (var neighbors (dl.conv2d state kernel [1 1 1 1] "same"))
+  (var survive (dl.logical-and (dl.equal state (dl.scalar 1 "float32"))
+                               (dl.equal neighbors (dl.scalar 2 "float32")))
+       born (dl.equal neighbors (dl.scalar 3 "float32")))
+
+  (dl.cast (dl.logical-or survive born)
+           "float32"))
+
+(def-tidy step () (state.assign (next-generation)))
+
+(var black (rgb 0 0 0 ))
+(var red (rgb 255 0 0))
 (def window.onload ()
 
      (var canvas (.create-element document 'canvas))
      (.append-child document.body canvas)
 
-     (var W window.inner-width H window.inner-height)
-     (print [H W])
-
-     (set canvas
-          'height  H
-          'width W)
-
-
-     (def rgb (r g b ) (lit  r g b ))
-
-
-     (var kernel (dl.reshape (dl.tensor2d [[1 1 1]
-                                           [1 0 1]
-                                           [1 1 1]])
-                             [3 3 1 1]))
-
-     (var state0-tensor (.greater (dl.random-uniform [H W])
-                                  (.scalar dl 0.5 "float32")))
-     (var state (dl.variable
-                 ( dl.cast
-                   ( dl.reshape  state0-tensor [1 H W 1])
-                   "float32")))
-     (def step ()
-          (var new-state (dl.tidy (-> (var neighbors (dl.conv2d state kernel [1 1 1 1] "same"))
-                                      (var survive (dl.logical-and (dl.equal state (dl.scalar 1 "float32"))
-                                                                   (dl.equal neighbors (dl.scalar 2 "float32")))
-                                           born (dl.equal neighbors (dl.scalar 3 "float32")))
-
-                                      (dl.cast (dl.logical-or survive born)
-                                               "float32"))))
-          (state.assign new-state)
-
-          (.dispose new-state)
-          state
-          )
-
-     (var black (rgb 0 0 0 ))
-     (var red (rgb 255 0 0))
-
+     (set canvas 'height  H 'width W)
      (var game-field (colored canvas red [H W] state))
-     ;; (set-interval (-> (step)
-     ;;                   (.render game-field canvas))
-     ;;               0)
 
-     (def start ()
-          (.then (dl.next-frame)
-                 (->
-                  (if! (not running?) (return false))
-
-
-                  (.render game-field canvas
-
-                           (step)
-                           )
-
-                  (start))))
+     (def-async start ()
+       (await (dl.next-frame))
+       (if! (not running?) (return false))
+       (.render game-field canvas (step))
+       (start))
 
      (start))
