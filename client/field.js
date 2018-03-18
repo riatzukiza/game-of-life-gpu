@@ -24,9 +24,9 @@ var {
   Interface
  } = require("kit-interface");
 var Field = Interface.define("Field", { 
-  init( shape = [ 0, 0 ],state = dl.ones(shape) ){ 
+  init( canvas = this.canvas,shape = [ 0, 0 ],state = dl.ones(shape),imageData = (new ImageData(shape[1], shape[0])),ctx = canvas.getContext("2d") ){ 
     
-      this.shape = shape;this.state = state;
+      this.canvas = canvas;this.shape = shape;this.state = state;this.imageData = imageData;this.ctx = ctx;
       return this;
     
    },
@@ -48,23 +48,22 @@ var Field = Interface.define("Field", {
       }));
     
    },
-  render( canvas = this.canvas,shape = this.shape,state = this.state ){ 
+  render( canvas = this.canvas,shape = this.shape,state = this.state,imageData = this.imageData,ctx = this.ctx ){ 
     
       if( !(running__QUERY) ){ 
         return false;
        };
-      var ctx = canvas.getContext("2d"),
-          height = shape[0],
+      var height = shape[0],
           width = shape[1];
+      var d = state.buffer();
       return state.data().then(((d) => {
       	
-        var imageData = (new ImageData(height, width));
+        var j = 0,
+            k = 0;
         for (var i = 0;i < (width * height);++(i))
         {
-        var j = (i * 4),
-            k = i;;
-        var a = d[i];;
-        this._renderCell(a, j, imageData)
+        j = (i * 4);;
+        this._renderCell(d[i], j, imageData)
         }
         ;
         return ctx.putImageData(imageData, 0, 0);
@@ -74,10 +73,10 @@ var Field = Interface.define("Field", {
    }
  });
 var Colored = Field.define("Colored", { 
-  init( color = this.color,shape = this.shape,state = this.state ){ 
+  init( canvas = this.canvas,color = this.color,shape = this.shape,state = this.state ){ 
     
-      this.color = color;this.shape = shape;this.state = state;
-      Field.init.call(this, shape, state);
+      this.canvas = canvas;this.color = color;this.shape = shape;this.state = state;
+      Field.init.call(this, canvas, shape, state);
       return this;
     
    },

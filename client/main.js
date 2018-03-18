@@ -46,12 +46,13 @@ window.onload = (function window$onload$() {
 
   var canvas = document.createElement("canvas");
   document.body.appendChild(canvas);
-  var W = 800,
-      H = 800;
+  var W = window.innerWidth,
+      H = window.innerHeight;
+  console.log([ H, W ]);
   canvas.height = H;
   canvas.width = W;
   var rgb = (function rgb$(r, g, b) {
-    /* rgb eval.sibilant:33:5 */
+    /* rgb eval.sibilant:30:5 */
   
     return { 
       r,
@@ -63,7 +64,7 @@ window.onload = (function window$onload$() {
   var state0Tensor = dl.randomUniform([ H, W ]).greater(dl.scalar(0.5, "float32"));
   var state = dl.variable(dl.cast(dl.reshape(state0Tensor, [ 1, H, W, 1 ]), "float32"));
   var step = (function step$() {
-    /* step eval.sibilant:47:5 */
+    /* step eval.sibilant:44:5 */
   
     return state.assign(dl.tidy((() => {
     	
@@ -76,9 +77,9 @@ window.onload = (function window$onload$() {
   });
   var black = rgb(0, 0, 0);
   var red = rgb(255, 0, 0);
-  var gameField = colored(red, [ H, W ], state);
+  var gameField = colored(canvas, red, [ H, W ], state);
   var start = (function start$() {
-    /* start eval.sibilant:64:5 */
+    /* start eval.sibilant:61:5 */
   
     return dl.nextFrame().then((() => {
     	
