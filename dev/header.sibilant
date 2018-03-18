@@ -1,0 +1,30 @@
+(namespace dev)
+
+(include "kit/header")
+(import-namespace kit)
+
+(include "kit-interface/header")
+(import-namespace interface)
+
+(include "../inc/async")
+(import-namespace async)
+(include "kit-html/header")
+(import-namespace markup)
+
+(macro watch (fs path event ...body)
+       `(then (.watch @fs @path ) watched
+              (on watched @event ((lit event node))
+                  (var dir : node,
+                       file : node,
+                       directory : node)
+                  ...@body)))
+
+
+(require! (lit File-system Directory File) "kit-file-system"
+          (lit Compiler) "kit-repl/js/compiler"
+          (lit Evaluator) "kit-repl/js/evaluator"
+
+          Path 'path
+
+          'assert
+          'chokidar)

@@ -1,0 +1,8 @@
+(def Array.prototype.each (f)
+     (.for-each this f)
+     this)
+(def Object.prototype.each (f)
+     (pipe (Object.keys this)
+           (.for-each (=> (k) (f (get this k) k)))
+           )
+     )

@@ -1,0 +1,28 @@
+(namespace dev)
+
+(var compiler (.spawn Compiler))
+
+(.on compiler 'error (aprint "compiler:error"))
+(.on compiler 'message (aprint "compiler:message"))
+
+(def js-target-path (src-path) (+ (strip-sibilant-extension src-path) ".js"))
+(def strip-sibilant-extension (path) (Path.basename path ".sibilant"))
+
+(def-async compile-module (file dest)
+
+  (print "compiling source file" file.path)
+  (var lisp (await file.string))
+  (var js (await (.send compiler lisp)))
+  (print js)
+
+  (.catch (.set dest (+  (strip-sibilant-extension file.rel ) ".js") js)
+          (aprint "compiler error:")))
+
+(def-async compile-html (file dest)
+
+  (print "template file built, compiling html" file.path)
+
+  (var js (await file.string))
+  (var result (eval js))
+  (var dest-file (await (.insert dest (+ (Path.basename file.rel ".js") ".html"))))
+  (.render result dest-file.write-stream))

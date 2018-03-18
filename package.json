@@ -8,13 +8,14 @@
     "dependencies": {
         "deeplearn": "*",
         "kit": "git@github.com:riatzukiza/kit.git",
+        "kit-events": "git@github.com:riatzukiza/kit-events.git",
         "kit-file-system": "git@github.com:riatzukiza/kit-file-system.git",
         "kit-html": "git@github.com:riatzukiza/kit-html.git",
-        "kit-events": "git@github.com:riatzukiza/kit-events.git",
         "kit-http": "git@github.com:riatzukiza/kit-http.git",
         "kit-interface": "git@github.com:riatzukiza/kit-interface.git",
         "kit-repl": "git@github.com:riatzukiza/kit-repl.git",
         "mathjs": "*",
+        "mime-types": "^2.1.18",
         "source-map-support": "^0.4.11",
         "webgl": "git@bitbucket.org:kettlelogic/andy_webgl.git"
     }

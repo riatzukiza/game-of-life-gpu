@@ -1,14 +1,15 @@
+(namespace server)
 (include "kit/header")
 (import-namespace kit)
 
 (include "kit-interface/header")
 (import-namespace interface)
 
-(include "./node_modules/kit-http/header.sibilant")
+(include "kit-http/header.sibilant")
 
 (import-namespace http)
 
-(include "./node_modules/kit-html/header.sibilant")
+(include "kit-html/header.sibilant")
 (import-namespace markup)
 
 ;;(use-html-template app "/apps/gol" "./templates/gol")
@@ -16,10 +17,37 @@
 (macro controller (...body)
        `(markup (.script (quote (scoped ...@body)))))
 
-(with-http-route
- (app "/gol")
- (with-markup-to-stream res
-  (.html
-   
-   (.body)))
- )
+(require! (lit File-system) "kit-file-system"
+          mime-types "mime-types"
+          Path 'path)
+
+(var static-dir (.load File-system "./"))
+(var PORT 8000)
+
+(var app ((create Http.Middle-ware))
+     static ((create Http.Middle-ware)))
+
+(var server ((create Http.Server) PORT))
+(def serve-static-files (sys)
+
+     (def-async serve ((lit request response route key))
+       (var path (pipe (.filter key (=> (k) (not (or (= k ".") (= k "..")))))
+                       (.join "/")))
+
+       (var file (await (.find sys path)))
+
+       (if (file.is-dir?) (.end response "directory")
+
+         (do (var ext (Path.extname file.path)
+                  mime (.lookup mime-types ext))
+
+             (.set-header response "Content-Type" mime)
+           (.pipe file.read-stream response)))))
+
+
+(.use app "/html" (serve-static-files html.files))
+(.use app "/js" (serve-static-files js.client))
+
+
+(.use server app)
+(.start server)

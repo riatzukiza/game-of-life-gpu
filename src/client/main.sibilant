@@ -1,6 +1,17 @@
-(include "kit/header")
-(import-namespace kit)
+(include "kit/header"
+         "kit-interface/header")
 
+(import-namespace kit)
+(import-namespace interface)
+
+(include "./inc/misc.sibilant")
+;;(include "./field.sibilant")
+
+;; (include "kit-html/src/dom")
+;; (import-namespace dom)
+
+(require! dl 'deeplearn
+          m 'mathjs)
 (def window.onload ()
 
      (var canvas (.create-element document 'canvas))
@@ -58,5 +69,4 @@
 
                   (start))))
 
-     (start)
-     )
+     (start))

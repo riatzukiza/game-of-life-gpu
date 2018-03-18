@@ -1,5 +1,7 @@
-(.html (.body
-        (.h1 "man")
-        (.div "hi")))
+(html
 
+ (.script .src "/js/bundle.js")
+ (.script .src "/js/main.js")
+   
+   (.body))
 

@@ -1,1 +1,1 @@
-"man".h1().body("hi".div()).html()
+create(HtmlElement)("html", {  }, [ create(HtmlElement)("script", { 'src': "/js/bundle.js" }, []), create(HtmlElement)("script", { 'src': "/js/main.js" }, []), create(HtmlElement)("body", {  }, []) ])
