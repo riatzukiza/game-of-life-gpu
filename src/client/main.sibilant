@@ -12,9 +12,7 @@
 ;; (include "kit-html/src/dom")
 ;; (import-namespace dom)
 
-(macro def-tidy (name args ...body)
-       `(def @name @args
-             (dl.tidy (-> ...@body))))
+(include "./inc/dl")
 
 (require! dl 'deeplearn
           m 'mathjs)
@@ -55,10 +53,15 @@
      (.append-child document.body canvas)
 
      (set canvas 'height  H 'width W)
+     ;; (set canvas.style
+     ;;      'background-color "black")
+
      (var game-field (colored canvas red [H W] state))
 
      (def-async start ()
        (await (dl.next-frame))
+       (print "tick")
+
        (if! (not running?) (return false))
        (.render game-field canvas (step))
        (start))

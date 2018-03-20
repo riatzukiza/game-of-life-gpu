@@ -5,9 +5,11 @@
     "main": "main.js",
     "bin": {},
     "scripts": {
-        "start":"node ./server/index.js"},
+        "start": "node ./server/index.js"
+    },
     "dependencies": {
         "deeplearn": "*",
+        "js-beautify": "^1.7.5",
         "kit": "git+https://github.com/riatzukiza/kit.git",
         "kit-events": "git+https://github.com/riatzukiza/kit-events.git",
         "kit-file-system": "git+https://github.com/riatzukiza/kit-file-system.git",

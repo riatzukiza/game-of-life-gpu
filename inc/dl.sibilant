@@ -1,0 +1,4 @@
+(namespace dl)
+(macro def-tidy (name args ...body)
+       `(def @name @args
+             (dl.tidy (-> ...@body))))

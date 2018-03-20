@@ -1,9 +1,9 @@
 (namespace dev)
 
 (var compiler (.spawn Compiler))
+(require! (lit (js beautify))  "js-beautify")
 
 (.on compiler 'error (aprint "compiler:error"))
-(.on compiler 'message (aprint "compiler:message"))
 
 (def js-target-path (src-path) (+ (strip-sibilant-extension src-path) ".js"))
 (def strip-sibilant-extension (path) (Path.basename path ".sibilant"))
@@ -15,7 +15,7 @@
   (var js (await (.send compiler lisp)))
   (print js)
 
-  (.catch (.set dest (+  (strip-sibilant-extension file.rel ) ".js") js)
+  (.catch (.set dest (+  (strip-sibilant-extension file.rel ) ".js") (beautify js))
           (aprint "compiler error:")))
 
 (def-async compile-html (file dest)
