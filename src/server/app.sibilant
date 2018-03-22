@@ -1,10 +1,12 @@
 (namespace server)
 
 (include "kit/header"
-         "kit-http/header")
+         "kit-http/header"
+         "kit-interface/header")
 
 (import-namespace kit)
 (import-namespace http)
+(import-namespace interface)
 
 (require!
  (lit File-system) "kit-file-system"
