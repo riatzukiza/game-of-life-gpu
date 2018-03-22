@@ -63,7 +63,7 @@ window.onload = (function window$onload$() {
     var state0Tensor = dl.randomUniform([H, W]).greater(dl.scalar(0.5, "float32"));
     var state = dl.variable(dl.cast(dl.reshape(state0Tensor, [1, H, W, 1]), "float32"));
     var nextGeneration = (function nextGeneration$() {
-        /* next-generation inc/dl.sibilant:2:8 */
+        /* next-generation inc/dl.sibilant:3:8 */
 
         return dl.tidy((() => {
 
@@ -75,7 +75,7 @@ window.onload = (function window$onload$() {
         }));
     });
     var step = (function step$() {
-        /* step inc/dl.sibilant:2:8 */
+        /* step inc/dl.sibilant:3:8 */
 
         return dl.tidy((() => {
 
@@ -89,11 +89,10 @@ window.onload = (function window$onload$() {
     document.body.appendChild(canvas);
     canvas.height = H;
     canvas.width = W;
-    var gameField = colored(canvas, red, [H, W], state);
+    var gameField = colored(canvas, red, [W, H], state);
     async function start() {
 
         await dl.nextFrame();
-        console.log("tick");
         if (!(running__QUERY)) {
             return false;
         };

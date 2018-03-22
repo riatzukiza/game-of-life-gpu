@@ -13,7 +13,7 @@
                               (pipe name (.replace (regex "-" "g") " ")))))))
 (html
  (.head (.title "Welcome to the Error Log")
-        (.script "/js/bundle.js"))
+        (.script .src "/js/bundle.js"))
  (.body
   (.header .style "text-align:center;" (.h1 "Error log") )
 

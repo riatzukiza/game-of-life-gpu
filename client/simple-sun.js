@@ -144,7 +144,7 @@ var tick = (function tick$() {
         dl.tidy((() => {
 
             move();
-            return state.assign(inverseSquareMatrix(dl.scalar(100), dl.scalar(10), p, coords));
+            return state.assign(inverseSquareMatrix(dl.scalar(100), dl.scalar(10), p, coords).mul(dl.randomUniform([1, H, W])));
 
         }));
         field.render();
@@ -155,7 +155,7 @@ var tick = (function tick$() {
 state.print();
 var field = null;
 window.onload = (function window$onload$() {
-    /* window.onload eval.sibilant:97:0 */
+    /* window.onload eval.sibilant:99:0 */
 
     var white = rgb(255, 255, 255);
     var canvas = document.createElement("canvas");

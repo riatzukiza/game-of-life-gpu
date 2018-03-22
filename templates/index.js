@@ -12,7 +12,9 @@ var portfolioPiece = (function portfolioPiece$(name) {
         'href': ("/html/" + name + ".html")
     }, [name.replace((new RegExp("-", "g")), " ")])])]);
 });
-create(HtmlElement)("html", {}, [create(HtmlElement)("head", {}, [create(HtmlElement)("title", {}, ["Welcome to the Error Log"]), create(HtmlElement)("script", {}, ["/js/bundle.js"])]), create(HtmlElement)("body", {}, [create(HtmlElement)("header", {
+create(HtmlElement)("html", {}, [create(HtmlElement)("head", {}, [create(HtmlElement)("title", {}, ["Welcome to the Error Log"]), create(HtmlElement)("script", {
+    'src': "/js/bundle.js"
+}, [])]), create(HtmlElement)("body", {}, [create(HtmlElement)("header", {
     'style': "text-align:center;"
 }, [create(HtmlElement)("h1", {}, ["Error log"])]), create(HtmlElement)("section", {
     'style': "display:flex;flex-wrap:wrap;margin:auto;"

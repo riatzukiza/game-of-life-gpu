@@ -84,11 +84,13 @@
             (dl.tidy
              (-> (move)
                  (.assign state
-                          (inverse-square-matrix
-                           (.scalar dl 100)
-                           (.scalar dl 10)
-                           p
-                           coords)))) (.render field) (tick))
+                          (.mul (inverse-square-matrix
+                                 (.scalar dl 100)
+                                 (.scalar dl 10)
+                                 p
+                                 coords)
+                                (.random-uniform dl [1 H W ]))))) (.render field) (tick))
+
 
            ))
 (.print state)
