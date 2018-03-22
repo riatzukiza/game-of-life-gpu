@@ -1,4 +1,5 @@
 (namespace dev)
+(import-namespace markup)
 
 (include "./header"
          "./compile")

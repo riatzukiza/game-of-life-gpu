@@ -1,1 +1,2 @@
-(require "./server")
+(require! server "./server")
+(export server)

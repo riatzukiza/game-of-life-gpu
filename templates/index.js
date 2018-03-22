@@ -1,1 +1,0 @@
-create(HtmlElement)("html", {  }, [ create(HtmlElement)("script", { 'src': "/js/bundle.js" }, []), create(HtmlElement)("script", { 'src': "/js/field.js" }, []), create(HtmlElement)("script", { 'src': "/js/main.js" }, []), create(HtmlElement)("body", {  }, []) ])

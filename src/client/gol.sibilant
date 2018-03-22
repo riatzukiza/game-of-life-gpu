@@ -19,7 +19,6 @@
 
 (var running? true)
 
-(var W window.inner-width H window.inner-height)
 
 (def rgb (r g b ) (lit  r g b ))
 
@@ -29,32 +28,36 @@
                                 [1 1 1]])
                   (dl.reshape [3 3 1 1])))
 
-(var state0-tensor (.greater (dl.random-uniform [H W])
-                             (.scalar dl 0.5 "float32")))
-(var state (dl.variable ( dl.cast ( dl.reshape  state0-tensor [1 H W 1])
-              "float32")))
-
-(def-tidy next-generation ()
-  (var neighbors (dl.conv2d state kernel [1 1 1 1] "same"))
-  (var survive (dl.logical-and (dl.equal state (dl.scalar 1 "float32"))
-                               (dl.equal neighbors (dl.scalar 2 "float32")))
-       born (dl.equal neighbors (dl.scalar 3 "float32")))
-
-  (dl.cast (dl.logical-or survive born)
-           "float32"))
-
-(def-tidy step () (state.assign (next-generation)))
-
-(var black (rgb 0 0 0 ))
-(var red (rgb 255 0 0))
 (def window.onload ()
+
+     (var W window.inner-width H window.inner-height)
+     (set document.body.style
+          'margin 0
+          'padding 0)
+
+     (var state0-tensor (.greater (dl.random-uniform [H W])
+                                  (.scalar dl 0.5 "float32")))
+     (var state (dl.variable ( dl.cast ( dl.reshape  state0-tensor [1 H W 1])
+                                       "float32")))
+
+     (def-tidy next-generation ()
+       (var neighbors (dl.conv2d state kernel [1 1 1 1] "same"))
+       (var survive (dl.logical-and (dl.equal state (dl.scalar 1 "float32"))
+                                    (dl.equal neighbors (dl.scalar 2 "float32")))
+            born (dl.equal neighbors (dl.scalar 3 "float32")))
+
+       (dl.cast (dl.logical-or survive born)
+                "float32"))
+
+     (def-tidy step () (state.assign (next-generation)))
+
+     (var black (rgb 0 0 0 ))
+     (var red (rgb 255 0 0))
 
      (var canvas (.create-element document 'canvas))
      (.append-child document.body canvas)
 
      (set canvas 'height  H 'width W)
-     ;; (set canvas.style
-     ;;      'background-color "black")
 
      (var game-field (colored canvas red [H W] state))
 

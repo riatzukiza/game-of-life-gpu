@@ -1,13 +1,14 @@
-(include "./inc/dl"
-         "./inc/async")
+(include "./inc/dl" "./inc/async")
+
 (import-namespace async)
 (import-namespace dl)
 
 (def rgb (r g b ) (lit  r g b ))
 
 (def-tidy field (t) ( dl.cast ( dl.reshape t [1 W H 1]) "float32"))
+
 (def-tidy bit-field (t ) (.greater t (.scalar dl 0.5 "float32")))
-(def-tidy random-bit-field () (bit-field (dl.random-uniform [w h])))
+(def-tidy random-bit-field (w h) (bit-field (dl.random-uniform [w h])))
 
 (def-tidy create-grayscale-image (t) (.mul (field t) (.scalar dl 255 "float32")))
 (def-tidy random-grayscale (w h) (pipe (bit-field w h) create-grayscale-image))
