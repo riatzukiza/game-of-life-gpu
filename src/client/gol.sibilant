@@ -59,7 +59,7 @@
 
      (set canvas 'height  H 'width W)
 
-     (var game-field (colored canvas red [H W] state))
+     (var game-field (colored canvas red [W H] state))
 
      (def-async start ()
        (await (dl.next-frame))

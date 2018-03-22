@@ -76,6 +76,7 @@
 (def-tidy move ()
   (assign sun-pos.x (mod (+ sun-pos.x 1) H)
           sun-pos.y (mod (+ sun-pos.y 1) W))
+
   (.assign p (point-tensor [sun-pos.x sun-pos.y ])))
 (def tick ()
      (pipe (dl.next-frame )
