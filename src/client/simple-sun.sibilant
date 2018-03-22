@@ -1,0 +1,108 @@
+
+(include "kit/header"
+         "kit-interface/header"
+         "./inc/async")
+
+(import-namespace async)
+(import-namespace kit)
+(import-namespace interface)
+
+(include "./inc/misc.sibilant")
+;;(include "./field.sibilant")
+
+;; (include "kit-html/src/dom")
+;; (import-namespace dom)
+
+(include "./inc/dl")
+(import-namespace dl)
+
+(require! dl 'deeplearn
+          m 'mathjs)
+
+(var running? true)
+
+
+(def rgb (r g b ) (lit  r g b ))
+(var kernel-2d (#-> dl.tensor2d  (dl.reshape [3 3 1 1])))
+
+
+(def euclidian-distance (x y a b)
+     (Math.sqrt (+ (Math.pow (- x a) 2) (Math.pow (- y b) 2))))
+
+(def inverse-square (rate c pos (lit x y) )
+     (/ rate
+        (+ c
+           (Math.pow
+            (euclidian-distance x y pos.x pos.y) 2))))
+
+
+(var W window.inner-width H window.inner-height)
+
+(var light-rate (.scalar dl 100)
+     sun-point (.tensor dl [(/ W 2) (/ H 2)]))
+
+;; (var size (Math.min H W))
+;; (var axis (dl.linspace 0 (- size 1) size))
+(def-tidy coordinate-grid (i j)
+     (var r []) (for! (x 0) (< x i) (++ x)
+           (var r* (set r x []))
+           (for! (y 0) (< y j) (++ y)
+                 (.push r* [ x y])))
+     (.reshape (.tensor dl r) [1 i j 2]))
+
+(def-tidy point-tensor (p )
+  (.reshape dl (.neg (.abs (.tensor dl p))) [1 1 1 p.length]))
+
+
+(def-tidy distance-matrix (p plane)
+  (var [_ w h _] plane.shape)
+  (.norm (.add plane p ) "euclidean" 3))
+
+(def-tidy inverse-square-matrix (I c p plane)
+  (.abs (.div  I (.add c (.square (distance-matrix  p plane))))))
+
+
+(var coords (coordinate-grid    H W))
+(var sun-pos (lit (x 0)
+                  (y 0)))
+
+(var p (dl.variable (point-tensor [0 0])))
+
+(var state (dl.variable (inverse-square-matrix
+                         (.scalar dl 100)
+                         (.scalar dl 10)
+                         p
+                         coords)))
+(def-tidy move ()
+  (assign sun-pos.x (mod (+ sun-pos.x 1) H)
+          sun-pos.y (mod (+ sun-pos.y 1) W))
+  (.assign p (point-tensor [sun-pos.x sun-pos.y ])))
+(def tick ()
+     (pipe (dl.next-frame )
+           (then-do
+            (dl.tidy
+             (-> (move)
+                 (.assign state
+                          (inverse-square-matrix
+                           (.scalar dl 100)
+                           (.scalar dl 10)
+                           p
+                           coords)))) (.render field) (tick))
+
+           ))
+(.print state)
+(var field null)
+
+(def window.onload ()
+     (var white (rgb 255 255 255))
+
+     (var canvas (.create-element document 'canvas))
+     (.append-child document.body canvas)
+
+     (set canvas 'height  H 'width W)
+
+     (assign field (colored canvas white [ W H] state))
+     (tick)
+     (set document.body.style
+          'margin 0
+          'padding 0))

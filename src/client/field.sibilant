@@ -14,7 +14,7 @@
 
   (init (  canvas (shape [0 0]) (state (dl.ones shape))
 
-           ( image-data (new Image-data  (second shape)(first shape)))
+                  ( image-data (new Image-data  (first shape) (second shape)))
            (ctx (.get-context canvas "2d"))
            ))
 
@@ -39,10 +39,13 @@
   (init (canvas color shape state) (.call Field.init this canvas shape state))
 
   (def *render-cell (a j image-data )
+       ;;(unless (= a 0)(print "setting cell" j a))
+       (assign a (Math.abs (Math.min 1 a)))
        (set image-data.data
             j       (Math.round (* this.color.r a))
             (+ j 1) (Math.round (* this.color.g a))
             (+ j 2) (Math.round (* this.color.b a))
-            (+ j 3) 255)))
+            (+ j 3) 255
+            )))
 
 (var colored (create Colored))

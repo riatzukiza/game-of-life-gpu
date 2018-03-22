@@ -1,6 +1,8 @@
 (namespace dev)
 (import-namespace markup)
 
+(macro html (...body) `(markup (.html ...@body)))
+
 (include "./header"
          "./compile")
 

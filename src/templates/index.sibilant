@@ -1,13 +1,16 @@
+(namespace dev)
+(import-namespace markup)
+
 (macro def-markup (name args body)
-       `(def @name @args (markup @body))
-       )
-(def-markup portfolio-piece (name)
-  (.article (.iframe .height 256 .width 256 .src ("./" name ".html")
-                     .style "display:block;")
-            (.section .style "text-align:center;width:256px"
-                      (.a .href ("/html/" name ".html")
-                          (pipe name (.replace (regex "-" "g") " ")))))
-  )
+       `(def @name @args (markup @body)))
+
+
+(def portfolio-piece (name)
+     (markup (.article (.iframe .height 256 .width 256 .src ("./" name ".html")
+                         .style "display:block;")
+                (.section .style "text-align:center;width:256px"
+                          (.a .href ("/html/" name ".html")
+                              (pipe name (.replace (regex "-" "g") " ")))))))
 (html
  (.head (.title "Welcome to the Error Log")
         (.script "/js/bundle.js"))
@@ -15,13 +18,7 @@
   (.header .style "text-align:center;" (.h1 "Error log") )
 
 
-  (.section
+  (.section .style "display:flex;flex-wrap:wrap;margin:auto;"
 
-   .style "display:flex;flex-wrap:wrap;margin:auto;"
-   (portfolio-piece "game-of-life")
-
-   ;; (.article (.iframe .height 256 .width 256 .src "./game-of-life.html"
-   ;;                    .style "display:block;")
-   ;;           (.section .style "text-align:center;width:256px"
-   ;;                     (.a .href "/html/game-of-life.html" "game of life")))
-   )))
+            (portfolio-piece "game-of-life")
+            (portfolio-piece "simple-sun"))))

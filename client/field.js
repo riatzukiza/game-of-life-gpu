@@ -22,7 +22,7 @@ var {
     Interface
 } = require("kit-interface");
 var imageify = (function imageify$(state) {
-    /* imageify inc/dl.sibilant:2:8 */
+    /* imageify inc/dl.sibilant:3:8 */
 
     return dl.tidy((() => {
 
@@ -31,7 +31,7 @@ var imageify = (function imageify$(state) {
     }));
 });
 var grayscaleToRgba = (function grayscaleToRgba$(images) {
-    /* grayscale-to-rgba inc/dl.sibilant:2:8 */
+    /* grayscale-to-rgba inc/dl.sibilant:3:8 */
 
     return dl.tidy((() => {
 
@@ -40,7 +40,7 @@ var grayscaleToRgba = (function grayscaleToRgba$(images) {
     }));
 });
 var Field = Interface.define("Field", {
-    init(canvas = this.canvas, shape = [0, 0], state = dl.ones(shape), imageData = (new ImageData(shape[1], shape[0])), ctx = canvas.getContext("2d")) {
+    init(canvas = this.canvas, shape = [0, 0], state = dl.ones(shape), imageData = (new ImageData(shape[0], shape[1])), ctx = canvas.getContext("2d")) {
 
         this.canvas = canvas;
         this.shape = shape;
@@ -84,6 +84,7 @@ var Colored = Field.define("Colored", {
     },
     _renderCell(a, j, imageData) {
 
+        a = Math.abs(Math.min(1, a));
         imageData.data[j] = Math.round((this.color.r * a));
         imageData.data[(j + 1)] = Math.round((this.color.g * a));
         imageData.data[(j + 2)] = Math.round((this.color.b * a));
