@@ -1,5 +1,7 @@
+(include "kit/header")
 (include "./inc/async")
 (import-namespace async)
+(import-namespace kit)
 
 (require!
  mime-types "mime-types"

@@ -1,4 +1,9 @@
-(include "kit-http/header")
+(namespace server)
+
+(include "kit/header"
+         "kit-http/header")
+
+(import-namespace kit)
 (import-namespace http)
 
 (require!
