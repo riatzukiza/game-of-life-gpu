@@ -25,6 +25,7 @@
 
 
 (.use app "/html" (serve-static-files html.files))
+
 (.use app "/js" (serve-static-files js.client))
 
 (assign module.exports app)
