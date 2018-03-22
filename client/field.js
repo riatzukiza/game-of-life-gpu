@@ -84,7 +84,7 @@ var Colored = Field.define("Colored", {
     },
     _renderCell(a, j, imageData) {
 
-        a = Math.abs(Math.min(1, a));
+        a = Math.min(1, Math.pow(a, 2));
         imageData.data[j] = Math.round((this.color.r * a));
         imageData.data[(j + 1)] = Math.round((this.color.g * a));
         imageData.data[(j + 2)] = Math.round((this.color.b * a));

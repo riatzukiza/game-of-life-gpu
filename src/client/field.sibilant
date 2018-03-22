@@ -40,7 +40,7 @@
 
   (def *render-cell (a j image-data )
        ;;(unless (= a 0)(print "setting cell" j a))
-       (assign a (Math.abs (Math.min 1 a)))
+       (assign a (Math.min 1 (Math.pow a 2)))
        (set image-data.data
             j       (Math.round (* this.color.r a))
             (+ j 1) (Math.round (* this.color.g a))

@@ -40,7 +40,7 @@ var dl = require("deeplearn"),
     m = require("mathjs");
 var running__QUERY = true;
 var rgb = (function rgb$(r, g, b) {
-    /* rgb eval.sibilant:25:0 */
+    /* rgb eval.sibilant:26:0 */
 
     return {
         r,
@@ -48,8 +48,21 @@ var rgb = (function rgb$(r, g, b) {
         b
     };
 });
-var W = window.innerWidth,
-    H = window.innerHeight;
+var kernel2d = (function() {
+    /* eval.sibilant:27:15 */
+
+    return dl.reshape(dl.tensor2d(arguments[0]), [3, 3, 1, 1]);
+});
+var _point = (function _point$(x_y$26, i_j$18) {
+    /* *point eval.sibilant:29:0 */
+
+    var x = x_y$26[0],
+        y = x_y$26[1],
+        i = i_j$18[0],
+        j = i_j$18[1];
+
+    return [(Math.PI * (x / i) * 2), (Math.PI * (y / j) * 2)];
+});
 var coordinateGrid = (function coordinateGrid$(i, j) {
     /* coordinate-grid inc/dl.sibilant:3:8 */
 
@@ -59,7 +72,7 @@ var coordinateGrid = (function coordinateGrid$(i, j) {
         for (var x = 0; x < i; ++(x)) {
             var r_ = r[x] = [];;
             for (var y = 0; y < j; ++(y)) {
-                r_.push([x, y])
+                r_.push(_point([x, y], [i, j]))
             }
 
         };
@@ -67,12 +80,17 @@ var coordinateGrid = (function coordinateGrid$(i, j) {
 
     }));
 });
-var pointTensor = (function pointTensor$(p) {
+var pointTensor = (function pointTensor$(x_y$27, i_j$19) {
     /* point-tensor inc/dl.sibilant:3:8 */
+
+    var x = x_y$27[0],
+        y = x_y$27[1],
+        i = i_j$19[0],
+        j = i_j$19[1];
 
     return dl.tidy((() => {
 
-        return dl.reshape(dl.tensor(p).abs().neg(), [1, 1, 1, p.length]);
+        return dl.reshape(dl.tensor(_point([x, y], [i, j])).abs().neg(), [1, 1, 1, 2]);
 
     }));
 });
@@ -81,10 +99,6 @@ var distanceMatrix = (function distanceMatrix$(p, plane) {
 
     return dl.tidy((() => {
 
-        var _ = plane.shape[0],
-            w = plane.shape[1],
-            h = plane.shape[2],
-            _ = plane.shape[3];
         return plane.add(p).norm("euclidean", 3);
 
     }));
@@ -103,7 +117,7 @@ var sunPos = {
     x: 0,
     y: 0
 };
-var p = dl.variable(pointTensor([0, 0]));
+var p = dl.variable(pointTensor([0, 0], [W, H]));
 var state = dl.variable(inverseSquareMatrix(dl.scalar(100), dl.scalar(10), p, coords));
 var move = (function move$() {
     /* move inc/dl.sibilant:3:8 */
@@ -112,12 +126,12 @@ var move = (function move$() {
 
         sunPos.x = ((sunPos.x + 1) % H);
         sunPos.y = ((sunPos.y + 1) % W);
-        return p.assign(pointTensor([sunPos.x, sunPos.y]));
+        return p.assign(pointTensor([sunPos.x, sunPos.y], [W, H]));
 
     }));
 });
 var tick = (function tick$() {
-    /* tick eval.sibilant:66:0 */
+    /* tick eval.sibilant:71:0 */
 
     return dl.nextFrame().then(((nil) => {
 
@@ -135,7 +149,7 @@ var tick = (function tick$() {
 state.print();
 var field = null;
 window.onload = (function window$onload$() {
-    /* window.onload eval.sibilant:84:0 */
+    /* window.onload eval.sibilant:89:0 */
 
     var white = rgb(255, 255, 255);
     var canvas = document.createElement("canvas");

@@ -21,4 +21,5 @@
   (.section .style "display:flex;flex-wrap:wrap;margin:auto;"
 
             (portfolio-piece "game-of-life")
-            (portfolio-piece "simple-sun"))))
+            (portfolio-piece "simple-sun")
+            (portfolio-piece "toroidal-coordinates"))))
