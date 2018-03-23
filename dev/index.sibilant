@@ -29,3 +29,5 @@
 (watch src.templates "." "change" (compile-module file js.templates))
 
 (watch js.templates "." "change" (compile-html file html.files))
+
+(require! (lit server) "./server")

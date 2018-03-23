@@ -117,7 +117,7 @@ var move = (function move$() {
     }));
 });
 var tick = (function tick$() {
-    /* tick eval.sibilant:66:0 */
+    /* tick eval.sibilant:65:0 */
 
     return dl.nextFrame().then(((nil) => {
 
@@ -135,7 +135,7 @@ var tick = (function tick$() {
 state.print();
 var field = null;
 window.onload = (function window$onload$() {
-    /* window.onload eval.sibilant:84:0 */
+    /* window.onload eval.sibilant:83:0 */
 
     var white = rgb(255, 255, 255);
     var canvas = document.createElement("canvas");

@@ -48,8 +48,7 @@
 
 
 (var coords (coordinate-grid    H W))
-(var sun-pos (lit (x 0)
-                  (y 0)))
+(var sun-pos (lit (x 0) (y 0)))
 
 (var p (dl.variable (point-tensor [0 0])))
 

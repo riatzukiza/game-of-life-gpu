@@ -26,11 +26,14 @@
 (def rgb (r g b ) (lit  r g b ))
 
 (var W window.inner-width H window.inner-height)
+(var tau (* Math.PI 2))
 
 (def *point ([x y] [i j])
-     [ (Math.cos (*  (/ x i) ))
-       (Math.cos (*  (/ y j) ))]
-     )
+     [ (+  (Math.cos (*   (/ x i) tau))
+           (Math.sin (*   (/ x i) tau)))
+       (+  (Math.sin (*   (/ y j) tau))
+           (Math.cos (*   (/ y j) tau)))])
+
 (def-tidy coordinate-grid (i j)
   (var r [])
 
@@ -42,11 +45,11 @@
   (.reshape (.tensor dl r) [1 i j 2]))
 
 (def-tidy point-tensor ([x y] [i j]  )
-  (.reshape dl (.neg (.abs (.tensor dl (*point [x y] [i j]))))
+  (.reshape dl (.tensor dl (*point [x y] [i j]))
             [1 1 1 2]))
 
 (def-tidy distance-matrix (p plane)
-  (.norm  (.cos (.add plane p )) "euclidean" 3))
+  (.norm  (.add plane p ) "euclidean" 3))
 
 
 (def-tidy inverse-square-matrix (I c p plane)
@@ -54,9 +57,9 @@
 
 
 (var coords (coordinate-grid  H W))
-(var sun-pos (lit (x 0) (y 0)))
+(var sun-pos (lit (x (/  H 2)) (y (/  W 2) )))
 
-(var p (dl.variable (point-tensor [0 0] [ H W])))
+(var p (dl.variable (point-tensor [sun-pos.y sun-pos.x] [ H W])))
 
 
 (var I (.scalar dl 0.9) c (.scalar dl 1))
@@ -66,7 +69,9 @@
                          p
                          coords)))
 (def-tidy move ()
-  (assign sun-pos.x (+ sun-pos.x 1))
+  (assign sun-pos.y (+ sun-pos.y 1)
+          ;;sun-pos.x (+ sun-pos.x 1)
+          )
 
   (.assign p (point-tensor [sun-pos.x sun-pos.y ]
                            [ H W])))
@@ -74,13 +79,9 @@
      (pipe (dl.next-frame )
            (then-do
             (dl.tidy
-
              (-> (move)
                  (.assign state
-                          (inverse-square-matrix I c p coords)))) (.render field) (tick))
-
-
-           ))
+                          (inverse-square-matrix I c p coords)))) (.render field) (tick))))
 (.print state)
 (var field null)
 
