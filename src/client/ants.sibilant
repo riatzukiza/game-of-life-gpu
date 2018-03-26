@@ -1,0 +1,67 @@
+
+(var dim [ W H])
+
+(var coords (.grid Cartesian  dim))
+(var feeding-weights (dl.variable (field dim))
+     home-weights (dl.variable (field dim))
+     ants (dl.variable (field dim)))
+
+(var home (Cartesian.point [ (/ W 4) (/ H 4)] dim)
+     goal (Cartesian.point [ (/ W 2) (/ H 2)] dim)
+     )
+
+(def kernel-tensor ([w h] filter )
+     (pipe (dl.tensor2d filter)
+           (dl.reshape [w h 1 1])))
+
+(def randomize-kernel (kernel)
+     (pipe (dl.random-uniform kernel.shape)
+           (.mul  kernel)))
+
+(var avg-kern (kernel-tensor
+               [3 3]
+               [[1 1 1]
+                [1 0 1]
+                [1 1 1]]))
+
+(def deposit () )
+(def decay ())
+(var one (.scalar dl 1))
+(def move ()
+     (var neighbors (dl.conv2d ants (randomize-kernel avg-kern) "same"))
+     (var max )
+     (dl.logical-and (dl.equal ants one )
+                     )
+     )
+(def spawn ([x y])
+     (.assign ants (pipe (.buffer ants)
+                         (.set  1 x y 1
+                                1)
+                         .to-tensor)))
+
+(def tick ()
+     (pipe (dl.next-frame )
+           (then-do
+            (dl.tidy (-> (move) (.assign state)))
+            (.render field) (tick))))
+
+(var field null)
+
+(var white (rgb 255 255 255)
+     black (rgb 0 0 0)
+     red (rgb 255 0 0)
+     green (rgb 0 255 0)
+     blue (rgb 0 0 255))
+
+(def window.onload ()
+
+     (var canvas (.create-element document 'canvas))
+     (.append-child document.body canvas)
+
+     (set canvas 'height  H 'width W)
+
+     (assign ant-field (colored canvas white dim state))
+     (tick)
+     (set document.body.style
+          'margin 0
+          'padding 0))

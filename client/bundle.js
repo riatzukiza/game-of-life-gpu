@@ -1,6 +1,9634 @@
 require=(function(){function e(t,n,r){function s(o,u){if(!n[o]){if(!t[o]){var a=typeof require=="function"&&require;if(!u&&a)return a(o,!0);if(i)return i(o,!0);var f=new Error("Cannot find module '"+o+"'");throw f.code="MODULE_NOT_FOUND",f}var l=n[o]={exports:{}};t[o][0].call(l.exports,function(e){var n=t[o][1][e];return s(n?n:e)},l,l.exports,e,t,n,r)}return n[o].exports}var i=typeof require=="function"&&require;for(var o=0;o<r.length;o++)s(r[o]);return s}return e})()({1:[function(require,module,exports){
 
 },{}],2:[function(require,module,exports){
+const { isArrayBufferViewType } = require('../util');
+
+const $layout = Symbol('layout');
+const $type   = Symbol('type');
+
+class HandleArray extends Array
+{
+	constructor( type, length, buffer=(new ArrayBuffer(type.size*(length|0))), offset=0 )
+	{
+		super( length );
+		this.buffer = buffer;
+		this.data   = new DataView( this.buffer );
+		this.type   = type;
+		this.offset = offset;
+
+		let size = type.prototype[$type].size;
+
+		for( let i=0; i<length; i++ ) this[i] = new (type)( buffer, (offset+i*size)|0 );
+	}
+	each( f )
+	{
+		this.forEach( f );
+	}
+}
+/****************************************************************************************
+	Type base class
+****************************************************************************************/
+
+const _ViewTypes_ = new Map();
+
+class Type
+{
+	static get( o, x )
+	{
+		if( o.isPrimitive ) return o;
+		if( o.isView      ) return o;
+		if( o.isHandle    ) return o.prototype[$type];
+
+		if( !!(x = _ViewTypes_.get(o)) ) return x;
+	}
+	static is(x)
+	{
+		return Type.prototype.isPrototypeOf(x);
+	}
+	constructor( size=0, length=0, uniform=true )
+	{
+		this.size    = size;
+		this.length  = length;
+		this.uniform = uniform;
+	}
+	get isType() { return true; }
+}
+/****************************************************************************************
+	Primitive corresponds to a single native value of a specific type : int, int8,
+	... uint, ... float, ..., etc.
+****************************************************************************************/
+class Primitive extends Type
+{
+	static is( o ) { return !!(o.isPrimitive); }
+	constructor( array_type, getter, setter )
+	{
+		super( array_type.BYTES_PER_ELEMENT, 1, true );
+		this.array  = array_type;
+		this.setter = setter;
+		this.getter = getter;
+	}
+	get isPrimitive() { return true; }
+	get( data, offset )
+	{
+		return this.getter.call( data, offset, true );
+	}
+	set( data, offset, value )
+	{
+		this.setter.call( data, offset, value, true );
+	}
+}
+/****************************************************************************************
+	ViewType corresponds to multiple native values of a single native type stored
+	continuously: an array.
+
+	param 'type' should be class extending a TypedArray type which privide the
+	BYTE_LENGTH and ELEMENTS properties
+****************************************************************************************/
+class ViewType extends Type
+{
+	static is( x )
+	{
+		return isArrayBufferViewType(x);
+	}
+	constructor( type )
+	{
+		super( type.BYTE_LENGTH, type.ELEMENTS, true );
+		this.type = type;
+		_ViewTypes_.set( type, this );
+	}
+	get( data, offset )
+	{
+		return new (this.type)( data, offset, this.length );
+	}
+	get isView() { return true; }
+}
+/****************************************************************************************
+	Composite corresponds to multiple native values of multiple native type stored
+	continuously: a struct.
+****************************************************************************************/
+function addDescriptor( handle, field )
+{
+	if( !!field.isPrimitive )
+	{
+		Object.defineProperty( handle.prototype, field.key,
+		{
+				enumerable : true,
+				get : function()
+				{
+					return field.type.get( this, field.offset );
+				},
+				set : function( v )
+				{
+					field.type.set( this, field.offset, v );
+				}
+			}
+		);
+	}
+	if( !!field.isView )
+	{
+		Object.defineProperty( handle.prototype, field.key,
+			{
+				enumerable   : true,
+				configurable : false,
+				writable     : true,
+				value        : null
+			}
+		);
+	}
+	if( !!field.isComposite )
+	{
+		Object.defineProperty( handle.prototype, field.key,
+			{
+				enumerable   : true,
+				configurable : false,
+				writable     : true,
+				value        : null
+			}
+		);
+	}
+}
+class Composite extends Type
+{
+	constructor( members, ret=true )
+	{
+		super();
+		this.layout = {};
+		this.handle = Handle.extend( this );
+		this.keys   = Object.keys(members);
+		this.uniType= null;
+		let type, field, prev=Type.get(members[this.keys[0]]);
+
+		for( let key of this.keys )
+		{
+			type             = Type.get(members[key]);
+			field            = new Field( key, type, this.size );
+			this.layout[key] = field;
+			this.size        = (this.size   + type.size  )|0;
+			this.length      = (this.length + type.length)|0;
+			this.uniform     = this.uniform ? (prev === type) : false;
+
+			addDescriptor( this.handle, field );
+			prev = type;
+		}
+		if( this.uniform ) this.uniType = prev;
+		if( ret ) return this.handle;
+	}
+	get isComposite() { return true; }
+}
+/****************************************************************************************
+	Field store Composite instance layout information
+****************************************************************************************/
+class Field
+{
+	constructor( key, type, offset  )
+	{
+		this.key    = key;
+		this.type   = type;
+		this.offset = offset;
+	}
+	get isField() { return true;            }
+	get size()    { return this.type.size;  }
+	get length()  { return this.type.length }
+
+	get isPrimitive() { return !!this.type.isPrimitive; }
+	get isComposite() { return !!this.type.isComposite; }
+	get isView()      { return !!this.type.isView;      }
+	get isUniform()   { return !!this.type.uniform;     }
+}
+/****************************************************************************************
+	Handle is a base class for instances of a Composite
+****************************************************************************************/
+class Handle extends DataView
+{
+	static is()
+	{
+		return Handle.prototype.isPrototypeOf(x);
+	}
+	constructor( data, offset, length )
+	{
+		super( data, offset, length );
+	}
+	static extend( type )
+	{
+		let handle_t = class extends Handle
+		{
+			static is( subject )
+			{
+				return (subject instanceof handle_t) || handle_t.prototype.isPrototypeOf(subject);
+			}
+			constructor( data=(new ArrayBuffer(type.size)), offset=0 )
+			{
+				super( data, offset, type.size );
+				Handle.init( type, this );
+			}
+		};
+		Object.defineProperty( handle_t.prototype, $type, {value: type} );
+
+		return handle_t;
+	}
+	static Array( buffer_or_length, offset=0, length, buffer )
+	{
+		if( buffer_or_length instanceof ArrayBuffer )
+		{
+			buffer = buffer_or_length;
+			length = length || ((buffer.length - offset) / this.prototype[$type].size)|0;
+		}
+		else
+		{
+			length = buffer_or_length|0;
+			buffer = new ArrayBuffer( length* this.prototype[$type].size );
+		}
+		return new HandleArray( this, length, buffer, offset );
+	}
+
+	static get typeinfo()
+	{
+		return this.prototype[$type];
+	}
+	static get layout()
+	{
+		return this.prototype[$type].layout;
+	}
+	static get size()
+	{
+		return this.prototype[$type].size;
+	}
+	static get length()
+	{
+		return this.prototype[$type].length;
+	}
+	static get uniform()
+	{
+		return this.prototype[$type].uniform;
+	}
+	static get isHandle()
+	{
+		return true;
+	}
+	static get ELEMENTS()
+	{
+		return this.prototype[$type].length;
+	}
+	static get BYTE_LENGTH()
+	{
+		return this.prototype[$type].size;
+	}
+
+	toString()
+	{
+		let type   = this[$type];
+		let v;
+		let r = '{ ';
+		for( let key of type.keys )
+		{
+			v = ((this[key] * 100)|0) / 100;
+			if( type.isPrimitive ) { r+= `${key}: ${v}, `; continue; }
+			r+= `${key}: ${this[key].toString()}, `; continue;
+		}
+		r+= ' }';
+		return r;
+	}
+
+	static init( info, instance )
+	{
+		let buffer = instance.buffer;
+		let offset = instance.byteOffset;
+		let layout = info.layout;
+		let field;
+
+		for( let key of info.keys )
+		{
+			field = layout[key];
+			if( field.isView )
+			{
+				instance[key] = field.type.get( buffer, (offset + field.offset)|0 );
+				continue;
+			}
+			if( field.isComposite )
+			{
+				instance[key] = new (field.type.handle)( buffer, (offset + field.offset)|0, field.size );
+				continue;
+			}
+		}
+	}
+}
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+module.exports =
+{
+	Composite : Composite,
+	Handle    : Handle,
+	Primitive : Primitive,
+	Type      : Type,
+	View      : ViewType
+};
+},{"../util":28}],3:[function(require,module,exports){
+
+class Clock
+{
+	constructor( auto=true )
+	{
+		this.auto    = start;
+		this.first    = performance.now();
+		this.previous = 0.0;
+		this.elapsed  = 0.0;
+		this.running  = false;
+	}
+	start()
+	{
+		if( !this.running )
+		{
+			this.first    = performance.now();
+			this.previous = this.first;
+			this.elapsed  = 0.0;
+			this.running  = true;
+		}
+		return this;
+	}
+	restart()
+	{
+		return this.stop().start();
+	}
+	stop()
+	{
+		this.running = false;
+		return this;
+	}
+	get delta()
+	{
+		let next = 0.0, result = 0.0;
+
+		if( this.start && !this.running ) this.start();
+		if( this.running )
+		{
+			next          = performance.now();
+			this.elapsed += (result = next - this.previous);
+			this.previous = next;
+		}
+		return result;
+	}
+}
+},{}],4:[function(require,module,exports){
+class Emitter
+{
+	constructor()
+	{
+		this.listeners = new Map();
+	}
+	on( key, callback, entry )
+	{
+		if( !( entry = this.listeners.get( key ) ) )
+		{
+			this.listeners.set( key, (entry = new Array()) );
+		}
+		if( entry.indexOf( callback ) === -1 )
+		{
+			entry.push( callback );
+		}
+		return this;
+	}
+	has( key, callback, entry )
+	{
+		return !!( entry = this.listeners.get( key ) ) && ( entry.indexOf( listener ) === -1 );
+	}
+	clear( key, callback, entry, index )
+	{
+		if( !!( entry = this.listeners.get( key ) ) && ( ( index = entry.indexOf( listener ) ) === -1 ) )
+		{
+			entry.splice( index, 1 );
+		}
+		return this;
+	}
+	emit( key, ...args )
+	{
+		let entry;
+		if( !!( entry = this.listeners.get( key ) ) )
+		{
+			let l = entry.length
+			for( let i = 0; i < l; i++ )
+			{
+				entry[ i ]( ...args );
+			}
+		}
+	}
+}
+////////////////////////////////////////////////////////////////////////////////
+function throttle( threshhold, fn, context=null )
+{
+	let last, deferTimer;
+	return function( ...args )
+	{
+		let now = +new Date();
+		if( last && (now < (last + threshhold)) )
+		{
+			clearTimeout( deferTimer );
+			deferTimer = setTimeout( ()=>{ last = now; fn.apply( context, args ); }, threshhold );
+		}
+		else
+		{
+			last = now;
+			fn.apply( context, args );
+		}
+	};
+}
+////////////////////////////////////////////////////////////////////////////////
+function debounce( delay, fn, context=null )
+{
+	let timer = null;
+	return function( ...args )
+	{
+		clearTimeout( timer );
+		timer = setTimeout( ()=>(fn.apply( context, args )), delay );
+	};
+}
+////////////////////////////////////////////////////////////////////////////////
+module.exports = {
+	Emitter,
+	throttle,
+	debounce
+};
+
+},{}],5:[function(require,module,exports){
+
+function parse_args( length, args )
+{
+	return args.length ? args : [length];
+}
+const pow     = Math.pow;
+const sqrt    = Math.sqrt;
+const abs     = Math.abs;
+const isArray = Array.isArray;
+const Cs      = (c      ) => (c / 255);
+const RGB     = (c=Cs(c)) => (c <= 0.03928)?(c / 12.92):(pow(((c + 0.055) / 1.055), 2.4));
+
+const BlendMode =
+{
+	multiply(c, other)
+	{
+        return c * other;
+    },
+    screen(c, other)
+	{
+        return c + other - c * other;
+    },
+    overlay(c=c*2, other, fn)
+	{
+        return (c <= 1) ? BlendMode.multiply(c, other) : BlendMode.screen(c - 1, other);
+    },
+    softlight(c, other)
+	{
+        let d = 1, e = c;
+        if( other > 0.5 )
+		{
+            e = 1;
+            d = (c > 0.25) ? sqrt(c) : (((16 * c - 12) * c + 4) * c);
+        }
+        return c - (1 - 2 * other) * e * (d - c);
+    },
+    hardlight(c, other)
+	{
+        return BlendMode.overlay(other, c);
+    },
+    difference(c, other)
+	{
+        return abs(c - other);
+    },
+    exclusion: function(c, other) {
+        return c + other - 2 * c * other;
+    },
+    average(c, other)
+	{
+        return (c + other) / 2;
+    },
+    negation(c, other)
+	{
+        return 1 - abs(c + other - 1);
+    }
+};
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+class RGBA extends Uint8Array
+{
+
+	static blend( a, b )
+	{
+		return a.clone.mix(b);
+	}
+	/////////////////////////////////////////////////////////////////////////////////////
+	constructor( ...args )
+	{
+		super( ...(parse_args( 4, args )) );
+	}
+	/////////////////////////////////////////////////////////////////////////////////////
+	static get ELEMENTS()
+	{
+		return 4;
+	}
+	static get BYTE_LENGTH()
+	{
+		return 4 * Uint8Array.BYTES_PER_ELEMENT;
+	}
+	get isRGB()   { return true;           }
+	get isColor() { return true;           }
+	get r()       { return this[0];        }
+	get g()       { return this[1];        }
+	get b()       { return this[2];        }
+	get a()       { return this[3];        }
+	set r(v)      { this[0] = v   ;        }
+	set g(v)      { this[1] = v   ;        }
+	set b(v)      { this[2] = v   ;        }
+	set a(v)      { this[3] = v   ;        }
+	get clone()   { return new RGBA(this); }
+	get brightness()
+	{
+		return (this[0] * 299 + this[1] * 587 + this[2] * 114) / 1000;
+	}
+	get luminance()
+	{
+		return (0.2126 * RGB(this[0])) + (0.7152 * RGB(this[1])) + (0.0722 * RGB(this[2]));
+	}
+/*
+	get hsla()
+	{
+		let [r, g, b, a] = [Cs(this[0]),  Cs(this[1]),  Cs(this[2]),  Cs(this[3]) ];
+		let [max, min  ] = [Math.max(r, g, b), Math.min(r, g, b)];
+		let [h, s, l, d] = [0, 0, ((max + min) / 2), (max - min)];
+
+		if (max !== min)
+		{
+			s = (l > 0.5) ? (d / (2 - max - min)) : (d / (max + min));
+			switch(max)
+			{
+				case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+				case g: h = (b - r) / d + 2;               break;
+				case b: h = (r - g) / d + 4;               break;
+			}
+			h /= 6;
+		}
+		return new HLSA([h * 360, s, l, a]);
+	}
+*/
+	/////////////////////////////////////////////////////////////////////////////////////
+	set( r,g,b,a )
+	{
+		[this[0], this[1], this[2], this[3]] = [r,g,b,a];
+		return this;
+	}
+	blend( other, fn=BlendMode.average )
+	{
+		let [ r,  g,  b,  a] = [Cs(this[0]),  Cs(this[1]),  Cs(this[2]),  Cs(this[3])       ];
+		let [or, og, ob, oa] = [Cs(other[0]), Cs(other[1]), Cs(other[2]), Cs(other[3])      ];
+		let [rr, rb, rg, ra] = [fn(r,or),     fn(r,or),     fn(r,or),     (a + oa * (1 - a))];
+		if( ra )
+		{
+			rr = (oa * or + a * (r - oa * (a + or - ra))) / ra;
+			rg = (oa * og + a * (g - oa * (a + og - ra))) / ra;
+			rb = (oa * ob + a * (b - oa * (a + ob - ra))) / ra;
+		}
+		[this[0],this[1],this[2],this[3]] = [rr, rb, rg, ra];
+		return this;
+	}
+	/////////////////////////////////////////////////////////////////////////////////////
+}
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/*
+class HSLA extends Float32Array
+{
+	/////////////////////////////////////////////////////////////////////////////////////
+	constructor( ...args )
+	{
+		super( ...(parse_args( 4, args )) );
+	}
+	/////////////////////////////////////////////////////////////////////////////////////
+	static get ELEMENTS()
+	{
+		return 4;
+	}
+	static get BYTE_LENGTH()
+	{
+		return 4 * Float32Array.BYTES_PER_ELEMENT;
+	}
+	get isHLS()   { return true;           }
+	get isColor() { return true;           }
+	get h()       { return this[0];        }
+	get l()       { return this[1];        }
+	get s()       { return this[2];        }
+	get a()       { return this[4];        }
+	get clone()   { return new HLSA(this); }
+
+}
+class sRGBA extends Float32Array
+{
+
+}
+class HSL extends Float32Array
+{
+
+}
+*/
+module.exports =
+{
+	RGBA,
+	BlendMode
+}
+},{}],6:[function(require,module,exports){
+/* Copyright (c) 2015, Brandon Jones, Colin MacKenzie IV.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE. */
+
+/**
+ * @class Common utilities
+ * @name glMatrix
+ */
+var glMatrix = {};
+
+// Configuration Constants
+glMatrix.EPSILON     = 0.000001;
+glMatrix.ARRAY_TYPE  = (typeof Float32Array !== 'undefined') ? Float32Array : Array;
+glMatrix.RANDOM      = Math.random;
+glMatrix.ENABLE_SIMD = true;
+
+// Capability detection
+glMatrix.SIMD_AVAILABLE = (glMatrix.ARRAY_TYPE === Float32Array) && (typeof SIMD != 'undefined');
+glMatrix.USE_SIMD       = glMatrix.ENABLE_SIMD && glMatrix.SIMD_AVAILABLE;
+
+/**
+ * Sets the type of array used when creating new vectors and matrices
+ *
+ * @param {Type} type Array type, such as Float32Array or Array
+ */
+glMatrix.setMatrixArrayType = function(type) {
+    glMatrix.ARRAY_TYPE = type;
+}
+
+var degree = Math.PI / 180;
+
+/**
+* Convert Degree To Radian
+*
+* @param {Number} a Angle in Degrees
+*/
+glMatrix.toRadian = function(a){
+     return a * degree;
+}
+
+/**
+ * Tests whether or not the arguments have approximately the same value, within an absolute
+ * or relative tolerance of glMatrix.EPSILON (an absolute tolerance is used for values less
+ * than or equal to 1.0, and a relative tolerance is used for larger values)
+ *
+ * @param {Number} a The first number to test.
+ * @param {Number} b The second number to test.
+ * @returns {Boolean} True if the numbers are approximately equal, false otherwise.
+ */
+glMatrix.equals = function(a, b) {
+	return Math.abs(a - b) <= glMatrix.EPSILON*Math.max(1.0, Math.abs(a), Math.abs(b));
+}
+
+module.exports = glMatrix;
+
+},{}],7:[function(require,module,exports){
+/**
+ * @fileoverview gl-matrix - High performance matrix and vector operations
+ * @author Brandon Jones
+ * @author Colin MacKenzie IV
+ * @version 2.3.2
+ */
+
+/* Copyright (c) 2015, Brandon Jones, Colin MacKenzie IV.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE. */
+// END HEADER
+
+exports.glMatrix = require("./common.js");
+exports.mat2     = require("./mat2.js");
+exports.mat2d    = require("./mat2d.js");
+exports.mat3     = require("./mat3.js");
+exports.mat4     = require("./mat4.js");
+exports.quat     = require("./quat.js");
+exports.vec2     = require("./vec2.js");
+exports.vec3     = require("./vec3.js");
+exports.vec4     = require("./vec4.js");
+},{"./common.js":6,"./mat2.js":8,"./mat2d.js":9,"./mat3.js":10,"./mat4.js":11,"./quat.js":12,"./vec2.js":13,"./vec3.js":14,"./vec4.js":15}],8:[function(require,module,exports){
+/* Copyright (c) 2015, Brandon Jones, Colin MacKenzie IV.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE. */
+
+var glMatrix = require("./common.js");
+
+/**
+ * @class 2x2 Matrix
+ * @name mat2
+ */
+var mat2 = {};
+
+/**
+ * Creates a new identity mat2
+ *
+ * @returns {mat2} a new 2x2 matrix
+ */
+mat2.create = function() {
+    var out = new glMatrix.ARRAY_TYPE(4);
+    out[0] = 1;
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = 1;
+    return out;
+};
+
+/**
+ * Creates a new mat2 initialized with values from an existing matrix
+ *
+ * @param {mat2} a matrix to clone
+ * @returns {mat2} a new 2x2 matrix
+ */
+mat2.clone = function(a) {
+    var out = new glMatrix.ARRAY_TYPE(4);
+    out[0] = a[0];
+    out[1] = a[1];
+    out[2] = a[2];
+    out[3] = a[3];
+    return out;
+};
+
+/**
+ * Copy the values from one mat2 to another
+ *
+ * @param {mat2} out the receiving matrix
+ * @param {mat2} a the source matrix
+ * @returns {mat2} out
+ */
+mat2.copy = function(out, a) {
+    out[0] = a[0];
+    out[1] = a[1];
+    out[2] = a[2];
+    out[3] = a[3];
+    return out;
+};
+
+/**
+ * Set a mat2 to the identity matrix
+ *
+ * @param {mat2} out the receiving matrix
+ * @returns {mat2} out
+ */
+mat2.identity = function(out) {
+    out[0] = 1;
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = 1;
+    return out;
+};
+
+/**
+ * Create a new mat2 with the given values
+ *
+ * @param {Number} m00 Component in column 0, row 0 position (index 0)
+ * @param {Number} m01 Component in column 0, row 1 position (index 1)
+ * @param {Number} m10 Component in column 1, row 0 position (index 2)
+ * @param {Number} m11 Component in column 1, row 1 position (index 3)
+ * @returns {mat2} out A new 2x2 matrix
+ */
+mat2.fromValues = function(m00, m01, m10, m11) {
+    var out = new glMatrix.ARRAY_TYPE(4);
+    out[0] = m00;
+    out[1] = m01;
+    out[2] = m10;
+    out[3] = m11;
+    return out;
+};
+
+/**
+ * Set the components of a mat2 to the given values
+ *
+ * @param {mat2} out the receiving matrix
+ * @param {Number} m00 Component in column 0, row 0 position (index 0)
+ * @param {Number} m01 Component in column 0, row 1 position (index 1)
+ * @param {Number} m10 Component in column 1, row 0 position (index 2)
+ * @param {Number} m11 Component in column 1, row 1 position (index 3)
+ * @returns {mat2} out
+ */
+mat2.set = function(out, m00, m01, m10, m11) {
+    out[0] = m00;
+    out[1] = m01;
+    out[2] = m10;
+    out[3] = m11;
+    return out;
+};
+
+
+/**
+ * Transpose the values of a mat2
+ *
+ * @param {mat2} out the receiving matrix
+ * @param {mat2} a the source matrix
+ * @returns {mat2} out
+ */
+mat2.transpose = function(out, a) {
+    // If we are transposing ourselves we can skip a few steps but have to cache some values
+    if (out === a) {
+        var a1 = a[1];
+        out[1] = a[2];
+        out[2] = a1;
+    } else {
+        out[0] = a[0];
+        out[1] = a[2];
+        out[2] = a[1];
+        out[3] = a[3];
+    }
+    
+    return out;
+};
+
+/**
+ * Inverts a mat2
+ *
+ * @param {mat2} out the receiving matrix
+ * @param {mat2} a the source matrix
+ * @returns {mat2} out
+ */
+mat2.invert = function(out, a) {
+    var a0 = a[0], a1 = a[1], a2 = a[2], a3 = a[3],
+
+        // Calculate the determinant
+        det = a0 * a3 - a2 * a1;
+
+    if (!det) {
+        return null;
+    }
+    det = 1.0 / det;
+    
+    out[0] =  a3 * det;
+    out[1] = -a1 * det;
+    out[2] = -a2 * det;
+    out[3] =  a0 * det;
+
+    return out;
+};
+
+/**
+ * Calculates the adjugate of a mat2
+ *
+ * @param {mat2} out the receiving matrix
+ * @param {mat2} a the source matrix
+ * @returns {mat2} out
+ */
+mat2.adjoint = function(out, a) {
+    // Caching this value is nessecary if out == a
+    var a0 = a[0];
+    out[0] =  a[3];
+    out[1] = -a[1];
+    out[2] = -a[2];
+    out[3] =  a0;
+
+    return out;
+};
+
+/**
+ * Calculates the determinant of a mat2
+ *
+ * @param {mat2} a the source matrix
+ * @returns {Number} determinant of a
+ */
+mat2.determinant = function (a) {
+    return a[0] * a[3] - a[2] * a[1];
+};
+
+/**
+ * Multiplies two mat2's
+ *
+ * @param {mat2} out the receiving matrix
+ * @param {mat2} a the first operand
+ * @param {mat2} b the second operand
+ * @returns {mat2} out
+ */
+mat2.multiply = function (out, a, b) {
+    var a0 = a[0], a1 = a[1], a2 = a[2], a3 = a[3];
+    var b0 = b[0], b1 = b[1], b2 = b[2], b3 = b[3];
+    out[0] = a0 * b0 + a2 * b1;
+    out[1] = a1 * b0 + a3 * b1;
+    out[2] = a0 * b2 + a2 * b3;
+    out[3] = a1 * b2 + a3 * b3;
+    return out;
+};
+
+/**
+ * Alias for {@link mat2.multiply}
+ * @function
+ */
+mat2.mul = mat2.multiply;
+
+/**
+ * Rotates a mat2 by the given angle
+ *
+ * @param {mat2} out the receiving matrix
+ * @param {mat2} a the matrix to rotate
+ * @param {Number} rad the angle to rotate the matrix by
+ * @returns {mat2} out
+ */
+mat2.rotate = function (out, a, rad) {
+    var a0 = a[0], a1 = a[1], a2 = a[2], a3 = a[3],
+        s = Math.sin(rad),
+        c = Math.cos(rad);
+    out[0] = a0 *  c + a2 * s;
+    out[1] = a1 *  c + a3 * s;
+    out[2] = a0 * -s + a2 * c;
+    out[3] = a1 * -s + a3 * c;
+    return out;
+};
+
+/**
+ * Scales the mat2 by the dimensions in the given vec2
+ *
+ * @param {mat2} out the receiving matrix
+ * @param {mat2} a the matrix to rotate
+ * @param {vec2} v the vec2 to scale the matrix by
+ * @returns {mat2} out
+ **/
+mat2.scale = function(out, a, v) {
+    var a0 = a[0], a1 = a[1], a2 = a[2], a3 = a[3],
+        v0 = v[0], v1 = v[1];
+    out[0] = a0 * v0;
+    out[1] = a1 * v0;
+    out[2] = a2 * v1;
+    out[3] = a3 * v1;
+    return out;
+};
+
+/**
+ * Creates a matrix from a given angle
+ * This is equivalent to (but much faster than):
+ *
+ *     mat2.identity(dest);
+ *     mat2.rotate(dest, dest, rad);
+ *
+ * @param {mat2} out mat2 receiving operation result
+ * @param {Number} rad the angle to rotate the matrix by
+ * @returns {mat2} out
+ */
+mat2.fromRotation = function(out, rad) {
+    var s = Math.sin(rad),
+        c = Math.cos(rad);
+    out[0] = c;
+    out[1] = s;
+    out[2] = -s;
+    out[3] = c;
+    return out;
+}
+
+/**
+ * Creates a matrix from a vector scaling
+ * This is equivalent to (but much faster than):
+ *
+ *     mat2.identity(dest);
+ *     mat2.scale(dest, dest, vec);
+ *
+ * @param {mat2} out mat2 receiving operation result
+ * @param {vec2} v Scaling vector
+ * @returns {mat2} out
+ */
+mat2.fromScaling = function(out, v) {
+    out[0] = v[0];
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = v[1];
+    return out;
+}
+
+/**
+ * Returns a string representation of a mat2
+ *
+ * @param {mat2} a matrix to represent as a string
+ * @returns {String} string representation of the matrix
+ */
+mat2.str = function (a) {
+    return 'mat2(' + a[0] + ', ' + a[1] + ', ' + a[2] + ', ' + a[3] + ')';
+};
+
+/**
+ * Returns Frobenius norm of a mat2
+ *
+ * @param {mat2} a the matrix to calculate Frobenius norm of
+ * @returns {Number} Frobenius norm
+ */
+mat2.frob = function (a) {
+    return(Math.sqrt(Math.pow(a[0], 2) + Math.pow(a[1], 2) + Math.pow(a[2], 2) + Math.pow(a[3], 2)))
+};
+
+/**
+ * Returns L, D and U matrices (Lower triangular, Diagonal and Upper triangular) by factorizing the input matrix
+ * @param {mat2} L the lower triangular matrix 
+ * @param {mat2} D the diagonal matrix 
+ * @param {mat2} U the upper triangular matrix 
+ * @param {mat2} a the input matrix to factorize
+ */
+
+mat2.LDU = function (L, D, U, a) { 
+    L[2] = a[2]/a[0]; 
+    U[0] = a[0]; 
+    U[1] = a[1]; 
+    U[3] = a[3] - L[2] * U[1]; 
+    return [L, D, U];       
+}; 
+
+/**
+ * Adds two mat2's
+ *
+ * @param {mat2} out the receiving matrix
+ * @param {mat2} a the first operand
+ * @param {mat2} b the second operand
+ * @returns {mat2} out
+ */
+mat2.add = function(out, a, b) {
+    out[0] = a[0] + b[0];
+    out[1] = a[1] + b[1];
+    out[2] = a[2] + b[2];
+    out[3] = a[3] + b[3];
+    return out;
+};
+
+/**
+ * Subtracts matrix b from matrix a
+ *
+ * @param {mat2} out the receiving matrix
+ * @param {mat2} a the first operand
+ * @param {mat2} b the second operand
+ * @returns {mat2} out
+ */
+mat2.subtract = function(out, a, b) {
+    out[0] = a[0] - b[0];
+    out[1] = a[1] - b[1];
+    out[2] = a[2] - b[2];
+    out[3] = a[3] - b[3];
+    return out;
+};
+
+/**
+ * Alias for {@link mat2.subtract}
+ * @function
+ */
+mat2.sub = mat2.subtract;
+
+/**
+ * Returns whether or not the matrices have exactly the same elements in the same position (when compared with ===)
+ *
+ * @param {mat2} a The first matrix.
+ * @param {mat2} b The second matrix.
+ * @returns {Boolean} True if the matrices are equal, false otherwise.
+ */
+mat2.exactEquals = function (a, b) {
+    return a[0] === b[0] && a[1] === b[1] && a[2] === b[2] && a[3] === b[3];
+};
+
+/**
+ * Returns whether or not the matrices have approximately the same elements in the same position.
+ *
+ * @param {mat2} a The first matrix.
+ * @param {mat2} b The second matrix.
+ * @returns {Boolean} True if the matrices are equal, false otherwise.
+ */
+mat2.equals = function (a, b) {
+    var a0 = a[0], a1 = a[1], a2 = a[2], a3 = a[3];
+    var b0 = b[0], b1 = b[1], b2 = b[2], b3 = b[3];
+    return (Math.abs(a0 - b0) <= glMatrix.EPSILON*Math.max(1.0, Math.abs(a0), Math.abs(b0)) &&
+            Math.abs(a1 - b1) <= glMatrix.EPSILON*Math.max(1.0, Math.abs(a1), Math.abs(b1)) &&
+            Math.abs(a2 - b2) <= glMatrix.EPSILON*Math.max(1.0, Math.abs(a2), Math.abs(b2)) &&
+            Math.abs(a3 - b3) <= glMatrix.EPSILON*Math.max(1.0, Math.abs(a3), Math.abs(b3)));
+};
+
+/**
+ * Multiply each element of the matrix by a scalar.
+ *
+ * @param {mat2} out the receiving matrix
+ * @param {mat2} a the matrix to scale
+ * @param {Number} b amount to scale the matrix's elements by
+ * @returns {mat2} out
+ */
+mat2.multiplyScalar = function(out, a, b) {
+    out[0] = a[0] * b;
+    out[1] = a[1] * b;
+    out[2] = a[2] * b;
+    out[3] = a[3] * b;
+    return out;
+};
+
+/**
+ * Adds two mat2's after multiplying each element of the second operand by a scalar value.
+ *
+ * @param {mat2} out the receiving vector
+ * @param {mat2} a the first operand
+ * @param {mat2} b the second operand
+ * @param {Number} scale the amount to scale b's elements by before adding
+ * @returns {mat2} out
+ */
+mat2.multiplyScalarAndAdd = function(out, a, b, scale) {
+    out[0] = a[0] + (b[0] * scale);
+    out[1] = a[1] + (b[1] * scale);
+    out[2] = a[2] + (b[2] * scale);
+    out[3] = a[3] + (b[3] * scale);
+    return out;
+};
+
+module.exports = mat2;
+
+},{"./common.js":6}],9:[function(require,module,exports){
+/* Copyright (c) 2015, Brandon Jones, Colin MacKenzie IV.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE. */
+
+var glMatrix = require("./common.js");
+
+/**
+ * @class 2x3 Matrix
+ * @name mat2d
+ * 
+ * @description 
+ * A mat2d contains six elements defined as:
+ * <pre>
+ * [a, c, tx,
+ *  b, d, ty]
+ * </pre>
+ * This is a short form for the 3x3 matrix:
+ * <pre>
+ * [a, c, tx,
+ *  b, d, ty,
+ *  0, 0, 1]
+ * </pre>
+ * The last row is ignored so the array is shorter and operations are faster.
+ */
+var mat2d = {};
+
+/**
+ * Creates a new identity mat2d
+ *
+ * @returns {mat2d} a new 2x3 matrix
+ */
+mat2d.create = function() {
+    var out = new glMatrix.ARRAY_TYPE(6);
+    out[0] = 1;
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = 1;
+    out[4] = 0;
+    out[5] = 0;
+    return out;
+};
+
+/**
+ * Creates a new mat2d initialized with values from an existing matrix
+ *
+ * @param {mat2d} a matrix to clone
+ * @returns {mat2d} a new 2x3 matrix
+ */
+mat2d.clone = function(a) {
+    var out = new glMatrix.ARRAY_TYPE(6);
+    out[0] = a[0];
+    out[1] = a[1];
+    out[2] = a[2];
+    out[3] = a[3];
+    out[4] = a[4];
+    out[5] = a[5];
+    return out;
+};
+
+/**
+ * Copy the values from one mat2d to another
+ *
+ * @param {mat2d} out the receiving matrix
+ * @param {mat2d} a the source matrix
+ * @returns {mat2d} out
+ */
+mat2d.copy = function(out, a) {
+    out[0] = a[0];
+    out[1] = a[1];
+    out[2] = a[2];
+    out[3] = a[3];
+    out[4] = a[4];
+    out[5] = a[5];
+    return out;
+};
+
+/**
+ * Set a mat2d to the identity matrix
+ *
+ * @param {mat2d} out the receiving matrix
+ * @returns {mat2d} out
+ */
+mat2d.identity = function(out) {
+    out[0] = 1;
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = 1;
+    out[4] = 0;
+    out[5] = 0;
+    return out;
+};
+
+/**
+ * Create a new mat2d with the given values
+ *
+ * @param {Number} a Component A (index 0)
+ * @param {Number} b Component B (index 1)
+ * @param {Number} c Component C (index 2)
+ * @param {Number} d Component D (index 3)
+ * @param {Number} tx Component TX (index 4)
+ * @param {Number} ty Component TY (index 5)
+ * @returns {mat2d} A new mat2d
+ */
+mat2d.fromValues = function(a, b, c, d, tx, ty) {
+    var out = new glMatrix.ARRAY_TYPE(6);
+    out[0] = a;
+    out[1] = b;
+    out[2] = c;
+    out[3] = d;
+    out[4] = tx;
+    out[5] = ty;
+    return out;
+};
+
+/**
+ * Set the components of a mat2d to the given values
+ *
+ * @param {mat2d} out the receiving matrix
+ * @param {Number} a Component A (index 0)
+ * @param {Number} b Component B (index 1)
+ * @param {Number} c Component C (index 2)
+ * @param {Number} d Component D (index 3)
+ * @param {Number} tx Component TX (index 4)
+ * @param {Number} ty Component TY (index 5)
+ * @returns {mat2d} out
+ */
+mat2d.set = function(out, a, b, c, d, tx, ty) {
+    out[0] = a;
+    out[1] = b;
+    out[2] = c;
+    out[3] = d;
+    out[4] = tx;
+    out[5] = ty;
+    return out;
+};
+
+/**
+ * Inverts a mat2d
+ *
+ * @param {mat2d} out the receiving matrix
+ * @param {mat2d} a the source matrix
+ * @returns {mat2d} out
+ */
+mat2d.invert = function(out, a) {
+    var aa = a[0], ab = a[1], ac = a[2], ad = a[3],
+        atx = a[4], aty = a[5];
+
+    var det = aa * ad - ab * ac;
+    if(!det){
+        return null;
+    }
+    det = 1.0 / det;
+
+    out[0] = ad * det;
+    out[1] = -ab * det;
+    out[2] = -ac * det;
+    out[3] = aa * det;
+    out[4] = (ac * aty - ad * atx) * det;
+    out[5] = (ab * atx - aa * aty) * det;
+    return out;
+};
+
+/**
+ * Calculates the determinant of a mat2d
+ *
+ * @param {mat2d} a the source matrix
+ * @returns {Number} determinant of a
+ */
+mat2d.determinant = function (a) {
+    return a[0] * a[3] - a[1] * a[2];
+};
+
+/**
+ * Multiplies two mat2d's
+ *
+ * @param {mat2d} out the receiving matrix
+ * @param {mat2d} a the first operand
+ * @param {mat2d} b the second operand
+ * @returns {mat2d} out
+ */
+mat2d.multiply = function (out, a, b) {
+    var a0 = a[0], a1 = a[1], a2 = a[2], a3 = a[3], a4 = a[4], a5 = a[5],
+        b0 = b[0], b1 = b[1], b2 = b[2], b3 = b[3], b4 = b[4], b5 = b[5];
+    out[0] = a0 * b0 + a2 * b1;
+    out[1] = a1 * b0 + a3 * b1;
+    out[2] = a0 * b2 + a2 * b3;
+    out[3] = a1 * b2 + a3 * b3;
+    out[4] = a0 * b4 + a2 * b5 + a4;
+    out[5] = a1 * b4 + a3 * b5 + a5;
+    return out;
+};
+
+/**
+ * Alias for {@link mat2d.multiply}
+ * @function
+ */
+mat2d.mul = mat2d.multiply;
+
+/**
+ * Rotates a mat2d by the given angle
+ *
+ * @param {mat2d} out the receiving matrix
+ * @param {mat2d} a the matrix to rotate
+ * @param {Number} rad the angle to rotate the matrix by
+ * @returns {mat2d} out
+ */
+mat2d.rotate = function (out, a, rad) {
+    var a0 = a[0], a1 = a[1], a2 = a[2], a3 = a[3], a4 = a[4], a5 = a[5],
+        s = Math.sin(rad),
+        c = Math.cos(rad);
+    out[0] = a0 *  c + a2 * s;
+    out[1] = a1 *  c + a3 * s;
+    out[2] = a0 * -s + a2 * c;
+    out[3] = a1 * -s + a3 * c;
+    out[4] = a4;
+    out[5] = a5;
+    return out;
+};
+
+/**
+ * Scales the mat2d by the dimensions in the given vec2
+ *
+ * @param {mat2d} out the receiving matrix
+ * @param {mat2d} a the matrix to translate
+ * @param {vec2} v the vec2 to scale the matrix by
+ * @returns {mat2d} out
+ **/
+mat2d.scale = function(out, a, v) {
+    var a0 = a[0], a1 = a[1], a2 = a[2], a3 = a[3], a4 = a[4], a5 = a[5],
+        v0 = v[0], v1 = v[1];
+    out[0] = a0 * v0;
+    out[1] = a1 * v0;
+    out[2] = a2 * v1;
+    out[3] = a3 * v1;
+    out[4] = a4;
+    out[5] = a5;
+    return out;
+};
+
+/**
+ * Translates the mat2d by the dimensions in the given vec2
+ *
+ * @param {mat2d} out the receiving matrix
+ * @param {mat2d} a the matrix to translate
+ * @param {vec2} v the vec2 to translate the matrix by
+ * @returns {mat2d} out
+ **/
+mat2d.translate = function(out, a, v) {
+    var a0 = a[0], a1 = a[1], a2 = a[2], a3 = a[3], a4 = a[4], a5 = a[5],
+        v0 = v[0], v1 = v[1];
+    out[0] = a0;
+    out[1] = a1;
+    out[2] = a2;
+    out[3] = a3;
+    out[4] = a0 * v0 + a2 * v1 + a4;
+    out[5] = a1 * v0 + a3 * v1 + a5;
+    return out;
+};
+
+/**
+ * Creates a matrix from a given angle
+ * This is equivalent to (but much faster than):
+ *
+ *     mat2d.identity(dest);
+ *     mat2d.rotate(dest, dest, rad);
+ *
+ * @param {mat2d} out mat2d receiving operation result
+ * @param {Number} rad the angle to rotate the matrix by
+ * @returns {mat2d} out
+ */
+mat2d.fromRotation = function(out, rad) {
+    var s = Math.sin(rad), c = Math.cos(rad);
+    out[0] = c;
+    out[1] = s;
+    out[2] = -s;
+    out[3] = c;
+    out[4] = 0;
+    out[5] = 0;
+    return out;
+}
+
+/**
+ * Creates a matrix from a vector scaling
+ * This is equivalent to (but much faster than):
+ *
+ *     mat2d.identity(dest);
+ *     mat2d.scale(dest, dest, vec);
+ *
+ * @param {mat2d} out mat2d receiving operation result
+ * @param {vec2} v Scaling vector
+ * @returns {mat2d} out
+ */
+mat2d.fromScaling = function(out, v) {
+    out[0] = v[0];
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = v[1];
+    out[4] = 0;
+    out[5] = 0;
+    return out;
+}
+
+/**
+ * Creates a matrix from a vector translation
+ * This is equivalent to (but much faster than):
+ *
+ *     mat2d.identity(dest);
+ *     mat2d.translate(dest, dest, vec);
+ *
+ * @param {mat2d} out mat2d receiving operation result
+ * @param {vec2} v Translation vector
+ * @returns {mat2d} out
+ */
+mat2d.fromTranslation = function(out, v) {
+    out[0] = 1;
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = 1;
+    out[4] = v[0];
+    out[5] = v[1];
+    return out;
+}
+
+/**
+ * Returns a string representation of a mat2d
+ *
+ * @param {mat2d} a matrix to represent as a string
+ * @returns {String} string representation of the matrix
+ */
+mat2d.str = function (a) {
+    return 'mat2d(' + a[0] + ', ' + a[1] + ', ' + a[2] + ', ' + 
+                    a[3] + ', ' + a[4] + ', ' + a[5] + ')';
+};
+
+/**
+ * Returns Frobenius norm of a mat2d
+ *
+ * @param {mat2d} a the matrix to calculate Frobenius norm of
+ * @returns {Number} Frobenius norm
+ */
+mat2d.frob = function (a) { 
+    return(Math.sqrt(Math.pow(a[0], 2) + Math.pow(a[1], 2) + Math.pow(a[2], 2) + Math.pow(a[3], 2) + Math.pow(a[4], 2) + Math.pow(a[5], 2) + 1))
+}; 
+
+/**
+ * Adds two mat2d's
+ *
+ * @param {mat2d} out the receiving matrix
+ * @param {mat2d} a the first operand
+ * @param {mat2d} b the second operand
+ * @returns {mat2d} out
+ */
+mat2d.add = function(out, a, b) {
+    out[0] = a[0] + b[0];
+    out[1] = a[1] + b[1];
+    out[2] = a[2] + b[2];
+    out[3] = a[3] + b[3];
+    out[4] = a[4] + b[4];
+    out[5] = a[5] + b[5];
+    return out;
+};
+
+/**
+ * Subtracts matrix b from matrix a
+ *
+ * @param {mat2d} out the receiving matrix
+ * @param {mat2d} a the first operand
+ * @param {mat2d} b the second operand
+ * @returns {mat2d} out
+ */
+mat2d.subtract = function(out, a, b) {
+    out[0] = a[0] - b[0];
+    out[1] = a[1] - b[1];
+    out[2] = a[2] - b[2];
+    out[3] = a[3] - b[3];
+    out[4] = a[4] - b[4];
+    out[5] = a[5] - b[5];
+    return out;
+};
+
+/**
+ * Alias for {@link mat2d.subtract}
+ * @function
+ */
+mat2d.sub = mat2d.subtract;
+
+/**
+ * Multiply each element of the matrix by a scalar.
+ *
+ * @param {mat2d} out the receiving matrix
+ * @param {mat2d} a the matrix to scale
+ * @param {Number} b amount to scale the matrix's elements by
+ * @returns {mat2d} out
+ */
+mat2d.multiplyScalar = function(out, a, b) {
+    out[0] = a[0] * b;
+    out[1] = a[1] * b;
+    out[2] = a[2] * b;
+    out[3] = a[3] * b;
+    out[4] = a[4] * b;
+    out[5] = a[5] * b;
+    return out;
+};
+
+/**
+ * Adds two mat2d's after multiplying each element of the second operand by a scalar value.
+ *
+ * @param {mat2d} out the receiving vector
+ * @param {mat2d} a the first operand
+ * @param {mat2d} b the second operand
+ * @param {Number} scale the amount to scale b's elements by before adding
+ * @returns {mat2d} out
+ */
+mat2d.multiplyScalarAndAdd = function(out, a, b, scale) {
+    out[0] = a[0] + (b[0] * scale);
+    out[1] = a[1] + (b[1] * scale);
+    out[2] = a[2] + (b[2] * scale);
+    out[3] = a[3] + (b[3] * scale);
+    out[4] = a[4] + (b[4] * scale);
+    out[5] = a[5] + (b[5] * scale);
+    return out;
+};
+
+/**
+ * Returns whether or not the matrices have exactly the same elements in the same position (when compared with ===)
+ *
+ * @param {mat2d} a The first matrix.
+ * @param {mat2d} b The second matrix.
+ * @returns {Boolean} True if the matrices are equal, false otherwise.
+ */
+mat2d.exactEquals = function (a, b) {
+    return a[0] === b[0] && a[1] === b[1] && a[2] === b[2] && a[3] === b[3] && a[4] === b[4] && a[5] === b[5];
+};
+
+/**
+ * Returns whether or not the matrices have approximately the same elements in the same position.
+ *
+ * @param {mat2d} a The first matrix.
+ * @param {mat2d} b The second matrix.
+ * @returns {Boolean} True if the matrices are equal, false otherwise.
+ */
+mat2d.equals = function (a, b) {
+    var a0 = a[0], a1 = a[1], a2 = a[2], a3 = a[3], a4 = a[4], a5 = a[5];
+    var b0 = b[0], b1 = b[1], b2 = b[2], b3 = b[3], b4 = b[4], b5 = b[5];
+    return (Math.abs(a0 - b0) <= glMatrix.EPSILON*Math.max(1.0, Math.abs(a0), Math.abs(b0)) &&
+            Math.abs(a1 - b1) <= glMatrix.EPSILON*Math.max(1.0, Math.abs(a1), Math.abs(b1)) &&
+            Math.abs(a2 - b2) <= glMatrix.EPSILON*Math.max(1.0, Math.abs(a2), Math.abs(b2)) &&
+            Math.abs(a3 - b3) <= glMatrix.EPSILON*Math.max(1.0, Math.abs(a3), Math.abs(b3)) &&
+            Math.abs(a4 - b4) <= glMatrix.EPSILON*Math.max(1.0, Math.abs(a4), Math.abs(b4)) &&
+            Math.abs(a5 - b5) <= glMatrix.EPSILON*Math.max(1.0, Math.abs(a5), Math.abs(b5)));
+};
+
+module.exports = mat2d;
+
+},{"./common.js":6}],10:[function(require,module,exports){
+/* Copyright (c) 2015, Brandon Jones, Colin MacKenzie IV.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE. */
+
+var glMatrix = require("./common.js");
+
+/**
+ * @class 3x3 Matrix
+ * @name mat3
+ */
+var mat3 = {};
+
+/**
+ * Creates a new identity mat3
+ *
+ * @returns {mat3} a new 3x3 matrix
+ */
+mat3.create = function() {
+    var out = new glMatrix.ARRAY_TYPE(9);
+    out[0] = 1;
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = 0;
+    out[4] = 1;
+    out[5] = 0;
+    out[6] = 0;
+    out[7] = 0;
+    out[8] = 1;
+    return out;
+};
+
+/**
+ * Copies the upper-left 3x3 values into the given mat3.
+ *
+ * @param {mat3} out the receiving 3x3 matrix
+ * @param {mat4} a   the source 4x4 matrix
+ * @returns {mat3} out
+ */
+mat3.fromMat4 = function(out, a) {
+    out[0] = a[0];
+    out[1] = a[1];
+    out[2] = a[2];
+    out[3] = a[4];
+    out[4] = a[5];
+    out[5] = a[6];
+    out[6] = a[8];
+    out[7] = a[9];
+    out[8] = a[10];
+    return out;
+};
+
+/**
+ * Creates a new mat3 initialized with values from an existing matrix
+ *
+ * @param {mat3} a matrix to clone
+ * @returns {mat3} a new 3x3 matrix
+ */
+mat3.clone = function(a) {
+    var out = new glMatrix.ARRAY_TYPE(9);
+    out[0] = a[0];
+    out[1] = a[1];
+    out[2] = a[2];
+    out[3] = a[3];
+    out[4] = a[4];
+    out[5] = a[5];
+    out[6] = a[6];
+    out[7] = a[7];
+    out[8] = a[8];
+    return out;
+};
+
+/**
+ * Copy the values from one mat3 to another
+ *
+ * @param {mat3} out the receiving matrix
+ * @param {mat3} a the source matrix
+ * @returns {mat3} out
+ */
+mat3.copy = function(out, a) {
+    out[0] = a[0];
+    out[1] = a[1];
+    out[2] = a[2];
+    out[3] = a[3];
+    out[4] = a[4];
+    out[5] = a[5];
+    out[6] = a[6];
+    out[7] = a[7];
+    out[8] = a[8];
+    return out;
+};
+
+/**
+ * Create a new mat3 with the given values
+ *
+ * @param {Number} m00 Component in column 0, row 0 position (index 0)
+ * @param {Number} m01 Component in column 0, row 1 position (index 1)
+ * @param {Number} m02 Component in column 0, row 2 position (index 2)
+ * @param {Number} m10 Component in column 1, row 0 position (index 3)
+ * @param {Number} m11 Component in column 1, row 1 position (index 4)
+ * @param {Number} m12 Component in column 1, row 2 position (index 5)
+ * @param {Number} m20 Component in column 2, row 0 position (index 6)
+ * @param {Number} m21 Component in column 2, row 1 position (index 7)
+ * @param {Number} m22 Component in column 2, row 2 position (index 8)
+ * @returns {mat3} A new mat3
+ */
+mat3.fromValues = function(m00, m01, m02, m10, m11, m12, m20, m21, m22) {
+    var out = new glMatrix.ARRAY_TYPE(9);
+    out[0] = m00;
+    out[1] = m01;
+    out[2] = m02;
+    out[3] = m10;
+    out[4] = m11;
+    out[5] = m12;
+    out[6] = m20;
+    out[7] = m21;
+    out[8] = m22;
+    return out;
+};
+
+/**
+ * Set the components of a mat3 to the given values
+ *
+ * @param {mat3} out the receiving matrix
+ * @param {Number} m00 Component in column 0, row 0 position (index 0)
+ * @param {Number} m01 Component in column 0, row 1 position (index 1)
+ * @param {Number} m02 Component in column 0, row 2 position (index 2)
+ * @param {Number} m10 Component in column 1, row 0 position (index 3)
+ * @param {Number} m11 Component in column 1, row 1 position (index 4)
+ * @param {Number} m12 Component in column 1, row 2 position (index 5)
+ * @param {Number} m20 Component in column 2, row 0 position (index 6)
+ * @param {Number} m21 Component in column 2, row 1 position (index 7)
+ * @param {Number} m22 Component in column 2, row 2 position (index 8)
+ * @returns {mat3} out
+ */
+mat3.set = function(out, m00, m01, m02, m10, m11, m12, m20, m21, m22) {
+    out[0] = m00;
+    out[1] = m01;
+    out[2] = m02;
+    out[3] = m10;
+    out[4] = m11;
+    out[5] = m12;
+    out[6] = m20;
+    out[7] = m21;
+    out[8] = m22;
+    return out;
+};
+
+/**
+ * Set a mat3 to the identity matrix
+ *
+ * @param {mat3} out the receiving matrix
+ * @returns {mat3} out
+ */
+mat3.identity = function(out) {
+    out[0] = 1;
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = 0;
+    out[4] = 1;
+    out[5] = 0;
+    out[6] = 0;
+    out[7] = 0;
+    out[8] = 1;
+    return out;
+};
+
+/**
+ * Transpose the values of a mat3
+ *
+ * @param {mat3} out the receiving matrix
+ * @param {mat3} a the source matrix
+ * @returns {mat3} out
+ */
+mat3.transpose = function(out, a) {
+    // If we are transposing ourselves we can skip a few steps but have to cache some values
+    if (out === a) {
+        var a01 = a[1], a02 = a[2], a12 = a[5];
+        out[1] = a[3];
+        out[2] = a[6];
+        out[3] = a01;
+        out[5] = a[7];
+        out[6] = a02;
+        out[7] = a12;
+    } else {
+        out[0] = a[0];
+        out[1] = a[3];
+        out[2] = a[6];
+        out[3] = a[1];
+        out[4] = a[4];
+        out[5] = a[7];
+        out[6] = a[2];
+        out[7] = a[5];
+        out[8] = a[8];
+    }
+
+    return out;
+};
+
+/**
+ * Inverts a mat3
+ *
+ * @param {mat3} out the receiving matrix
+ * @param {mat3} a the source matrix
+ * @returns {mat3} out
+ */
+mat3.invert = function(out, a) {
+    var a00 = a[0], a01 = a[1], a02 = a[2],
+        a10 = a[3], a11 = a[4], a12 = a[5],
+        a20 = a[6], a21 = a[7], a22 = a[8],
+
+        b01 = a22 * a11 - a12 * a21,
+        b11 = -a22 * a10 + a12 * a20,
+        b21 = a21 * a10 - a11 * a20,
+
+        // Calculate the determinant
+        det = a00 * b01 + a01 * b11 + a02 * b21;
+
+    if (!det) {
+        return null;
+    }
+    det = 1.0 / det;
+
+    out[0] = b01 * det;
+    out[1] = (-a22 * a01 + a02 * a21) * det;
+    out[2] = (a12 * a01 - a02 * a11) * det;
+    out[3] = b11 * det;
+    out[4] = (a22 * a00 - a02 * a20) * det;
+    out[5] = (-a12 * a00 + a02 * a10) * det;
+    out[6] = b21 * det;
+    out[7] = (-a21 * a00 + a01 * a20) * det;
+    out[8] = (a11 * a00 - a01 * a10) * det;
+    return out;
+};
+
+/**
+ * Calculates the adjugate of a mat3
+ *
+ * @param {mat3} out the receiving matrix
+ * @param {mat3} a the source matrix
+ * @returns {mat3} out
+ */
+mat3.adjoint = function(out, a) {
+    var a00 = a[0], a01 = a[1], a02 = a[2],
+        a10 = a[3], a11 = a[4], a12 = a[5],
+        a20 = a[6], a21 = a[7], a22 = a[8];
+
+    out[0] = (a11 * a22 - a12 * a21);
+    out[1] = (a02 * a21 - a01 * a22);
+    out[2] = (a01 * a12 - a02 * a11);
+    out[3] = (a12 * a20 - a10 * a22);
+    out[4] = (a00 * a22 - a02 * a20);
+    out[5] = (a02 * a10 - a00 * a12);
+    out[6] = (a10 * a21 - a11 * a20);
+    out[7] = (a01 * a20 - a00 * a21);
+    out[8] = (a00 * a11 - a01 * a10);
+    return out;
+};
+
+/**
+ * Calculates the determinant of a mat3
+ *
+ * @param {mat3} a the source matrix
+ * @returns {Number} determinant of a
+ */
+mat3.determinant = function (a) {
+    var a00 = a[0], a01 = a[1], a02 = a[2],
+        a10 = a[3], a11 = a[4], a12 = a[5],
+        a20 = a[6], a21 = a[7], a22 = a[8];
+
+    return a00 * (a22 * a11 - a12 * a21) + a01 * (-a22 * a10 + a12 * a20) + a02 * (a21 * a10 - a11 * a20);
+};
+
+/**
+ * Multiplies two mat3's
+ *
+ * @param {mat3} out the receiving matrix
+ * @param {mat3} a the first operand
+ * @param {mat3} b the second operand
+ * @returns {mat3} out
+ */
+mat3.multiply = function (out, a, b) {
+    var a00 = a[0], a01 = a[1], a02 = a[2],
+        a10 = a[3], a11 = a[4], a12 = a[5],
+        a20 = a[6], a21 = a[7], a22 = a[8],
+
+        b00 = b[0], b01 = b[1], b02 = b[2],
+        b10 = b[3], b11 = b[4], b12 = b[5],
+        b20 = b[6], b21 = b[7], b22 = b[8];
+
+    out[0] = b00 * a00 + b01 * a10 + b02 * a20;
+    out[1] = b00 * a01 + b01 * a11 + b02 * a21;
+    out[2] = b00 * a02 + b01 * a12 + b02 * a22;
+
+    out[3] = b10 * a00 + b11 * a10 + b12 * a20;
+    out[4] = b10 * a01 + b11 * a11 + b12 * a21;
+    out[5] = b10 * a02 + b11 * a12 + b12 * a22;
+
+    out[6] = b20 * a00 + b21 * a10 + b22 * a20;
+    out[7] = b20 * a01 + b21 * a11 + b22 * a21;
+    out[8] = b20 * a02 + b21 * a12 + b22 * a22;
+    return out;
+};
+
+/**
+ * Alias for {@link mat3.multiply}
+ * @function
+ */
+mat3.mul = mat3.multiply;
+
+/**
+ * Translate a mat3 by the given vector
+ *
+ * @param {mat3} out the receiving matrix
+ * @param {mat3} a the matrix to translate
+ * @param {vec2} v vector to translate by
+ * @returns {mat3} out
+ */
+mat3.translate = function(out, a, v) {
+    var a00 = a[0], a01 = a[1], a02 = a[2],
+        a10 = a[3], a11 = a[4], a12 = a[5],
+        a20 = a[6], a21 = a[7], a22 = a[8],
+        x = v[0], y = v[1];
+
+    out[0] = a00;
+    out[1] = a01;
+    out[2] = a02;
+
+    out[3] = a10;
+    out[4] = a11;
+    out[5] = a12;
+
+    out[6] = x * a00 + y * a10 + a20;
+    out[7] = x * a01 + y * a11 + a21;
+    out[8] = x * a02 + y * a12 + a22;
+    return out;
+};
+
+/**
+ * Rotates a mat3 by the given angle
+ *
+ * @param {mat3} out the receiving matrix
+ * @param {mat3} a the matrix to rotate
+ * @param {Number} rad the angle to rotate the matrix by
+ * @returns {mat3} out
+ */
+mat3.rotate = function (out, a, rad) {
+    var a00 = a[0], a01 = a[1], a02 = a[2],
+        a10 = a[3], a11 = a[4], a12 = a[5],
+        a20 = a[6], a21 = a[7], a22 = a[8],
+
+        s = Math.sin(rad),
+        c = Math.cos(rad);
+
+    out[0] = c * a00 + s * a10;
+    out[1] = c * a01 + s * a11;
+    out[2] = c * a02 + s * a12;
+
+    out[3] = c * a10 - s * a00;
+    out[4] = c * a11 - s * a01;
+    out[5] = c * a12 - s * a02;
+
+    out[6] = a20;
+    out[7] = a21;
+    out[8] = a22;
+    return out;
+};
+
+/**
+ * Scales the mat3 by the dimensions in the given vec2
+ *
+ * @param {mat3} out the receiving matrix
+ * @param {mat3} a the matrix to rotate
+ * @param {vec2} v the vec2 to scale the matrix by
+ * @returns {mat3} out
+ **/
+mat3.scale = function(out, a, v) {
+    var x = v[0], y = v[1];
+
+    out[0] = x * a[0];
+    out[1] = x * a[1];
+    out[2] = x * a[2];
+
+    out[3] = y * a[3];
+    out[4] = y * a[4];
+    out[5] = y * a[5];
+
+    out[6] = a[6];
+    out[7] = a[7];
+    out[8] = a[8];
+    return out;
+};
+
+/**
+ * Creates a matrix from a vector translation
+ * This is equivalent to (but much faster than):
+ *
+ *     mat3.identity(dest);
+ *     mat3.translate(dest, dest, vec);
+ *
+ * @param {mat3} out mat3 receiving operation result
+ * @param {vec2} v Translation vector
+ * @returns {mat3} out
+ */
+mat3.fromTranslation = function(out, v) {
+    out[0] = 1;
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = 0;
+    out[4] = 1;
+    out[5] = 0;
+    out[6] = v[0];
+    out[7] = v[1];
+    out[8] = 1;
+    return out;
+}
+
+/**
+ * Creates a matrix from a given angle
+ * This is equivalent to (but much faster than):
+ *
+ *     mat3.identity(dest);
+ *     mat3.rotate(dest, dest, rad);
+ *
+ * @param {mat3} out mat3 receiving operation result
+ * @param {Number} rad the angle to rotate the matrix by
+ * @returns {mat3} out
+ */
+mat3.fromRotation = function(out, rad) {
+    var s = Math.sin(rad), c = Math.cos(rad);
+
+    out[0] = c;
+    out[1] = s;
+    out[2] = 0;
+
+    out[3] = -s;
+    out[4] = c;
+    out[5] = 0;
+
+    out[6] = 0;
+    out[7] = 0;
+    out[8] = 1;
+    return out;
+}
+
+/**
+ * Creates a matrix from a vector scaling
+ * This is equivalent to (but much faster than):
+ *
+ *     mat3.identity(dest);
+ *     mat3.scale(dest, dest, vec);
+ *
+ * @param {mat3} out mat3 receiving operation result
+ * @param {vec2} v Scaling vector
+ * @returns {mat3} out
+ */
+mat3.fromScaling = function(out, v) {
+    out[0] = v[0];
+    out[1] = 0;
+    out[2] = 0;
+
+    out[3] = 0;
+    out[4] = v[1];
+    out[5] = 0;
+
+    out[6] = 0;
+    out[7] = 0;
+    out[8] = 1;
+    return out;
+}
+
+/**
+ * Copies the values from a mat2d into a mat3
+ *
+ * @param {mat3} out the receiving matrix
+ * @param {mat2d} a the matrix to copy
+ * @returns {mat3} out
+ **/
+mat3.fromMat2d = function(out, a) {
+    out[0] = a[0];
+    out[1] = a[1];
+    out[2] = 0;
+
+    out[3] = a[2];
+    out[4] = a[3];
+    out[5] = 0;
+
+    out[6] = a[4];
+    out[7] = a[5];
+    out[8] = 1;
+    return out;
+};
+
+/**
+* Calculates a 3x3 matrix from the given quaternion
+*
+* @param {mat3} out mat3 receiving operation result
+* @param {quat} q Quaternion to create matrix from
+*
+* @returns {mat3} out
+*/
+mat3.fromQuat = function (out, q) {
+    var x = q[0], y = q[1], z = q[2], w = q[3],
+        x2 = x + x,
+        y2 = y + y,
+        z2 = z + z,
+
+        xx = x * x2,
+        yx = y * x2,
+        yy = y * y2,
+        zx = z * x2,
+        zy = z * y2,
+        zz = z * z2,
+        wx = w * x2,
+        wy = w * y2,
+        wz = w * z2;
+
+    out[0] = 1 - yy - zz;
+    out[3] = yx - wz;
+    out[6] = zx + wy;
+
+    out[1] = yx + wz;
+    out[4] = 1 - xx - zz;
+    out[7] = zy - wx;
+
+    out[2] = zx - wy;
+    out[5] = zy + wx;
+    out[8] = 1 - xx - yy;
+
+    return out;
+};
+
+/**
+* Calculates a 3x3 normal matrix (transpose inverse) from the 4x4 matrix
+*
+* @param {mat3} out mat3 receiving operation result
+* @param {mat4} a Mat4 to derive the normal matrix from
+*
+* @returns {mat3} out
+*/
+mat3.normalFromMat4 = function (out, a) {
+    var a00 = a[0], a01 = a[1], a02 = a[2], a03 = a[3],
+        a10 = a[4], a11 = a[5], a12 = a[6], a13 = a[7],
+        a20 = a[8], a21 = a[9], a22 = a[10], a23 = a[11],
+        a30 = a[12], a31 = a[13], a32 = a[14], a33 = a[15],
+
+        b00 = a00 * a11 - a01 * a10,
+        b01 = a00 * a12 - a02 * a10,
+        b02 = a00 * a13 - a03 * a10,
+        b03 = a01 * a12 - a02 * a11,
+        b04 = a01 * a13 - a03 * a11,
+        b05 = a02 * a13 - a03 * a12,
+        b06 = a20 * a31 - a21 * a30,
+        b07 = a20 * a32 - a22 * a30,
+        b08 = a20 * a33 - a23 * a30,
+        b09 = a21 * a32 - a22 * a31,
+        b10 = a21 * a33 - a23 * a31,
+        b11 = a22 * a33 - a23 * a32,
+
+        // Calculate the determinant
+        det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
+
+    if (!det) {
+        return null;
+    }
+    det = 1.0 / det;
+
+    out[0] = (a11 * b11 - a12 * b10 + a13 * b09) * det;
+    out[1] = (a12 * b08 - a10 * b11 - a13 * b07) * det;
+    out[2] = (a10 * b10 - a11 * b08 + a13 * b06) * det;
+
+    out[3] = (a02 * b10 - a01 * b11 - a03 * b09) * det;
+    out[4] = (a00 * b11 - a02 * b08 + a03 * b07) * det;
+    out[5] = (a01 * b08 - a00 * b10 - a03 * b06) * det;
+
+    out[6] = (a31 * b05 - a32 * b04 + a33 * b03) * det;
+    out[7] = (a32 * b02 - a30 * b05 - a33 * b01) * det;
+    out[8] = (a30 * b04 - a31 * b02 + a33 * b00) * det;
+
+    return out;
+};
+
+/**
+ * Returns a string representation of a mat3
+ *
+ * @param {mat3} a matrix to represent as a string
+ * @returns {String} string representation of the matrix
+ */
+mat3.str = function (a) {
+    return 'mat3(' + a[0] + ', ' + a[1] + ', ' + a[2] + ', ' +
+                    a[3] + ', ' + a[4] + ', ' + a[5] + ', ' +
+                    a[6] + ', ' + a[7] + ', ' + a[8] + ')';
+};
+
+/**
+ * Returns Frobenius norm of a mat3
+ *
+ * @param {mat3} a the matrix to calculate Frobenius norm of
+ * @returns {Number} Frobenius norm
+ */
+mat3.frob = function (a) {
+    return(Math.sqrt(Math.pow(a[0], 2) + Math.pow(a[1], 2) + Math.pow(a[2], 2) + Math.pow(a[3], 2) + Math.pow(a[4], 2) + Math.pow(a[5], 2) + Math.pow(a[6], 2) + Math.pow(a[7], 2) + Math.pow(a[8], 2)))
+};
+
+/**
+ * Adds two mat3's
+ *
+ * @param {mat3} out the receiving matrix
+ * @param {mat3} a the first operand
+ * @param {mat3} b the second operand
+ * @returns {mat3} out
+ */
+mat3.add = function(out, a, b) {
+    out[0] = a[0] + b[0];
+    out[1] = a[1] + b[1];
+    out[2] = a[2] + b[2];
+    out[3] = a[3] + b[3];
+    out[4] = a[4] + b[4];
+    out[5] = a[5] + b[5];
+    out[6] = a[6] + b[6];
+    out[7] = a[7] + b[7];
+    out[8] = a[8] + b[8];
+    return out;
+};
+
+/**
+ * Subtracts matrix b from matrix a
+ *
+ * @param {mat3} out the receiving matrix
+ * @param {mat3} a the first operand
+ * @param {mat3} b the second operand
+ * @returns {mat3} out
+ */
+mat3.subtract = function(out, a, b) {
+    out[0] = a[0] - b[0];
+    out[1] = a[1] - b[1];
+    out[2] = a[2] - b[2];
+    out[3] = a[3] - b[3];
+    out[4] = a[4] - b[4];
+    out[5] = a[5] - b[5];
+    out[6] = a[6] - b[6];
+    out[7] = a[7] - b[7];
+    out[8] = a[8] - b[8];
+    return out;
+};
+
+/**
+ * Alias for {@link mat3.subtract}
+ * @function
+ */
+mat3.sub = mat3.subtract;
+
+/**
+ * Multiply each element of the matrix by a scalar.
+ *
+ * @param {mat3} out the receiving matrix
+ * @param {mat3} a the matrix to scale
+ * @param {Number} b amount to scale the matrix's elements by
+ * @returns {mat3} out
+ */
+mat3.multiplyScalar = function(out, a, b) {
+    out[0] = a[0] * b;
+    out[1] = a[1] * b;
+    out[2] = a[2] * b;
+    out[3] = a[3] * b;
+    out[4] = a[4] * b;
+    out[5] = a[5] * b;
+    out[6] = a[6] * b;
+    out[7] = a[7] * b;
+    out[8] = a[8] * b;
+    return out;
+};
+
+/**
+ * Adds two mat3's after multiplying each element of the second operand by a scalar value.
+ *
+ * @param {mat3} out the receiving vector
+ * @param {mat3} a the first operand
+ * @param {mat3} b the second operand
+ * @param {Number} scale the amount to scale b's elements by before adding
+ * @returns {mat3} out
+ */
+mat3.multiplyScalarAndAdd = function(out, a, b, scale) {
+    out[0] = a[0] + (b[0] * scale);
+    out[1] = a[1] + (b[1] * scale);
+    out[2] = a[2] + (b[2] * scale);
+    out[3] = a[3] + (b[3] * scale);
+    out[4] = a[4] + (b[4] * scale);
+    out[5] = a[5] + (b[5] * scale);
+    out[6] = a[6] + (b[6] * scale);
+    out[7] = a[7] + (b[7] * scale);
+    out[8] = a[8] + (b[8] * scale);
+    return out;
+};
+
+/**
+ * Returns whether or not the matrices have exactly the same elements in the same position (when compared with ===)
+ *
+ * @param {mat3} a The first matrix.
+ * @param {mat3} b The second matrix.
+ * @returns {Boolean} True if the matrices are equal, false otherwise.
+ */
+mat3.exactEquals = function (a, b) {
+    return a[0] === b[0] && a[1] === b[1] && a[2] === b[2] &&
+           a[3] === b[3] && a[4] === b[4] && a[5] === b[5] &&
+           a[6] === b[6] && a[7] === b[7] && a[8] === b[8];
+};
+
+/**
+ * Returns whether or not the matrices have approximately the same elements in the same position.
+ *
+ * @param {mat3} a The first matrix.
+ * @param {mat3} b The second matrix.
+ * @returns {Boolean} True if the matrices are equal, false otherwise.
+ */
+mat3.equals = function (a, b) {
+    var a0 = a[0], a1 = a[1], a2 = a[2], a3 = a[3], a4 = a[4], a5 = a[5], a6 = a[6], a7 = a[7], a8 = a[8];
+    var b0 = b[0], b1 = b[1], b2 = b[2], b3 = b[3], b4 = b[4], b5 = b[5], b6 = b[6], b7 = b[7], b8 = b[8];
+    return (Math.abs(a0 - b0) <= glMatrix.EPSILON*Math.max(1.0, Math.abs(a0), Math.abs(b0)) &&
+            Math.abs(a1 - b1) <= glMatrix.EPSILON*Math.max(1.0, Math.abs(a1), Math.abs(b1)) &&
+            Math.abs(a2 - b2) <= glMatrix.EPSILON*Math.max(1.0, Math.abs(a2), Math.abs(b2)) &&
+            Math.abs(a3 - b3) <= glMatrix.EPSILON*Math.max(1.0, Math.abs(a3), Math.abs(b3)) &&
+            Math.abs(a4 - b4) <= glMatrix.EPSILON*Math.max(1.0, Math.abs(a4), Math.abs(b4)) &&
+            Math.abs(a5 - b5) <= glMatrix.EPSILON*Math.max(1.0, Math.abs(a5), Math.abs(b5)) &&
+            Math.abs(a6 - b6) <= glMatrix.EPSILON*Math.max(1.0, Math.abs(a6), Math.abs(b6)) &&
+            Math.abs(a7 - b7) <= glMatrix.EPSILON*Math.max(1.0, Math.abs(a7), Math.abs(b7)) &&
+            Math.abs(a8 - b8) <= glMatrix.EPSILON*Math.max(1.0, Math.abs(a8), Math.abs(b8)));
+};
+
+
+module.exports = mat3;
+
+},{"./common.js":6}],11:[function(require,module,exports){
+/* Copyright (c) 2015, Brandon Jones, Colin MacKenzie IV.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE. */
+
+var glMatrix = require( "./common.js" );
+
+/**
+ * @class 4x4 Matrix
+ * @name mat4
+ */
+var mat4 = {
+	scalar:
+	{},
+	SIMD:
+	{}
+};
+
+/**
+ * Creates a new identity mat4
+ *
+ * @returns {mat4} a new 4x4 matrix
+ */
+mat4.create = function()
+{
+	var out = new glMatrix.ARRAY_TYPE( 16 );
+	out[ 0 ] = 1;
+	out[ 1 ] = 0;
+	out[ 2 ] = 0;
+	out[ 3 ] = 0;
+	out[ 4 ] = 0;
+	out[ 5 ] = 1;
+	out[ 6 ] = 0;
+	out[ 7 ] = 0;
+	out[ 8 ] = 0;
+	out[ 9 ] = 0;
+	out[ 10 ] = 1;
+	out[ 11 ] = 0;
+	out[ 12 ] = 0;
+	out[ 13 ] = 0;
+	out[ 14 ] = 0;
+	out[ 15 ] = 1;
+	return out;
+};
+
+/**
+ * Creates a new mat4 initialized with values from an existing matrix
+ *
+ * @param {mat4} a matrix to clone
+ * @returns {mat4} a new 4x4 matrix
+ */
+mat4.clone = function( a )
+{
+	var out = new glMatrix.ARRAY_TYPE( 16 );
+	out[ 0 ] = a[ 0 ];
+	out[ 1 ] = a[ 1 ];
+	out[ 2 ] = a[ 2 ];
+	out[ 3 ] = a[ 3 ];
+	out[ 4 ] = a[ 4 ];
+	out[ 5 ] = a[ 5 ];
+	out[ 6 ] = a[ 6 ];
+	out[ 7 ] = a[ 7 ];
+	out[ 8 ] = a[ 8 ];
+	out[ 9 ] = a[ 9 ];
+	out[ 10 ] = a[ 10 ];
+	out[ 11 ] = a[ 11 ];
+	out[ 12 ] = a[ 12 ];
+	out[ 13 ] = a[ 13 ];
+	out[ 14 ] = a[ 14 ];
+	out[ 15 ] = a[ 15 ];
+	return out;
+};
+
+/**
+ * Copy the values from one mat4 to another
+ *
+ * @param {mat4} out the receiving matrix
+ * @param {mat4} a the source matrix
+ * @returns {mat4} out
+ */
+mat4.copy = function( out, a )
+{
+	out[ 0 ] = a[ 0 ];
+	out[ 1 ] = a[ 1 ];
+	out[ 2 ] = a[ 2 ];
+	out[ 3 ] = a[ 3 ];
+	out[ 4 ] = a[ 4 ];
+	out[ 5 ] = a[ 5 ];
+	out[ 6 ] = a[ 6 ];
+	out[ 7 ] = a[ 7 ];
+	out[ 8 ] = a[ 8 ];
+	out[ 9 ] = a[ 9 ];
+	out[ 10 ] = a[ 10 ];
+	out[ 11 ] = a[ 11 ];
+	out[ 12 ] = a[ 12 ];
+	out[ 13 ] = a[ 13 ];
+	out[ 14 ] = a[ 14 ];
+	out[ 15 ] = a[ 15 ];
+	return out;
+};
+
+/**
+ * Create a new mat4 with the given values
+ *
+ * @param {Number} m00 Component in column 0, row 0 position (index 0)
+ * @param {Number} m01 Component in column 0, row 1 position (index 1)
+ * @param {Number} m02 Component in column 0, row 2 position (index 2)
+ * @param {Number} m03 Component in column 0, row 3 position (index 3)
+ * @param {Number} m10 Component in column 1, row 0 position (index 4)
+ * @param {Number} m11 Component in column 1, row 1 position (index 5)
+ * @param {Number} m12 Component in column 1, row 2 position (index 6)
+ * @param {Number} m13 Component in column 1, row 3 position (index 7)
+ * @param {Number} m20 Component in column 2, row 0 position (index 8)
+ * @param {Number} m21 Component in column 2, row 1 position (index 9)
+ * @param {Number} m22 Component in column 2, row 2 position (index 10)
+ * @param {Number} m23 Component in column 2, row 3 position (index 11)
+ * @param {Number} m30 Component in column 3, row 0 position (index 12)
+ * @param {Number} m31 Component in column 3, row 1 position (index 13)
+ * @param {Number} m32 Component in column 3, row 2 position (index 14)
+ * @param {Number} m33 Component in column 3, row 3 position (index 15)
+ * @returns {mat4} A new mat4
+ */
+mat4.fromValues = function( m00, m01, m02, m03, m10, m11, m12, m13, m20, m21, m22, m23, m30, m31, m32, m33 )
+{
+	var out = new glMatrix.ARRAY_TYPE( 16 );
+	out[ 0 ] = m00;
+	out[ 1 ] = m01;
+	out[ 2 ] = m02;
+	out[ 3 ] = m03;
+	out[ 4 ] = m10;
+	out[ 5 ] = m11;
+	out[ 6 ] = m12;
+	out[ 7 ] = m13;
+	out[ 8 ] = m20;
+	out[ 9 ] = m21;
+	out[ 10 ] = m22;
+	out[ 11 ] = m23;
+	out[ 12 ] = m30;
+	out[ 13 ] = m31;
+	out[ 14 ] = m32;
+	out[ 15 ] = m33;
+	return out;
+};
+
+/**
+ * Set the components of a mat4 to the given values
+ *
+ * @param {mat4} out the receiving matrix
+ * @param {Number} m00 Component in column 0, row 0 position (index 0)
+ * @param {Number} m01 Component in column 0, row 1 position (index 1)
+ * @param {Number} m02 Component in column 0, row 2 position (index 2)
+ * @param {Number} m03 Component in column 0, row 3 position (index 3)
+ * @param {Number} m10 Component in column 1, row 0 position (index 4)
+ * @param {Number} m11 Component in column 1, row 1 position (index 5)
+ * @param {Number} m12 Component in column 1, row 2 position (index 6)
+ * @param {Number} m13 Component in column 1, row 3 position (index 7)
+ * @param {Number} m20 Component in column 2, row 0 position (index 8)
+ * @param {Number} m21 Component in column 2, row 1 position (index 9)
+ * @param {Number} m22 Component in column 2, row 2 position (index 10)
+ * @param {Number} m23 Component in column 2, row 3 position (index 11)
+ * @param {Number} m30 Component in column 3, row 0 position (index 12)
+ * @param {Number} m31 Component in column 3, row 1 position (index 13)
+ * @param {Number} m32 Component in column 3, row 2 position (index 14)
+ * @param {Number} m33 Component in column 3, row 3 position (index 15)
+ * @returns {mat4} out
+ */
+mat4.set = function( out, m00, m01, m02, m03, m10, m11, m12, m13, m20, m21, m22, m23, m30, m31, m32, m33 )
+{
+	out[ 0 ] = m00;
+	out[ 1 ] = m01;
+	out[ 2 ] = m02;
+	out[ 3 ] = m03;
+	out[ 4 ] = m10;
+	out[ 5 ] = m11;
+	out[ 6 ] = m12;
+	out[ 7 ] = m13;
+	out[ 8 ] = m20;
+	out[ 9 ] = m21;
+	out[ 10 ] = m22;
+	out[ 11 ] = m23;
+	out[ 12 ] = m30;
+	out[ 13 ] = m31;
+	out[ 14 ] = m32;
+	out[ 15 ] = m33;
+	return out;
+};
+
+
+/**
+ * Set a mat4 to the identity matrix
+ *
+ * @param {mat4} out the receiving matrix
+ * @returns {mat4} out
+ */
+mat4.identity = function( out )
+{
+	out[ 0 ] = 1;
+	out[ 1 ] = 0;
+	out[ 2 ] = 0;
+	out[ 3 ] = 0;
+	out[ 4 ] = 0;
+	out[ 5 ] = 1;
+	out[ 6 ] = 0;
+	out[ 7 ] = 0;
+	out[ 8 ] = 0;
+	out[ 9 ] = 0;
+	out[ 10 ] = 1;
+	out[ 11 ] = 0;
+	out[ 12 ] = 0;
+	out[ 13 ] = 0;
+	out[ 14 ] = 0;
+	out[ 15 ] = 1;
+	return out;
+};
+
+/**
+ * Transpose the values of a mat4 not using SIMD
+ *
+ * @param {mat4} out the receiving matrix
+ * @param {mat4} a the source matrix
+ * @returns {mat4} out
+ */
+mat4.scalar.transpose = function( out, a )
+{
+	// If we are transposing ourselves we can skip a few steps but have to cache some values
+	if ( out === a )
+	{
+		var a01 = a[ 1 ],
+			a02 = a[ 2 ],
+			a03 = a[ 3 ],
+			a12 = a[ 6 ],
+			a13 = a[ 7 ],
+			a23 = a[ 11 ];
+
+		out[ 1 ] = a[ 4 ];
+		out[ 2 ] = a[ 8 ];
+		out[ 3 ] = a[ 12 ];
+		out[ 4 ] = a01;
+		out[ 6 ] = a[ 9 ];
+		out[ 7 ] = a[ 13 ];
+		out[ 8 ] = a02;
+		out[ 9 ] = a12;
+		out[ 11 ] = a[ 14 ];
+		out[ 12 ] = a03;
+		out[ 13 ] = a13;
+		out[ 14 ] = a23;
+	}
+	else
+	{
+		out[ 0 ] = a[ 0 ];
+		out[ 1 ] = a[ 4 ];
+		out[ 2 ] = a[ 8 ];
+		out[ 3 ] = a[ 12 ];
+		out[ 4 ] = a[ 1 ];
+		out[ 5 ] = a[ 5 ];
+		out[ 6 ] = a[ 9 ];
+		out[ 7 ] = a[ 13 ];
+		out[ 8 ] = a[ 2 ];
+		out[ 9 ] = a[ 6 ];
+		out[ 10 ] = a[ 10 ];
+		out[ 11 ] = a[ 14 ];
+		out[ 12 ] = a[ 3 ];
+		out[ 13 ] = a[ 7 ];
+		out[ 14 ] = a[ 11 ];
+		out[ 15 ] = a[ 15 ];
+	}
+
+	return out;
+};
+
+/**
+ * Transpose the values of a mat4 using SIMD
+ *
+ * @param {mat4} out the receiving matrix
+ * @param {mat4} a the source matrix
+ * @returns {mat4} out
+ */
+mat4.SIMD.transpose = function( out, a )
+{
+	var a0, a1, a2, a3,
+		tmp01, tmp23,
+		out0, out1, out2, out3;
+
+	a0 = SIMD.Float32x4.load( a, 0 );
+	a1 = SIMD.Float32x4.load( a, 4 );
+	a2 = SIMD.Float32x4.load( a, 8 );
+	a3 = SIMD.Float32x4.load( a, 12 );
+
+	tmp01 = SIMD.Float32x4.shuffle( a0, a1, 0, 1, 4, 5 );
+	tmp23 = SIMD.Float32x4.shuffle( a2, a3, 0, 1, 4, 5 );
+	out0 = SIMD.Float32x4.shuffle( tmp01, tmp23, 0, 2, 4, 6 );
+	out1 = SIMD.Float32x4.shuffle( tmp01, tmp23, 1, 3, 5, 7 );
+	SIMD.Float32x4.store( out, 0, out0 );
+	SIMD.Float32x4.store( out, 4, out1 );
+
+	tmp01 = SIMD.Float32x4.shuffle( a0, a1, 2, 3, 6, 7 );
+	tmp23 = SIMD.Float32x4.shuffle( a2, a3, 2, 3, 6, 7 );
+	out2 = SIMD.Float32x4.shuffle( tmp01, tmp23, 0, 2, 4, 6 );
+	out3 = SIMD.Float32x4.shuffle( tmp01, tmp23, 1, 3, 5, 7 );
+	SIMD.Float32x4.store( out, 8, out2 );
+	SIMD.Float32x4.store( out, 12, out3 );
+
+	return out;
+};
+
+/**
+ * Transpse a mat4 using SIMD if available and enabled
+ *
+ * @param {mat4} out the receiving matrix
+ * @param {mat4} a the source matrix
+ * @returns {mat4} out
+ */
+mat4.transpose = glMatrix.USE_SIMD ? mat4.SIMD.transpose : mat4.scalar.transpose;
+
+/**
+ * Inverts a mat4 not using SIMD
+ *
+ * @param {mat4} out the receiving matrix
+ * @param {mat4} a the source matrix
+ * @returns {mat4} out
+ */
+mat4.scalar.invert = function( out, a )
+{
+	var a00 = a[ 0 ],
+		a01 = a[ 1 ],
+		a02 = a[ 2 ],
+		a03 = a[ 3 ],
+		a10 = a[ 4 ],
+		a11 = a[ 5 ],
+		a12 = a[ 6 ],
+		a13 = a[ 7 ],
+		a20 = a[ 8 ],
+		a21 = a[ 9 ],
+		a22 = a[ 10 ],
+		a23 = a[ 11 ],
+		a30 = a[ 12 ],
+		a31 = a[ 13 ],
+		a32 = a[ 14 ],
+		a33 = a[ 15 ],
+
+		b00 = a00 * a11 - a01 * a10,
+		b01 = a00 * a12 - a02 * a10,
+		b02 = a00 * a13 - a03 * a10,
+		b03 = a01 * a12 - a02 * a11,
+		b04 = a01 * a13 - a03 * a11,
+		b05 = a02 * a13 - a03 * a12,
+		b06 = a20 * a31 - a21 * a30,
+		b07 = a20 * a32 - a22 * a30,
+		b08 = a20 * a33 - a23 * a30,
+		b09 = a21 * a32 - a22 * a31,
+		b10 = a21 * a33 - a23 * a31,
+		b11 = a22 * a33 - a23 * a32,
+
+		// Calculate the determinant
+		det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
+
+	if ( !det )
+	{
+		return null;
+	}
+	det = 1.0 / det;
+
+	out[ 0 ] = ( a11 * b11 - a12 * b10 + a13 * b09 ) * det;
+	out[ 1 ] = ( a02 * b10 - a01 * b11 - a03 * b09 ) * det;
+	out[ 2 ] = ( a31 * b05 - a32 * b04 + a33 * b03 ) * det;
+	out[ 3 ] = ( a22 * b04 - a21 * b05 - a23 * b03 ) * det;
+	out[ 4 ] = ( a12 * b08 - a10 * b11 - a13 * b07 ) * det;
+	out[ 5 ] = ( a00 * b11 - a02 * b08 + a03 * b07 ) * det;
+	out[ 6 ] = ( a32 * b02 - a30 * b05 - a33 * b01 ) * det;
+	out[ 7 ] = ( a20 * b05 - a22 * b02 + a23 * b01 ) * det;
+	out[ 8 ] = ( a10 * b10 - a11 * b08 + a13 * b06 ) * det;
+	out[ 9 ] = ( a01 * b08 - a00 * b10 - a03 * b06 ) * det;
+	out[ 10 ] = ( a30 * b04 - a31 * b02 + a33 * b00 ) * det;
+	out[ 11 ] = ( a21 * b02 - a20 * b04 - a23 * b00 ) * det;
+	out[ 12 ] = ( a11 * b07 - a10 * b09 - a12 * b06 ) * det;
+	out[ 13 ] = ( a00 * b09 - a01 * b07 + a02 * b06 ) * det;
+	out[ 14 ] = ( a31 * b01 - a30 * b03 - a32 * b00 ) * det;
+	out[ 15 ] = ( a20 * b03 - a21 * b01 + a22 * b00 ) * det;
+
+	return out;
+};
+
+/**
+ * Inverts a mat4 using SIMD
+ *
+ * @param {mat4} out the receiving matrix
+ * @param {mat4} a the source matrix
+ * @returns {mat4} out
+ */
+mat4.SIMD.invert = function( out, a )
+{
+	var row0, row1, row2, row3,
+		tmp1,
+		minor0, minor1, minor2, minor3,
+		det,
+		a0 = SIMD.Float32x4.load( a, 0 ),
+		a1 = SIMD.Float32x4.load( a, 4 ),
+		a2 = SIMD.Float32x4.load( a, 8 ),
+		a3 = SIMD.Float32x4.load( a, 12 );
+
+	// Compute matrix adjugate
+	tmp1   = SIMD.Float32x4.shuffle( a0, a1, 0, 1, 4, 5 );
+	row1   = SIMD.Float32x4.shuffle( a2, a3, 0, 1, 4, 5 );
+	row0   = SIMD.Float32x4.shuffle( tmp1, row1, 0, 2, 4, 6 );
+	row1   = SIMD.Float32x4.shuffle( row1, tmp1, 1, 3, 5, 7 );
+	tmp1   = SIMD.Float32x4.shuffle( a0, a1, 2, 3, 6, 7 );
+	row3   = SIMD.Float32x4.shuffle( a2, a3, 2, 3, 6, 7 );
+	row2   = SIMD.Float32x4.shuffle( tmp1, row3, 0, 2, 4, 6 );
+	row3   = SIMD.Float32x4.shuffle( row3, tmp1, 1, 3, 5, 7 );
+
+	tmp1   = SIMD.Float32x4.mul( row2, row3 );
+	tmp1   = SIMD.Float32x4.swizzle( tmp1, 1, 0, 3, 2 );
+	minor0 = SIMD.Float32x4.mul( row1, tmp1 );
+	minor1 = SIMD.Float32x4.mul( row0, tmp1 );
+	tmp1   = SIMD.Float32x4.swizzle( tmp1, 2, 3, 0, 1 );
+	minor0 = SIMD.Float32x4.sub( SIMD.Float32x4.mul( row1, tmp1 ), minor0 );
+	minor1 = SIMD.Float32x4.sub( SIMD.Float32x4.mul( row0, tmp1 ), minor1 );
+	minor1 = SIMD.Float32x4.swizzle( minor1, 2, 3, 0, 1 );
+
+	tmp1   = SIMD.Float32x4.mul( row1, row2 );
+	tmp1   = SIMD.Float32x4.swizzle( tmp1, 1, 0, 3, 2 );
+	minor0 = SIMD.Float32x4.add( SIMD.Float32x4.mul( row3, tmp1 ), minor0 );
+	minor3 = SIMD.Float32x4.mul( row0, tmp1 );
+	tmp1   = SIMD.Float32x4.swizzle( tmp1, 2, 3, 0, 1 );
+	minor0 = SIMD.Float32x4.sub( minor0, SIMD.Float32x4.mul( row3, tmp1 ) );
+	minor3 = SIMD.Float32x4.sub( SIMD.Float32x4.mul( row0, tmp1 ), minor3 );
+	minor3 = SIMD.Float32x4.swizzle( minor3, 2, 3, 0, 1 );
+
+	tmp1   = SIMD.Float32x4.mul( SIMD.Float32x4.swizzle( row1, 2, 3, 0, 1 ), row3 );
+	tmp1   = SIMD.Float32x4.swizzle( tmp1, 1, 0, 3, 2 );
+	row2   = SIMD.Float32x4.swizzle( row2, 2, 3, 0, 1 );
+	minor0 = SIMD.Float32x4.add( SIMD.Float32x4.mul( row2, tmp1 ), minor0 );
+	minor2 = SIMD.Float32x4.mul( row0, tmp1 );
+	tmp1   = SIMD.Float32x4.swizzle( tmp1, 2, 3, 0, 1 );
+	minor0 = SIMD.Float32x4.sub( minor0, SIMD.Float32x4.mul( row2, tmp1 ) );
+	minor2 = SIMD.Float32x4.sub( SIMD.Float32x4.mul( row0, tmp1 ), minor2 );
+	minor2 = SIMD.Float32x4.swizzle( minor2, 2, 3, 0, 1 );
+
+	tmp1   = SIMD.Float32x4.mul( row0, row1 );
+	tmp1   = SIMD.Float32x4.swizzle( tmp1, 1, 0, 3, 2 );
+	minor2 = SIMD.Float32x4.add( SIMD.Float32x4.mul( row3, tmp1 ), minor2 );
+	minor3 = SIMD.Float32x4.sub( SIMD.Float32x4.mul( row2, tmp1 ), minor3 );
+	tmp1   = SIMD.Float32x4.swizzle( tmp1, 2, 3, 0, 1 );
+	minor2 = SIMD.Float32x4.sub( SIMD.Float32x4.mul( row3, tmp1 ), minor2 );
+	minor3 = SIMD.Float32x4.sub( minor3, SIMD.Float32x4.mul( row2, tmp1 ) );
+
+	tmp1   = SIMD.Float32x4.mul( row0, row3 );
+	tmp1   = SIMD.Float32x4.swizzle( tmp1, 1, 0, 3, 2 );
+	minor1 = SIMD.Float32x4.sub( minor1, SIMD.Float32x4.mul( row2, tmp1 ) );
+	minor2 = SIMD.Float32x4.add( SIMD.Float32x4.mul( row1, tmp1 ), minor2 );
+	tmp1   = SIMD.Float32x4.swizzle( tmp1, 2, 3, 0, 1 );
+	minor1 = SIMD.Float32x4.add( SIMD.Float32x4.mul( row2, tmp1 ), minor1 );
+	minor2 = SIMD.Float32x4.sub( minor2, SIMD.Float32x4.mul( row1, tmp1 ) );
+
+	tmp1   = SIMD.Float32x4.mul( row0, row2 );
+	tmp1   = SIMD.Float32x4.swizzle( tmp1, 1, 0, 3, 2 );
+	minor1 = SIMD.Float32x4.add( SIMD.Float32x4.mul( row3, tmp1 ), minor1 );
+	minor3 = SIMD.Float32x4.sub( minor3, SIMD.Float32x4.mul( row1, tmp1 ) );
+	tmp1   = SIMD.Float32x4.swizzle( tmp1, 2, 3, 0, 1 );
+	minor1 = SIMD.Float32x4.sub( minor1, SIMD.Float32x4.mul( row3, tmp1 ) );
+	minor3 = SIMD.Float32x4.add( SIMD.Float32x4.mul( row1, tmp1 ), minor3 );
+
+	// Compute matrix determinant
+	det    = SIMD.Float32x4.mul( row0, minor0 );
+	det    = SIMD.Float32x4.add( SIMD.Float32x4.swizzle( det, 2, 3, 0, 1 ), det );
+	det    = SIMD.Float32x4.add( SIMD.Float32x4.swizzle( det, 1, 0, 3, 2 ), det );
+	tmp1   = SIMD.Float32x4.reciprocalApproximation( det );
+	det    = SIMD.Float32x4.sub(
+		SIMD.Float32x4.add( tmp1, tmp1 ),
+		SIMD.Float32x4.mul( det, SIMD.Float32x4.mul( tmp1, tmp1 ) ) );
+	det    = SIMD.Float32x4.swizzle( det, 0, 0, 0, 0 );
+	if ( !det )
+	{
+		return null;
+	}
+
+	// Compute matrix inverse
+	SIMD.Float32x4.store( out, 0, SIMD.Float32x4.mul( det, minor0 ) );
+	SIMD.Float32x4.store( out, 4, SIMD.Float32x4.mul( det, minor1 ) );
+	SIMD.Float32x4.store( out, 8, SIMD.Float32x4.mul( det, minor2 ) );
+	SIMD.Float32x4.store( out, 12, SIMD.Float32x4.mul( det, minor3 ) );
+	return out;
+}
+
+/**
+ * Inverts a mat4 using SIMD if available and enabled
+ *
+ * @param {mat4} out the receiving matrix
+ * @param {mat4} a the source matrix
+ * @returns {mat4} out
+ */
+mat4.invert = glMatrix.USE_SIMD ? mat4.SIMD.invert : mat4.scalar.invert;
+
+/**
+ * Calculates the adjugate of a mat4 not using SIMD
+ *
+ * @param {mat4} out the receiving matrix
+ * @param {mat4} a the source matrix
+ * @returns {mat4} out
+ */
+mat4.scalar.adjoint = function( out, a )
+{
+	var a00 = a[ 0 ],
+		a01 = a[ 1 ],
+		a02 = a[ 2 ],
+		a03 = a[ 3 ],
+		a10 = a[ 4 ],
+		a11 = a[ 5 ],
+		a12 = a[ 6 ],
+		a13 = a[ 7 ],
+		a20 = a[ 8 ],
+		a21 = a[ 9 ],
+		a22 = a[ 10 ],
+		a23 = a[ 11 ],
+		a30 = a[ 12 ],
+		a31 = a[ 13 ],
+		a32 = a[ 14 ],
+		a33 = a[ 15 ];
+
+	out[ 0 ]  = ( a11 * ( a22 * a33 - a23 * a32 ) - a21 * ( a12 * a33 - a13 * a32 ) + a31 * ( a12 * a23 - a13 * a22 ) );
+	out[ 1 ]  = -( a01 * ( a22 * a33 - a23 * a32 ) - a21 * ( a02 * a33 - a03 * a32 ) + a31 * ( a02 * a23 - a03 * a22 ) );
+	out[ 2 ]  = ( a01 * ( a12 * a33 - a13 * a32 ) - a11 * ( a02 * a33 - a03 * a32 ) + a31 * ( a02 * a13 - a03 * a12 ) );
+	out[ 3 ]  = -( a01 * ( a12 * a23 - a13 * a22 ) - a11 * ( a02 * a23 - a03 * a22 ) + a21 * ( a02 * a13 - a03 * a12 ) );
+	out[ 4 ]  = -( a10 * ( a22 * a33 - a23 * a32 ) - a20 * ( a12 * a33 - a13 * a32 ) + a30 * ( a12 * a23 - a13 * a22 ) );
+	out[ 5 ]  = ( a00 * ( a22 * a33 - a23 * a32 ) - a20 * ( a02 * a33 - a03 * a32 ) + a30 * ( a02 * a23 - a03 * a22 ) );
+	out[ 6 ]  = -( a00 * ( a12 * a33 - a13 * a32 ) - a10 * ( a02 * a33 - a03 * a32 ) + a30 * ( a02 * a13 - a03 * a12 ) );
+	out[ 7 ]  = ( a00 * ( a12 * a23 - a13 * a22 ) - a10 * ( a02 * a23 - a03 * a22 ) + a20 * ( a02 * a13 - a03 * a12 ) );
+	out[ 8 ]  = ( a10 * ( a21 * a33 - a23 * a31 ) - a20 * ( a11 * a33 - a13 * a31 ) + a30 * ( a11 * a23 - a13 * a21 ) );
+	out[ 9 ]  = -( a00 * ( a21 * a33 - a23 * a31 ) - a20 * ( a01 * a33 - a03 * a31 ) + a30 * ( a01 * a23 - a03 * a21 ) );
+	out[ 10 ] = ( a00 * ( a11 * a33 - a13 * a31 ) - a10 * ( a01 * a33 - a03 * a31 ) + a30 * ( a01 * a13 - a03 * a11 ) );
+	out[ 11 ] = -( a00 * ( a11 * a23 - a13 * a21 ) - a10 * ( a01 * a23 - a03 * a21 ) + a20 * ( a01 * a13 - a03 * a11 ) );
+	out[ 12 ] = -( a10 * ( a21 * a32 - a22 * a31 ) - a20 * ( a11 * a32 - a12 * a31 ) + a30 * ( a11 * a22 - a12 * a21 ) );
+	out[ 13 ] = ( a00 * ( a21 * a32 - a22 * a31 ) - a20 * ( a01 * a32 - a02 * a31 ) + a30 * ( a01 * a22 - a02 * a21 ) );
+	out[ 14 ] = -( a00 * ( a11 * a32 - a12 * a31 ) - a10 * ( a01 * a32 - a02 * a31 ) + a30 * ( a01 * a12 - a02 * a11 ) );
+	out[ 15 ] = ( a00 * ( a11 * a22 - a12 * a21 ) - a10 * ( a01 * a22 - a02 * a21 ) + a20 * ( a01 * a12 - a02 * a11 ) );
+	return out;
+};
+
+/**
+ * Calculates the adjugate of a mat4 using SIMD
+ *
+ * @param {mat4} out the receiving matrix
+ * @param {mat4} a the source matrix
+ * @returns {mat4} out
+ */
+mat4.SIMD.adjoint = function( out, a )
+{
+	var a0, a1, a2, a3;
+	var row0, row1, row2, row3;
+	var tmp1;
+	var minor0, minor1, minor2, minor3;
+
+	a0     = SIMD.Float32x4.load( a, 0 );
+	a1     = SIMD.Float32x4.load( a, 4 );
+	a2     = SIMD.Float32x4.load( a, 8 );
+	a3     = SIMD.Float32x4.load( a, 12 );
+
+	// Transpose the source matrix.  Sort of.  Not a true transpose operation
+	tmp1   = SIMD.Float32x4.shuffle( a0, a1, 0, 1, 4, 5 );
+	row1   = SIMD.Float32x4.shuffle( a2, a3, 0, 1, 4, 5 );
+	row0   = SIMD.Float32x4.shuffle( tmp1, row1, 0, 2, 4, 6 );
+	row1   = SIMD.Float32x4.shuffle( row1, tmp1, 1, 3, 5, 7 );
+
+	tmp1   = SIMD.Float32x4.shuffle( a0, a1, 2, 3, 6, 7 );
+	row3   = SIMD.Float32x4.shuffle( a2, a3, 2, 3, 6, 7 );
+	row2   = SIMD.Float32x4.shuffle( tmp1, row3, 0, 2, 4, 6 );
+	row3   = SIMD.Float32x4.shuffle( row3, tmp1, 1, 3, 5, 7 );
+
+	tmp1   = SIMD.Float32x4.mul( row2, row3 );
+	tmp1   = SIMD.Float32x4.swizzle( tmp1, 1, 0, 3, 2 );
+	minor0 = SIMD.Float32x4.mul( row1, tmp1 );
+	minor1 = SIMD.Float32x4.mul( row0, tmp1 );
+	tmp1   = SIMD.Float32x4.swizzle( tmp1, 2, 3, 0, 1 );
+	minor0 = SIMD.Float32x4.sub( SIMD.Float32x4.mul( row1, tmp1 ), minor0 );
+	minor1 = SIMD.Float32x4.sub( SIMD.Float32x4.mul( row0, tmp1 ), minor1 );
+	minor1 = SIMD.Float32x4.swizzle( minor1, 2, 3, 0, 1 );
+
+	tmp1   = SIMD.Float32x4.mul( row1, row2 );
+	tmp1   = SIMD.Float32x4.swizzle( tmp1, 1, 0, 3, 2 );
+	minor0 = SIMD.Float32x4.add( SIMD.Float32x4.mul( row3, tmp1 ), minor0 );
+	minor3 = SIMD.Float32x4.mul( row0, tmp1 );
+	tmp1   = SIMD.Float32x4.swizzle( tmp1, 2, 3, 0, 1 );
+	minor0 = SIMD.Float32x4.sub( minor0, SIMD.Float32x4.mul( row3, tmp1 ) );
+	minor3 = SIMD.Float32x4.sub( SIMD.Float32x4.mul( row0, tmp1 ), minor3 );
+	minor3 = SIMD.Float32x4.swizzle( minor3, 2, 3, 0, 1 );
+
+	tmp1   = SIMD.Float32x4.mul( SIMD.Float32x4.swizzle( row1, 2, 3, 0, 1 ), row3 );
+	tmp1   = SIMD.Float32x4.swizzle( tmp1, 1, 0, 3, 2 );
+	row2   = SIMD.Float32x4.swizzle( row2, 2, 3, 0, 1 );
+	minor0 = SIMD.Float32x4.add( SIMD.Float32x4.mul( row2, tmp1 ), minor0 );
+	minor2 = SIMD.Float32x4.mul( row0, tmp1 );
+	tmp1   = SIMD.Float32x4.swizzle( tmp1, 2, 3, 0, 1 );
+	minor0 = SIMD.Float32x4.sub( minor0, SIMD.Float32x4.mul( row2, tmp1 ) );
+	minor2 = SIMD.Float32x4.sub( SIMD.Float32x4.mul( row0, tmp1 ), minor2 );
+	minor2 = SIMD.Float32x4.swizzle( minor2, 2, 3, 0, 1 );
+
+	tmp1   = SIMD.Float32x4.mul( row0, row1 );
+	tmp1   = SIMD.Float32x4.swizzle( tmp1, 1, 0, 3, 2 );
+	minor2 = SIMD.Float32x4.add( SIMD.Float32x4.mul( row3, tmp1 ), minor2 );
+	minor3 = SIMD.Float32x4.sub( SIMD.Float32x4.mul( row2, tmp1 ), minor3 );
+	tmp1   = SIMD.Float32x4.swizzle( tmp1, 2, 3, 0, 1 );
+	minor2 = SIMD.Float32x4.sub( SIMD.Float32x4.mul( row3, tmp1 ), minor2 );
+	minor3 = SIMD.Float32x4.sub( minor3, SIMD.Float32x4.mul( row2, tmp1 ) );
+
+	tmp1   = SIMD.Float32x4.mul( row0, row3 );
+	tmp1   = SIMD.Float32x4.swizzle( tmp1, 1, 0, 3, 2 );
+	minor1 = SIMD.Float32x4.sub( minor1, SIMD.Float32x4.mul( row2, tmp1 ) );
+	minor2 = SIMD.Float32x4.add( SIMD.Float32x4.mul( row1, tmp1 ), minor2 );
+	tmp1   = SIMD.Float32x4.swizzle( tmp1, 2, 3, 0, 1 );
+	minor1 = SIMD.Float32x4.add( SIMD.Float32x4.mul( row2, tmp1 ), minor1 );
+	minor2 = SIMD.Float32x4.sub( minor2, SIMD.Float32x4.mul( row1, tmp1 ) );
+
+	tmp1   = SIMD.Float32x4.mul( row0, row2 );
+	tmp1   = SIMD.Float32x4.swizzle( tmp1, 1, 0, 3, 2 );
+	minor1 = SIMD.Float32x4.add( SIMD.Float32x4.mul( row3, tmp1 ), minor1 );
+	minor3 = SIMD.Float32x4.sub( minor3, SIMD.Float32x4.mul( row1, tmp1 ) );
+	tmp1   = SIMD.Float32x4.swizzle( tmp1, 2, 3, 0, 1 );
+	minor1 = SIMD.Float32x4.sub( minor1, SIMD.Float32x4.mul( row3, tmp1 ) );
+	minor3 = SIMD.Float32x4.add( SIMD.Float32x4.mul( row1, tmp1 ), minor3 );
+
+	SIMD.Float32x4.store( out, 0, minor0 );
+	SIMD.Float32x4.store( out, 4, minor1 );
+	SIMD.Float32x4.store( out, 8, minor2 );
+	SIMD.Float32x4.store( out, 12, minor3 );
+	return out;
+};
+
+/**
+ * Calculates the adjugate of a mat4 using SIMD if available and enabled
+ *
+ * @param {mat4} out the receiving matrix
+ * @param {mat4} a the source matrix
+ * @returns {mat4} out
+ */
+mat4.adjoint = glMatrix.USE_SIMD ? mat4.SIMD.adjoint : mat4.scalar.adjoint;
+
+/**
+ * Calculates the determinant of a mat4
+ *
+ * @param {mat4} a the source matrix
+ * @returns {Number} determinant of a
+ */
+mat4.determinant = function( a )
+{
+	var a00 = a[ 0 ],
+		a01 = a[ 1 ],
+		a02 = a[ 2 ],
+		a03 = a[ 3 ],
+		a10 = a[ 4 ],
+		a11 = a[ 5 ],
+		a12 = a[ 6 ],
+		a13 = a[ 7 ],
+		a20 = a[ 8 ],
+		a21 = a[ 9 ],
+		a22 = a[ 10 ],
+		a23 = a[ 11 ],
+		a30 = a[ 12 ],
+		a31 = a[ 13 ],
+		a32 = a[ 14 ],
+		a33 = a[ 15 ],
+
+		b00 = a00 * a11 - a01 * a10,
+		b01 = a00 * a12 - a02 * a10,
+		b02 = a00 * a13 - a03 * a10,
+		b03 = a01 * a12 - a02 * a11,
+		b04 = a01 * a13 - a03 * a11,
+		b05 = a02 * a13 - a03 * a12,
+		b06 = a20 * a31 - a21 * a30,
+		b07 = a20 * a32 - a22 * a30,
+		b08 = a20 * a33 - a23 * a30,
+		b09 = a21 * a32 - a22 * a31,
+		b10 = a21 * a33 - a23 * a31,
+		b11 = a22 * a33 - a23 * a32;
+
+	// Calculate the determinant
+	return b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
+};
+
+/**
+ * Multiplies two mat4's explicitly using SIMD
+ *
+ * @param {mat4} out the receiving matrix
+ * @param {mat4} a the first operand, must be a Float32Array
+ * @param {mat4} b the second operand, must be a Float32Array
+ * @returns {mat4} out
+ */
+mat4.SIMD.multiply = function( out, a, b )
+{
+	var a0 = SIMD.Float32x4.load( a, 0 );
+	var a1 = SIMD.Float32x4.load( a, 4 );
+	var a2 = SIMD.Float32x4.load( a, 8 );
+	var a3 = SIMD.Float32x4.load( a, 12 );
+
+	var b0 = SIMD.Float32x4.load( b, 0 );
+	var out0 = SIMD.Float32x4.add(
+		SIMD.Float32x4.mul( SIMD.Float32x4.swizzle( b0, 0, 0, 0, 0 ), a0 ),
+		SIMD.Float32x4.add(
+			SIMD.Float32x4.mul( SIMD.Float32x4.swizzle( b0, 1, 1, 1, 1 ), a1 ),
+			SIMD.Float32x4.add(
+				SIMD.Float32x4.mul( SIMD.Float32x4.swizzle( b0, 2, 2, 2, 2 ), a2 ),
+				SIMD.Float32x4.mul( SIMD.Float32x4.swizzle( b0, 3, 3, 3, 3 ), a3 ) ) ) );
+	SIMD.Float32x4.store( out, 0, out0 );
+
+	var b1 = SIMD.Float32x4.load( b, 4 );
+	var out1 = SIMD.Float32x4.add(
+		SIMD.Float32x4.mul( SIMD.Float32x4.swizzle( b1, 0, 0, 0, 0 ), a0 ),
+		SIMD.Float32x4.add(
+			SIMD.Float32x4.mul( SIMD.Float32x4.swizzle( b1, 1, 1, 1, 1 ), a1 ),
+			SIMD.Float32x4.add(
+				SIMD.Float32x4.mul( SIMD.Float32x4.swizzle( b1, 2, 2, 2, 2 ), a2 ),
+				SIMD.Float32x4.mul( SIMD.Float32x4.swizzle( b1, 3, 3, 3, 3 ), a3 ) ) ) );
+	SIMD.Float32x4.store( out, 4, out1 );
+
+	var b2 = SIMD.Float32x4.load( b, 8 );
+	var out2 = SIMD.Float32x4.add(
+		SIMD.Float32x4.mul( SIMD.Float32x4.swizzle( b2, 0, 0, 0, 0 ), a0 ),
+		SIMD.Float32x4.add(
+			SIMD.Float32x4.mul( SIMD.Float32x4.swizzle( b2, 1, 1, 1, 1 ), a1 ),
+			SIMD.Float32x4.add(
+				SIMD.Float32x4.mul( SIMD.Float32x4.swizzle( b2, 2, 2, 2, 2 ), a2 ),
+				SIMD.Float32x4.mul( SIMD.Float32x4.swizzle( b2, 3, 3, 3, 3 ), a3 ) ) ) );
+	SIMD.Float32x4.store( out, 8, out2 );
+
+	var b3 = SIMD.Float32x4.load( b, 12 );
+	var out3 = SIMD.Float32x4.add(
+		SIMD.Float32x4.mul( SIMD.Float32x4.swizzle( b3, 0, 0, 0, 0 ), a0 ),
+		SIMD.Float32x4.add(
+			SIMD.Float32x4.mul( SIMD.Float32x4.swizzle( b3, 1, 1, 1, 1 ), a1 ),
+			SIMD.Float32x4.add(
+				SIMD.Float32x4.mul( SIMD.Float32x4.swizzle( b3, 2, 2, 2, 2 ), a2 ),
+				SIMD.Float32x4.mul( SIMD.Float32x4.swizzle( b3, 3, 3, 3, 3 ), a3 ) ) ) );
+	SIMD.Float32x4.store( out, 12, out3 );
+
+	return out;
+};
+
+/**
+ * Multiplies two mat4's explicitly not using SIMD
+ *
+ * @param {mat4} out the receiving matrix
+ * @param {mat4} a the first operand
+ * @param {mat4} b the second operand
+ * @returns {mat4} out
+ */
+mat4.scalar.multiply = function( out, a, b )
+{
+	var a00 = a[ 0 ],
+		a01 = a[ 1 ],
+		a02 = a[ 2 ],
+		a03 = a[ 3 ],
+		a10 = a[ 4 ],
+		a11 = a[ 5 ],
+		a12 = a[ 6 ],
+		a13 = a[ 7 ],
+		a20 = a[ 8 ],
+		a21 = a[ 9 ],
+		a22 = a[ 10 ],
+		a23 = a[ 11 ],
+		a30 = a[ 12 ],
+		a31 = a[ 13 ],
+		a32 = a[ 14 ],
+		a33 = a[ 15 ];
+
+	// Cache only the current line of the second matrix
+	var b0 = b[ 0 ],
+		b1 = b[ 1 ],
+		b2 = b[ 2 ],
+		b3 = b[ 3 ];
+	out[ 0 ] = b0 * a00 + b1 * a10 + b2 * a20 + b3 * a30;
+	out[ 1 ] = b0 * a01 + b1 * a11 + b2 * a21 + b3 * a31;
+	out[ 2 ] = b0 * a02 + b1 * a12 + b2 * a22 + b3 * a32;
+	out[ 3 ] = b0 * a03 + b1 * a13 + b2 * a23 + b3 * a33;
+
+	b0 = b[ 4 ];
+	b1 = b[ 5 ];
+	b2 = b[ 6 ];
+	b3 = b[ 7 ];
+	out[ 4 ] = b0 * a00 + b1 * a10 + b2 * a20 + b3 * a30;
+	out[ 5 ] = b0 * a01 + b1 * a11 + b2 * a21 + b3 * a31;
+	out[ 6 ] = b0 * a02 + b1 * a12 + b2 * a22 + b3 * a32;
+	out[ 7 ] = b0 * a03 + b1 * a13 + b2 * a23 + b3 * a33;
+
+	b0 = b[ 8 ];
+	b1 = b[ 9 ];
+	b2 = b[ 10 ];
+	b3 = b[ 11 ];
+	out[ 8 ] = b0 * a00 + b1 * a10 + b2 * a20 + b3 * a30;
+	out[ 9 ] = b0 * a01 + b1 * a11 + b2 * a21 + b3 * a31;
+	out[ 10 ] = b0 * a02 + b1 * a12 + b2 * a22 + b3 * a32;
+	out[ 11 ] = b0 * a03 + b1 * a13 + b2 * a23 + b3 * a33;
+
+	b0 = b[ 12 ];
+	b1 = b[ 13 ];
+	b2 = b[ 14 ];
+	b3 = b[ 15 ];
+	out[ 12 ] = b0 * a00 + b1 * a10 + b2 * a20 + b3 * a30;
+	out[ 13 ] = b0 * a01 + b1 * a11 + b2 * a21 + b3 * a31;
+	out[ 14 ] = b0 * a02 + b1 * a12 + b2 * a22 + b3 * a32;
+	out[ 15 ] = b0 * a03 + b1 * a13 + b2 * a23 + b3 * a33;
+	return out;
+};
+
+/**
+ * Multiplies two mat4's using SIMD if available and enabled
+ *
+ * @param {mat4} out the receiving matrix
+ * @param {mat4} a the first operand
+ * @param {mat4} b the second operand
+ * @returns {mat4} out
+ */
+mat4.multiply = glMatrix.USE_SIMD ? mat4.SIMD.multiply : mat4.scalar.multiply;
+
+/**
+ * Alias for {@link mat4.multiply}
+ * @function
+ */
+mat4.mul = mat4.multiply;
+
+/**
+ * Translate a mat4 by the given vector not using SIMD
+ *
+ * @param {mat4} out the receiving matrix
+ * @param {mat4} a the matrix to translate
+ * @param {vec3} v vector to translate by
+ * @returns {mat4} out
+ */
+mat4.scalar.translate = function( out, a, v )
+{
+	var x = v[ 0 ],
+		y = v[ 1 ],
+		z = v[ 2 ],
+		a00, a01, a02, a03,
+		a10, a11, a12, a13,
+		a20, a21, a22, a23;
+
+	if ( a === out )
+	{
+		out[ 12 ] = a[ 0 ] * x + a[ 4 ] * y + a[ 8 ] * z + a[ 12 ];
+		out[ 13 ] = a[ 1 ] * x + a[ 5 ] * y + a[ 9 ] * z + a[ 13 ];
+		out[ 14 ] = a[ 2 ] * x + a[ 6 ] * y + a[ 10 ] * z + a[ 14 ];
+		out[ 15 ] = a[ 3 ] * x + a[ 7 ] * y + a[ 11 ] * z + a[ 15 ];
+	}
+	else
+	{
+		a00 = a[ 0 ];
+		a01 = a[ 1 ];
+		a02 = a[ 2 ];
+		a03 = a[ 3 ];
+		a10 = a[ 4 ];
+		a11 = a[ 5 ];
+		a12 = a[ 6 ];
+		a13 = a[ 7 ];
+		a20 = a[ 8 ];
+		a21 = a[ 9 ];
+		a22 = a[ 10 ];
+		a23 = a[ 11 ];
+
+		out[ 0 ] = a00;
+		out[ 1 ] = a01;
+		out[ 2 ] = a02;
+		out[ 3 ] = a03;
+		out[ 4 ] = a10;
+		out[ 5 ] = a11;
+		out[ 6 ] = a12;
+		out[ 7 ] = a13;
+		out[ 8 ] = a20;
+		out[ 9 ] = a21;
+		out[ 10 ] = a22;
+		out[ 11 ] = a23;
+
+		out[ 12 ] = a00 * x + a10 * y + a20 * z + a[ 12 ];
+		out[ 13 ] = a01 * x + a11 * y + a21 * z + a[ 13 ];
+		out[ 14 ] = a02 * x + a12 * y + a22 * z + a[ 14 ];
+		out[ 15 ] = a03 * x + a13 * y + a23 * z + a[ 15 ];
+	}
+
+	return out;
+};
+
+/**
+ * Translates a mat4 by the given vector using SIMD
+ *
+ * @param {mat4} out the receiving matrix
+ * @param {mat4} a the matrix to translate
+ * @param {vec3} v vector to translate by
+ * @returns {mat4} out
+ */
+mat4.SIMD.translate = function( out, a, v )
+{
+	var a0 = SIMD.Float32x4.load( a, 0 ),
+		a1 = SIMD.Float32x4.load( a, 4 ),
+		a2 = SIMD.Float32x4.load( a, 8 ),
+		a3 = SIMD.Float32x4.load( a, 12 ),
+		vec = SIMD.Float32x4( v[ 0 ], v[ 1 ], v[ 2 ], 0 );
+
+	if ( a !== out )
+	{
+		out[ 0 ] = a[ 0 ];
+		out[ 1 ] = a[ 1 ];
+		out[ 2 ] = a[ 2 ];
+		out[ 3 ] = a[ 3 ];
+		out[ 4 ] = a[ 4 ];
+		out[ 5 ] = a[ 5 ];
+		out[ 6 ] = a[ 6 ];
+		out[ 7 ] = a[ 7 ];
+		out[ 8 ] = a[ 8 ];
+		out[ 9 ] = a[ 9 ];
+		out[ 10 ] = a[ 10 ];
+		out[ 11 ] = a[ 11 ];
+	}
+
+	a0 = SIMD.Float32x4.mul( a0, SIMD.Float32x4.swizzle( vec, 0, 0, 0, 0 ) );
+	a1 = SIMD.Float32x4.mul( a1, SIMD.Float32x4.swizzle( vec, 1, 1, 1, 1 ) );
+	a2 = SIMD.Float32x4.mul( a2, SIMD.Float32x4.swizzle( vec, 2, 2, 2, 2 ) );
+
+	var t0 = SIMD.Float32x4.add( a0, SIMD.Float32x4.add( a1, SIMD.Float32x4.add( a2, a3 ) ) );
+	SIMD.Float32x4.store( out, 12, t0 );
+
+	return out;
+};
+
+/**
+ * Translates a mat4 by the given vector using SIMD if available and enabled
+ *
+ * @param {mat4} out the receiving matrix
+ * @param {mat4} a the matrix to translate
+ * @param {vec3} v vector to translate by
+ * @returns {mat4} out
+ */
+mat4.translate = glMatrix.USE_SIMD ? mat4.SIMD.translate : mat4.scalar.translate;
+
+/**
+ * Scales the mat4 by the dimensions in the given vec3 not using vectorization
+ *
+ * @param {mat4} out the receiving matrix
+ * @param {mat4} a the matrix to scale
+ * @param {vec3} v the vec3 to scale the matrix by
+ * @returns {mat4} out
+ **/
+mat4.scalar.scale = function( out, a, v )
+{
+	var x = v[ 0 ],
+		y = v[ 1 ],
+		z = v[ 2 ];
+
+	out[ 0 ] = a[ 0 ] * x;
+	out[ 1 ] = a[ 1 ] * x;
+	out[ 2 ] = a[ 2 ] * x;
+	out[ 3 ] = a[ 3 ] * x;
+	out[ 4 ] = a[ 4 ] * y;
+	out[ 5 ] = a[ 5 ] * y;
+	out[ 6 ] = a[ 6 ] * y;
+	out[ 7 ] = a[ 7 ] * y;
+	out[ 8 ] = a[ 8 ] * z;
+	out[ 9 ] = a[ 9 ] * z;
+	out[ 10 ] = a[ 10 ] * z;
+	out[ 11 ] = a[ 11 ] * z;
+	out[ 12 ] = a[ 12 ];
+	out[ 13 ] = a[ 13 ];
+	out[ 14 ] = a[ 14 ];
+	out[ 15 ] = a[ 15 ];
+	return out;
+};
+
+/**
+ * Scales the mat4 by the dimensions in the given vec3 using vectorization
+ *
+ * @param {mat4} out the receiving matrix
+ * @param {mat4} a the matrix to scale
+ * @param {vec3} v the vec3 to scale the matrix by
+ * @returns {mat4} out
+ **/
+mat4.SIMD.scale = function( out, a, v )
+{
+	var a0, a1, a2;
+	var vec = SIMD.Float32x4( v[ 0 ], v[ 1 ], v[ 2 ], 0 );
+
+	a0 = SIMD.Float32x4.load( a, 0 );
+	SIMD.Float32x4.store(
+		out, 0, SIMD.Float32x4.mul( a0, SIMD.Float32x4.swizzle( vec, 0, 0, 0, 0 ) ) );
+
+	a1 = SIMD.Float32x4.load( a, 4 );
+	SIMD.Float32x4.store(
+		out, 4, SIMD.Float32x4.mul( a1, SIMD.Float32x4.swizzle( vec, 1, 1, 1, 1 ) ) );
+
+	a2 = SIMD.Float32x4.load( a, 8 );
+	SIMD.Float32x4.store(
+		out, 8, SIMD.Float32x4.mul( a2, SIMD.Float32x4.swizzle( vec, 2, 2, 2, 2 ) ) );
+
+	out[ 12 ] = a[ 12 ];
+	out[ 13 ] = a[ 13 ];
+	out[ 14 ] = a[ 14 ];
+	out[ 15 ] = a[ 15 ];
+	return out;
+};
+
+/**
+ * Scales the mat4 by the dimensions in the given vec3 using SIMD if available and enabled
+ *
+ * @param {mat4} out the receiving matrix
+ * @param {mat4} a the matrix to scale
+ * @param {vec3} v the vec3 to scale the matrix by
+ * @returns {mat4} out
+ */
+mat4.scale = glMatrix.USE_SIMD ? mat4.SIMD.scale : mat4.scalar.scale;
+
+/**
+ * Rotates a mat4 by the given angle around the given axis
+ *
+ * @param {mat4} out the receiving matrix
+ * @param {mat4} a the matrix to rotate
+ * @param {Number} rad the angle to rotate the matrix by
+ * @param {vec3} axis the axis to rotate around
+ * @returns {mat4} out
+ */
+mat4.rotate = function( out, a, rad, axis )
+{
+	var x = axis[ 0 ],
+		y = axis[ 1 ],
+		z = axis[ 2 ],
+		len = Math.sqrt( x * x + y * y + z * z ),
+		s, c, t,
+		a00, a01, a02, a03,
+		a10, a11, a12, a13,
+		a20, a21, a22, a23,
+		b00, b01, b02,
+		b10, b11, b12,
+		b20, b21, b22;
+
+	if ( Math.abs( len ) < glMatrix.EPSILON )
+	{
+		return null;
+	}
+
+	len = 1 / len;
+	x *= len;
+	y *= len;
+	z *= len;
+
+	s = Math.sin( rad );
+	c = Math.cos( rad );
+	t = 1 - c;
+
+	a00 = a[ 0 ];
+	a01 = a[ 1 ];
+	a02 = a[ 2 ];
+	a03 = a[ 3 ];
+	a10 = a[ 4 ];
+	a11 = a[ 5 ];
+	a12 = a[ 6 ];
+	a13 = a[ 7 ];
+	a20 = a[ 8 ];
+	a21 = a[ 9 ];
+	a22 = a[ 10 ];
+	a23 = a[ 11 ];
+
+	// Construct the elements of the rotation matrix
+	b00 = x * x * t + c;
+	b01 = y * x * t + z * s;
+	b02 = z * x * t - y * s;
+	b10 = x * y * t - z * s;
+	b11 = y * y * t + c;
+	b12 = z * y * t + x * s;
+	b20 = x * z * t + y * s;
+	b21 = y * z * t - x * s;
+	b22 = z * z * t + c;
+
+	// Perform rotation-specific matrix multiplication
+	out[ 0 ] = a00 * b00 + a10 * b01 + a20 * b02;
+	out[ 1 ] = a01 * b00 + a11 * b01 + a21 * b02;
+	out[ 2 ] = a02 * b00 + a12 * b01 + a22 * b02;
+	out[ 3 ] = a03 * b00 + a13 * b01 + a23 * b02;
+	out[ 4 ] = a00 * b10 + a10 * b11 + a20 * b12;
+	out[ 5 ] = a01 * b10 + a11 * b11 + a21 * b12;
+	out[ 6 ] = a02 * b10 + a12 * b11 + a22 * b12;
+	out[ 7 ] = a03 * b10 + a13 * b11 + a23 * b12;
+	out[ 8 ] = a00 * b20 + a10 * b21 + a20 * b22;
+	out[ 9 ] = a01 * b20 + a11 * b21 + a21 * b22;
+	out[ 10 ] = a02 * b20 + a12 * b21 + a22 * b22;
+	out[ 11 ] = a03 * b20 + a13 * b21 + a23 * b22;
+
+	if ( a !== out )
+	{ // If the source and destination differ, copy the unchanged last row
+		out[ 12 ] = a[ 12 ];
+		out[ 13 ] = a[ 13 ];
+		out[ 14 ] = a[ 14 ];
+		out[ 15 ] = a[ 15 ];
+	}
+	return out;
+};
+
+/**
+ * Rotates a matrix by the given angle around the X axis not using SIMD
+ *
+ * @param {mat4} out the receiving matrix
+ * @param {mat4} a the matrix to rotate
+ * @param {Number} rad the angle to rotate the matrix by
+ * @returns {mat4} out
+ */
+mat4.scalar.rotateX = function( out, a, rad )
+{
+	var s = Math.sin( rad ),
+		c = Math.cos( rad ),
+		a10 = a[ 4 ],
+		a11 = a[ 5 ],
+		a12 = a[ 6 ],
+		a13 = a[ 7 ],
+		a20 = a[ 8 ],
+		a21 = a[ 9 ],
+		a22 = a[ 10 ],
+		a23 = a[ 11 ];
+
+	if ( a !== out )
+	{ // If the source and destination differ, copy the unchanged rows
+		out[ 0 ] = a[ 0 ];
+		out[ 1 ] = a[ 1 ];
+		out[ 2 ] = a[ 2 ];
+		out[ 3 ] = a[ 3 ];
+		out[ 12 ] = a[ 12 ];
+		out[ 13 ] = a[ 13 ];
+		out[ 14 ] = a[ 14 ];
+		out[ 15 ] = a[ 15 ];
+	}
+
+	// Perform axis-specific matrix multiplication
+	out[ 4 ] = a10 * c + a20 * s;
+	out[ 5 ] = a11 * c + a21 * s;
+	out[ 6 ] = a12 * c + a22 * s;
+	out[ 7 ] = a13 * c + a23 * s;
+	out[ 8 ] = a20 * c - a10 * s;
+	out[ 9 ] = a21 * c - a11 * s;
+	out[ 10 ] = a22 * c - a12 * s;
+	out[ 11 ] = a23 * c - a13 * s;
+	return out;
+};
+
+/**
+ * Rotates a matrix by the given angle around the X axis using SIMD
+ *
+ * @param {mat4} out the receiving matrix
+ * @param {mat4} a the matrix to rotate
+ * @param {Number} rad the angle to rotate the matrix by
+ * @returns {mat4} out
+ */
+mat4.SIMD.rotateX = function( out, a, rad )
+{
+	var s = SIMD.Float32x4.splat( Math.sin( rad ) ),
+		c = SIMD.Float32x4.splat( Math.cos( rad ) );
+
+	if ( a !== out )
+	{ // If the source and destination differ, copy the unchanged rows
+		out[ 0 ] = a[ 0 ];
+		out[ 1 ] = a[ 1 ];
+		out[ 2 ] = a[ 2 ];
+		out[ 3 ] = a[ 3 ];
+		out[ 12 ] = a[ 12 ];
+		out[ 13 ] = a[ 13 ];
+		out[ 14 ] = a[ 14 ];
+		out[ 15 ] = a[ 15 ];
+	}
+
+	// Perform axis-specific matrix multiplication
+	var a_1 = SIMD.Float32x4.load( a, 4 );
+	var a_2 = SIMD.Float32x4.load( a, 8 );
+	SIMD.Float32x4.store( out, 4,
+		SIMD.Float32x4.add( SIMD.Float32x4.mul( a_1, c ), SIMD.Float32x4.mul( a_2, s ) ) );
+	SIMD.Float32x4.store( out, 8,
+		SIMD.Float32x4.sub( SIMD.Float32x4.mul( a_2, c ), SIMD.Float32x4.mul( a_1, s ) ) );
+	return out;
+};
+
+/**
+ * Rotates a matrix by the given angle around the X axis using SIMD if availabe and enabled
+ *
+ * @param {mat4} out the receiving matrix
+ * @param {mat4} a the matrix to rotate
+ * @param {Number} rad the angle to rotate the matrix by
+ * @returns {mat4} out
+ */
+mat4.rotateX = glMatrix.USE_SIMD ? mat4.SIMD.rotateX : mat4.scalar.rotateX;
+
+/**
+ * Rotates a matrix by the given angle around the Y axis not using SIMD
+ *
+ * @param {mat4} out the receiving matrix
+ * @param {mat4} a the matrix to rotate
+ * @param {Number} rad the angle to rotate the matrix by
+ * @returns {mat4} out
+ */
+mat4.scalar.rotateY = function( out, a, rad )
+{
+	var s = Math.sin( rad ),
+		c = Math.cos( rad ),
+		a00 = a[ 0 ],
+		a01 = a[ 1 ],
+		a02 = a[ 2 ],
+		a03 = a[ 3 ],
+		a20 = a[ 8 ],
+		a21 = a[ 9 ],
+		a22 = a[ 10 ],
+		a23 = a[ 11 ];
+
+	if ( a !== out )
+	{ // If the source and destination differ, copy the unchanged rows
+		out[ 4 ] = a[ 4 ];
+		out[ 5 ] = a[ 5 ];
+		out[ 6 ] = a[ 6 ];
+		out[ 7 ] = a[ 7 ];
+		out[ 12 ] = a[ 12 ];
+		out[ 13 ] = a[ 13 ];
+		out[ 14 ] = a[ 14 ];
+		out[ 15 ] = a[ 15 ];
+	}
+
+	// Perform axis-specific matrix multiplication
+	out[ 0 ] = a00 * c - a20 * s;
+	out[ 1 ] = a01 * c - a21 * s;
+	out[ 2 ] = a02 * c - a22 * s;
+	out[ 3 ] = a03 * c - a23 * s;
+	out[ 8 ] = a00 * s + a20 * c;
+	out[ 9 ] = a01 * s + a21 * c;
+	out[ 10 ] = a02 * s + a22 * c;
+	out[ 11 ] = a03 * s + a23 * c;
+	return out;
+};
+
+/**
+ * Rotates a matrix by the given angle around the Y axis using SIMD
+ *
+ * @param {mat4} out the receiving matrix
+ * @param {mat4} a the matrix to rotate
+ * @param {Number} rad the angle to rotate the matrix by
+ * @returns {mat4} out
+ */
+mat4.SIMD.rotateY = function( out, a, rad )
+{
+	var s = SIMD.Float32x4.splat( Math.sin( rad ) ),
+		c = SIMD.Float32x4.splat( Math.cos( rad ) );
+
+	if ( a !== out )
+	{ // If the source and destination differ, copy the unchanged rows
+		out[ 4 ] = a[ 4 ];
+		out[ 5 ] = a[ 5 ];
+		out[ 6 ] = a[ 6 ];
+		out[ 7 ] = a[ 7 ];
+		out[ 12 ] = a[ 12 ];
+		out[ 13 ] = a[ 13 ];
+		out[ 14 ] = a[ 14 ];
+		out[ 15 ] = a[ 15 ];
+	}
+
+	// Perform axis-specific matrix multiplication
+	var a_0 = SIMD.Float32x4.load( a, 0 );
+	var a_2 = SIMD.Float32x4.load( a, 8 );
+	SIMD.Float32x4.store( out, 0,
+		SIMD.Float32x4.sub( SIMD.Float32x4.mul( a_0, c ), SIMD.Float32x4.mul( a_2, s ) ) );
+	SIMD.Float32x4.store( out, 8,
+		SIMD.Float32x4.add( SIMD.Float32x4.mul( a_0, s ), SIMD.Float32x4.mul( a_2, c ) ) );
+	return out;
+};
+
+/**
+ * Rotates a matrix by the given angle around the Y axis if SIMD available and enabled
+ *
+ * @param {mat4} out the receiving matrix
+ * @param {mat4} a the matrix to rotate
+ * @param {Number} rad the angle to rotate the matrix by
+ * @returns {mat4} out
+ */
+mat4.rotateY = glMatrix.USE_SIMD ? mat4.SIMD.rotateY : mat4.scalar.rotateY;
+
+/**
+ * Rotates a matrix by the given angle around the Z axis not using SIMD
+ *
+ * @param {mat4} out the receiving matrix
+ * @param {mat4} a the matrix to rotate
+ * @param {Number} rad the angle to rotate the matrix by
+ * @returns {mat4} out
+ */
+mat4.scalar.rotateZ = function( out, a, rad )
+{
+	var s = Math.sin( rad ),
+		c = Math.cos( rad ),
+		a00 = a[ 0 ],
+		a01 = a[ 1 ],
+		a02 = a[ 2 ],
+		a03 = a[ 3 ],
+		a10 = a[ 4 ],
+		a11 = a[ 5 ],
+		a12 = a[ 6 ],
+		a13 = a[ 7 ];
+
+	if ( a !== out )
+	{ // If the source and destination differ, copy the unchanged last row
+		out[ 8 ] = a[ 8 ];
+		out[ 9 ] = a[ 9 ];
+		out[ 10 ] = a[ 10 ];
+		out[ 11 ] = a[ 11 ];
+		out[ 12 ] = a[ 12 ];
+		out[ 13 ] = a[ 13 ];
+		out[ 14 ] = a[ 14 ];
+		out[ 15 ] = a[ 15 ];
+	}
+
+	// Perform axis-specific matrix multiplication
+	out[ 0 ] = a00 * c + a10 * s;
+	out[ 1 ] = a01 * c + a11 * s;
+	out[ 2 ] = a02 * c + a12 * s;
+	out[ 3 ] = a03 * c + a13 * s;
+	out[ 4 ] = a10 * c - a00 * s;
+	out[ 5 ] = a11 * c - a01 * s;
+	out[ 6 ] = a12 * c - a02 * s;
+	out[ 7 ] = a13 * c - a03 * s;
+	return out;
+};
+
+/**
+ * Rotates a matrix by the given angle around the Z axis using SIMD
+ *
+ * @param {mat4} out the receiving matrix
+ * @param {mat4} a the matrix to rotate
+ * @param {Number} rad the angle to rotate the matrix by
+ * @returns {mat4} out
+ */
+mat4.SIMD.rotateZ = function( out, a, rad )
+{
+	var s = SIMD.Float32x4.splat( Math.sin( rad ) ),
+		c = SIMD.Float32x4.splat( Math.cos( rad ) );
+
+	if ( a !== out )
+	{ // If the source and destination differ, copy the unchanged last row
+		out[ 8 ] = a[ 8 ];
+		out[ 9 ] = a[ 9 ];
+		out[ 10 ] = a[ 10 ];
+		out[ 11 ] = a[ 11 ];
+		out[ 12 ] = a[ 12 ];
+		out[ 13 ] = a[ 13 ];
+		out[ 14 ] = a[ 14 ];
+		out[ 15 ] = a[ 15 ];
+	}
+
+	// Perform axis-specific matrix multiplication
+	var a_0 = SIMD.Float32x4.load( a, 0 );
+	var a_1 = SIMD.Float32x4.load( a, 4 );
+	SIMD.Float32x4.store( out, 0,
+		SIMD.Float32x4.add( SIMD.Float32x4.mul( a_0, c ), SIMD.Float32x4.mul( a_1, s ) ) );
+	SIMD.Float32x4.store( out, 4,
+		SIMD.Float32x4.sub( SIMD.Float32x4.mul( a_1, c ), SIMD.Float32x4.mul( a_0, s ) ) );
+	return out;
+};
+
+/**
+ * Rotates a matrix by the given angle around the Z axis if SIMD available and enabled
+ *
+ * @param {mat4} out the receiving matrix
+ * @param {mat4} a the matrix to rotate
+ * @param {Number} rad the angle to rotate the matrix by
+ * @returns {mat4} out
+ */
+mat4.rotateZ = glMatrix.USE_SIMD ? mat4.SIMD.rotateZ : mat4.scalar.rotateZ;
+
+/**
+ * Creates a matrix from a vector translation
+ * This is equivalent to (but much faster than):
+ *
+ *     mat4.identity(dest);
+ *     mat4.translate(dest, dest, vec);
+ *
+ * @param {mat4} out mat4 receiving operation result
+ * @param {vec3} v Translation vector
+ * @returns {mat4} out
+ */
+mat4.fromTranslation = function( out, v )
+{
+	out[ 0 ] = 1;
+	out[ 1 ] = 0;
+	out[ 2 ] = 0;
+	out[ 3 ] = 0;
+	out[ 4 ] = 0;
+	out[ 5 ] = 1;
+	out[ 6 ] = 0;
+	out[ 7 ] = 0;
+	out[ 8 ] = 0;
+	out[ 9 ] = 0;
+	out[ 10 ] = 1;
+	out[ 11 ] = 0;
+	out[ 12 ] = v[ 0 ];
+	out[ 13 ] = v[ 1 ];
+	out[ 14 ] = v[ 2 ];
+	out[ 15 ] = 1;
+	return out;
+}
+
+/**
+ * Creates a matrix from a vector scaling
+ * This is equivalent to (but much faster than):
+ *
+ *     mat4.identity(dest);
+ *     mat4.scale(dest, dest, vec);
+ *
+ * @param {mat4} out mat4 receiving operation result
+ * @param {vec3} v Scaling vector
+ * @returns {mat4} out
+ */
+mat4.fromScaling = function( out, v )
+{
+	out[ 0 ] = v[ 0 ];
+	out[ 1 ] = 0;
+	out[ 2 ] = 0;
+	out[ 3 ] = 0;
+	out[ 4 ] = 0;
+	out[ 5 ] = v[ 1 ];
+	out[ 6 ] = 0;
+	out[ 7 ] = 0;
+	out[ 8 ] = 0;
+	out[ 9 ] = 0;
+	out[ 10 ] = v[ 2 ];
+	out[ 11 ] = 0;
+	out[ 12 ] = 0;
+	out[ 13 ] = 0;
+	out[ 14 ] = 0;
+	out[ 15 ] = 1;
+	return out;
+}
+
+/**
+ * Creates a matrix from a given angle around a given axis
+ * This is equivalent to (but much faster than):
+ *
+ *     mat4.identity(dest);
+ *     mat4.rotate(dest, dest, rad, axis);
+ *
+ * @param {mat4} out mat4 receiving operation result
+ * @param {Number} rad the angle to rotate the matrix by
+ * @param {vec3} axis the axis to rotate around
+ * @returns {mat4} out
+ */
+mat4.fromRotation = function( out, rad, axis )
+{
+	var x = axis[ 0 ],
+		y = axis[ 1 ],
+		z = axis[ 2 ],
+		len = Math.sqrt( x * x + y * y + z * z ),
+		s, c, t;
+
+	if ( Math.abs( len ) < glMatrix.EPSILON )
+	{
+		return null;
+	}
+
+	len = 1 / len;
+	x *= len;
+	y *= len;
+	z *= len;
+
+	s = Math.sin( rad );
+	c = Math.cos( rad );
+	t = 1 - c;
+
+	// Perform rotation-specific matrix multiplication
+	out[ 0 ] = x * x * t + c;
+	out[ 1 ] = y * x * t + z * s;
+	out[ 2 ] = z * x * t - y * s;
+	out[ 3 ] = 0;
+	out[ 4 ] = x * y * t - z * s;
+	out[ 5 ] = y * y * t + c;
+	out[ 6 ] = z * y * t + x * s;
+	out[ 7 ] = 0;
+	out[ 8 ] = x * z * t + y * s;
+	out[ 9 ] = y * z * t - x * s;
+	out[ 10 ] = z * z * t + c;
+	out[ 11 ] = 0;
+	out[ 12 ] = 0;
+	out[ 13 ] = 0;
+	out[ 14 ] = 0;
+	out[ 15 ] = 1;
+	return out;
+}
+
+/**
+ * Creates a matrix from the given angle around the X axis
+ * This is equivalent to (but much faster than):
+ *
+ *     mat4.identity(dest);
+ *     mat4.rotateX(dest, dest, rad);
+ *
+ * @param {mat4} out mat4 receiving operation result
+ * @param {Number} rad the angle to rotate the matrix by
+ * @returns {mat4} out
+ */
+mat4.fromXRotation = function( out, rad )
+{
+	var s = Math.sin( rad ),
+		c = Math.cos( rad );
+
+	// Perform axis-specific matrix multiplication
+	out[ 0 ] = 1;
+	out[ 1 ] = 0;
+	out[ 2 ] = 0;
+	out[ 3 ] = 0;
+	out[ 4 ] = 0;
+	out[ 5 ] = c;
+	out[ 6 ] = s;
+	out[ 7 ] = 0;
+	out[ 8 ] = 0;
+	out[ 9 ] = -s;
+	out[ 10 ] = c;
+	out[ 11 ] = 0;
+	out[ 12 ] = 0;
+	out[ 13 ] = 0;
+	out[ 14 ] = 0;
+	out[ 15 ] = 1;
+	return out;
+}
+
+/**
+ * Creates a matrix from the given angle around the Y axis
+ * This is equivalent to (but much faster than):
+ *
+ *     mat4.identity(dest);
+ *     mat4.rotateY(dest, dest, rad);
+ *
+ * @param {mat4} out mat4 receiving operation result
+ * @param {Number} rad the angle to rotate the matrix by
+ * @returns {mat4} out
+ */
+mat4.fromYRotation = function( out, rad )
+{
+	var s = Math.sin( rad ),
+		c = Math.cos( rad );
+
+	// Perform axis-specific matrix multiplication
+	out[ 0 ] = c;
+	out[ 1 ] = 0;
+	out[ 2 ] = -s;
+	out[ 3 ] = 0;
+	out[ 4 ] = 0;
+	out[ 5 ] = 1;
+	out[ 6 ] = 0;
+	out[ 7 ] = 0;
+	out[ 8 ] = s;
+	out[ 9 ] = 0;
+	out[ 10 ] = c;
+	out[ 11 ] = 0;
+	out[ 12 ] = 0;
+	out[ 13 ] = 0;
+	out[ 14 ] = 0;
+	out[ 15 ] = 1;
+	return out;
+}
+
+/**
+ * Creates a matrix from the given angle around the Z axis
+ * This is equivalent to (but much faster than):
+ *
+ *     mat4.identity(dest);
+ *     mat4.rotateZ(dest, dest, rad);
+ *
+ * @param {mat4} out mat4 receiving operation result
+ * @param {Number} rad the angle to rotate the matrix by
+ * @returns {mat4} out
+ */
+mat4.fromZRotation = function( out, rad )
+{
+	var s = Math.sin( rad ),
+		c = Math.cos( rad );
+
+	// Perform axis-specific matrix multiplication
+	out[ 0 ] = c;
+	out[ 1 ] = s;
+	out[ 2 ] = 0;
+	out[ 3 ] = 0;
+	out[ 4 ] = -s;
+	out[ 5 ] = c;
+	out[ 6 ] = 0;
+	out[ 7 ] = 0;
+	out[ 8 ] = 0;
+	out[ 9 ] = 0;
+	out[ 10 ] = 1;
+	out[ 11 ] = 0;
+	out[ 12 ] = 0;
+	out[ 13 ] = 0;
+	out[ 14 ] = 0;
+	out[ 15 ] = 1;
+	return out;
+}
+
+/**
+ * Creates a matrix from a quaternion rotation and vector translation
+ * This is equivalent to (but much faster than):
+ *
+ *     mat4.identity(dest);
+ *     mat4.translate(dest, vec);
+ *     var quatMat = mat4.create();
+ *     quat4.toMat4(quat, quatMat);
+ *     mat4.multiply(dest, quatMat);
+ *
+ * @param {mat4} out mat4 receiving operation result
+ * @param {quat4} q Rotation quaternion
+ * @param {vec3} v Translation vector
+ * @returns {mat4} out
+ */
+mat4.fromRotationTranslation = function( out, q, v )
+{
+	// Quaternion math
+	var x = q[ 0 ],
+		y = q[ 1 ],
+		z = q[ 2 ],
+		w = q[ 3 ],
+		x2 = x + x,
+		y2 = y + y,
+		z2 = z + z,
+
+		xx = x * x2,
+		xy = x * y2,
+		xz = x * z2,
+		yy = y * y2,
+		yz = y * z2,
+		zz = z * z2,
+		wx = w * x2,
+		wy = w * y2,
+		wz = w * z2;
+
+	out[ 0 ] = 1 - ( yy + zz );
+	out[ 1 ] = xy + wz;
+	out[ 2 ] = xz - wy;
+	out[ 3 ] = 0;
+	out[ 4 ] = xy - wz;
+	out[ 5 ] = 1 - ( xx + zz );
+	out[ 6 ] = yz + wx;
+	out[ 7 ] = 0;
+	out[ 8 ] = xz + wy;
+	out[ 9 ] = yz - wx;
+	out[ 10 ] = 1 - ( xx + yy );
+	out[ 11 ] = 0;
+	out[ 12 ] = v[ 0 ];
+	out[ 13 ] = v[ 1 ];
+	out[ 14 ] = v[ 2 ];
+	out[ 15 ] = 1;
+
+	return out;
+};
+
+/**
+ * Returns the translation vector component of a transformation
+ *  matrix. If a matrix is built with fromRotationTranslation,
+ *  the returned vector will be the same as the translation vector
+ *  originally supplied.
+ * @param  {vec3} out Vector to receive translation component
+ * @param  {mat4} mat Matrix to be decomposed (input)
+ * @return {vec3} out
+ */
+mat4.getTranslation = function( out, mat )
+{
+	out[ 0 ] = mat[ 12 ];
+	out[ 1 ] = mat[ 13 ];
+	out[ 2 ] = mat[ 14 ];
+
+	return out;
+};
+
+/**
+ * Returns the scaling factor component of a transformation
+ *  matrix. If a matrix is built with fromRotationTranslationScale
+ *  with a normalized Quaternion paramter, the returned vector will be
+ *  the same as the scaling vector
+ *  originally supplied.
+ * @param  {vec3} out Vector to receive scaling factor component
+ * @param  {mat4} mat Matrix to be decomposed (input)
+ * @return {vec3} out
+ */
+mat4.getScaling = function( out, mat )
+{
+	var m11 = mat[ 0 ],
+		m12 = mat[ 1 ],
+		m13 = mat[ 2 ],
+		m21 = mat[ 4 ],
+		m22 = mat[ 5 ],
+		m23 = mat[ 6 ],
+		m31 = mat[ 8 ],
+		m32 = mat[ 9 ],
+		m33 = mat[ 10 ];
+
+	out[ 0 ] = Math.sqrt( m11 * m11 + m12 * m12 + m13 * m13 );
+	out[ 1 ] = Math.sqrt( m21 * m21 + m22 * m22 + m23 * m23 );
+	out[ 2 ] = Math.sqrt( m31 * m31 + m32 * m32 + m33 * m33 );
+
+	return out;
+};
+
+/**
+ * Returns a quaternion representing the rotational component
+ *  of a transformation matrix. If a matrix is built with
+ *  fromRotationTranslation, the returned quaternion will be the
+ *  same as the quaternion originally supplied.
+ * @param {quat} out Quaternion to receive the rotation component
+ * @param {mat4} mat Matrix to be decomposed (input)
+ * @return {quat} out
+ */
+mat4.getRotation = function( out, mat )
+{
+	// Algorithm taken from http://www.euclideanspace.com/maths/geometry/rotations/conversions/matrixToQuaternion/index.htm
+	var trace = mat[ 0 ] + mat[ 5 ] + mat[ 10 ];
+	var S = 0;
+
+	if ( trace > 0 )
+	{
+		S = Math.sqrt( trace + 1.0 ) * 2;
+		out[ 3 ] = 0.25 * S;
+		out[ 0 ] = ( mat[ 6 ] - mat[ 9 ] ) / S;
+		out[ 1 ] = ( mat[ 8 ] - mat[ 2 ] ) / S;
+		out[ 2 ] = ( mat[ 1 ] - mat[ 4 ] ) / S;
+	}
+	else if ( ( mat[ 0 ] > mat[ 5 ] ) & ( mat[ 0 ] > mat[ 10 ] ) )
+	{
+		S = Math.sqrt( 1.0 + mat[ 0 ] - mat[ 5 ] - mat[ 10 ] ) * 2;
+		out[ 3 ] = ( mat[ 6 ] - mat[ 9 ] ) / S;
+		out[ 0 ] = 0.25 * S;
+		out[ 1 ] = ( mat[ 1 ] + mat[ 4 ] ) / S;
+		out[ 2 ] = ( mat[ 8 ] + mat[ 2 ] ) / S;
+	}
+	else if ( mat[ 5 ] > mat[ 10 ] )
+	{
+		S = Math.sqrt( 1.0 + mat[ 5 ] - mat[ 0 ] - mat[ 10 ] ) * 2;
+		out[ 3 ] = ( mat[ 8 ] - mat[ 2 ] ) / S;
+		out[ 0 ] = ( mat[ 1 ] + mat[ 4 ] ) / S;
+		out[ 1 ] = 0.25 * S;
+		out[ 2 ] = ( mat[ 6 ] + mat[ 9 ] ) / S;
+	}
+	else
+	{
+		S = Math.sqrt( 1.0 + mat[ 10 ] - mat[ 0 ] - mat[ 5 ] ) * 2;
+		out[ 3 ] = ( mat[ 1 ] - mat[ 4 ] ) / S;
+		out[ 0 ] = ( mat[ 8 ] + mat[ 2 ] ) / S;
+		out[ 1 ] = ( mat[ 6 ] + mat[ 9 ] ) / S;
+		out[ 2 ] = 0.25 * S;
+	}
+
+	return out;
+};
+
+/**
+ * Creates a matrix from a quaternion rotation, vector translation and vector scale
+ * This is equivalent to (but much faster than):
+ *
+ *     mat4.identity(dest);
+ *     mat4.translate(dest, vec);
+ *     var quatMat = mat4.create();
+ *     quat4.toMat4(quat, quatMat);
+ *     mat4.multiply(dest, quatMat);
+ *     mat4.scale(dest, scale)
+ *
+ * @param {mat4} out mat4 receiving operation result
+ * @param {quat4} q Rotation quaternion
+ * @param {vec3} v Translation vector
+ * @param {vec3} s Scaling vector
+ * @returns {mat4} out
+ */
+mat4.fromRotationTranslationScale = function( out, q, v, s )
+{
+	// Quaternion math
+	var x = q[ 0 ],
+		y = q[ 1 ],
+		z = q[ 2 ],
+		w = q[ 3 ],
+		x2 = x + x,
+		y2 = y + y,
+		z2 = z + z,
+
+		xx = x * x2,
+		xy = x * y2,
+		xz = x * z2,
+		yy = y * y2,
+		yz = y * z2,
+		zz = z * z2,
+		wx = w * x2,
+		wy = w * y2,
+		wz = w * z2,
+		sx = s[ 0 ],
+		sy = s[ 1 ],
+		sz = s[ 2 ];
+
+	out[ 0 ] = ( 1 - ( yy + zz ) ) * sx;
+	out[ 1 ] = ( xy + wz ) * sx;
+	out[ 2 ] = ( xz - wy ) * sx;
+	out[ 3 ] = 0;
+	out[ 4 ] = ( xy - wz ) * sy;
+	out[ 5 ] = ( 1 - ( xx + zz ) ) * sy;
+	out[ 6 ] = ( yz + wx ) * sy;
+	out[ 7 ] = 0;
+	out[ 8 ] = ( xz + wy ) * sz;
+	out[ 9 ] = ( yz - wx ) * sz;
+	out[ 10 ] = ( 1 - ( xx + yy ) ) * sz;
+	out[ 11 ] = 0;
+	out[ 12 ] = v[ 0 ];
+	out[ 13 ] = v[ 1 ];
+	out[ 14 ] = v[ 2 ];
+	out[ 15 ] = 1;
+
+	return out;
+};
+
+/**
+ * Creates a matrix from a quaternion rotation, vector translation and vector scale, rotating and scaling around the given origin
+ * This is equivalent to (but much faster than):
+ *
+ *     mat4.identity(dest);
+ *     mat4.translate(dest, vec);
+ *     mat4.translate(dest, origin);
+ *     var quatMat = mat4.create();
+ *     quat4.toMat4(quat, quatMat);
+ *     mat4.multiply(dest, quatMat);
+ *     mat4.scale(dest, scale)
+ *     mat4.translate(dest, negativeOrigin);
+ *
+ * @param {mat4} out mat4 receiving operation result
+ * @param {quat4} q Rotation quaternion
+ * @param {vec3} v Translation vector
+ * @param {vec3} s Scaling vector
+ * @param {vec3} o The origin vector around which to scale and rotate
+ * @returns {mat4} out
+ */
+mat4.fromRotationTranslationScaleOrigin = function( out, q, v, s, o )
+{
+	// Quaternion math
+	var x = q[ 0 ],
+		y = q[ 1 ],
+		z = q[ 2 ],
+		w = q[ 3 ],
+		x2 = x + x,
+		y2 = y + y,
+		z2 = z + z,
+
+		xx = x * x2,
+		xy = x * y2,
+		xz = x * z2,
+		yy = y * y2,
+		yz = y * z2,
+		zz = z * z2,
+		wx = w * x2,
+		wy = w * y2,
+		wz = w * z2,
+
+		sx = s[ 0 ],
+		sy = s[ 1 ],
+		sz = s[ 2 ],
+
+		ox = o[ 0 ],
+		oy = o[ 1 ],
+		oz = o[ 2 ];
+
+	out[ 0 ] = ( 1 - ( yy + zz ) ) * sx;
+	out[ 1 ] = ( xy + wz ) * sx;
+	out[ 2 ] = ( xz - wy ) * sx;
+	out[ 3 ] = 0;
+	out[ 4 ] = ( xy - wz ) * sy;
+	out[ 5 ] = ( 1 - ( xx + zz ) ) * sy;
+	out[ 6 ] = ( yz + wx ) * sy;
+	out[ 7 ] = 0;
+	out[ 8 ] = ( xz + wy ) * sz;
+	out[ 9 ] = ( yz - wx ) * sz;
+	out[ 10 ] = ( 1 - ( xx + yy ) ) * sz;
+	out[ 11 ] = 0;
+	out[ 12 ] = v[ 0 ] + ox - ( out[ 0 ] * ox + out[ 4 ] * oy + out[ 8 ] * oz );
+	out[ 13 ] = v[ 1 ] + oy - ( out[ 1 ] * ox + out[ 5 ] * oy + out[ 9 ] * oz );
+	out[ 14 ] = v[ 2 ] + oz - ( out[ 2 ] * ox + out[ 6 ] * oy + out[ 10 ] * oz );
+	out[ 15 ] = 1;
+
+	return out;
+};
+
+/**
+ * Calculates a 4x4 matrix from the given quaternion
+ *
+ * @param {mat4} out mat4 receiving operation result
+ * @param {quat} q Quaternion to create matrix from
+ *
+ * @returns {mat4} out
+ */
+mat4.fromQuat = function( out, q )
+{
+	var x = q[ 0 ],
+		y = q[ 1 ],
+		z = q[ 2 ],
+		w = q[ 3 ],
+		x2 = x + x,
+		y2 = y + y,
+		z2 = z + z,
+
+		xx = x * x2,
+		yx = y * x2,
+		yy = y * y2,
+		zx = z * x2,
+		zy = z * y2,
+		zz = z * z2,
+		wx = w * x2,
+		wy = w * y2,
+		wz = w * z2;
+
+	out[ 0 ] = 1 - yy - zz;
+	out[ 1 ] = yx + wz;
+	out[ 2 ] = zx - wy;
+	out[ 3 ] = 0;
+
+	out[ 4 ] = yx - wz;
+	out[ 5 ] = 1 - xx - zz;
+	out[ 6 ] = zy + wx;
+	out[ 7 ] = 0;
+
+	out[ 8 ] = zx + wy;
+	out[ 9 ] = zy - wx;
+	out[ 10 ] = 1 - xx - yy;
+	out[ 11 ] = 0;
+
+	out[ 12 ] = 0;
+	out[ 13 ] = 0;
+	out[ 14 ] = 0;
+	out[ 15 ] = 1;
+
+	return out;
+};
+
+/**
+ * Generates a frustum matrix with the given bounds
+ *
+ * @param {mat4} out mat4 frustum matrix will be written into
+ * @param {Number} left Left bound of the frustum
+ * @param {Number} right Right bound of the frustum
+ * @param {Number} bottom Bottom bound of the frustum
+ * @param {Number} top Top bound of the frustum
+ * @param {Number} near Near bound of the frustum
+ * @param {Number} far Far bound of the frustum
+ * @returns {mat4} out
+ */
+mat4.frustum = function( out, left, right, bottom, top, near, far )
+{
+	var rl = 1 / ( right - left ),
+		tb = 1 / ( top - bottom ),
+		nf = 1 / ( near - far );
+	out[ 0 ]  = ( near * 2 ) * rl;
+	out[ 1 ]  = 0;
+	out[ 2 ]  = 0;
+	out[ 3 ]  = 0;
+	out[ 4 ]  = 0;
+	out[ 5 ]  = ( near * 2 ) * tb;
+	out[ 6 ]  = 0;
+	out[ 7 ]  = 0;
+	out[ 8 ]  = ( right + left ) * rl;
+	out[ 9 ]  = ( top + bottom ) * tb;
+	out[ 10 ] = ( far + near ) * nf;
+	out[ 11 ] = -1;
+	out[ 12 ] = 0;
+	out[ 13 ] = 0;
+	out[ 14 ] = ( far * near * 2 ) * nf;
+	out[ 15 ] = 0;
+	return out;
+};
+
+/**
+ * Generates a perspective projection matrix with the given bounds
+ *
+ * @param {mat4} out mat4 frustum matrix will be written into
+ * @param {number} fovy Vertical field of view in radians
+ * @param {number} aspect Aspect ratio. typically viewport width/height
+ * @param {number} near Near bound of the frustum
+ * @param {number} far Far bound of the frustum
+ * @returns {mat4} out
+ */
+mat4.perspective = function( out, fovy, aspect, near, far )
+{
+	var f = 1.0 / Math.tan( fovy / 2 ),
+		nf = 1 / ( near - far );
+	out[ 0 ] = f / aspect;
+	out[ 1 ] = 0;
+	out[ 2 ] = 0;
+	out[ 3 ] = 0;
+	out[ 4 ] = 0;
+	out[ 5 ] = f;
+	out[ 6 ] = 0;
+	out[ 7 ] = 0;
+	out[ 8 ] = 0;
+	out[ 9 ] = 0;
+	out[ 10 ] = ( far + near ) * nf;
+	out[ 11 ] = -1;
+	out[ 12 ] = 0;
+	out[ 13 ] = 0;
+	out[ 14 ] = ( 2 * far * near ) * nf;
+	out[ 15 ] = 0;
+	return out;
+};
+
+/**
+ * Generates a perspective projection matrix with the given field of view.
+ * This is primarily useful for generating projection matrices to be used
+ * with the still experiemental WebVR API.
+ *
+ * @param {mat4} out mat4 frustum matrix will be written into
+ * @param {Object} fov Object containing the following values: upDegrees, downDegrees, leftDegrees, rightDegrees
+ * @param {number} near Near bound of the frustum
+ * @param {number} far Far bound of the frustum
+ * @returns {mat4} out
+ */
+mat4.perspectiveFromFieldOfView = function( out, fov, near, far )
+{
+	var upTan = Math.tan( fov.upDegrees * Math.PI / 180.0 ),
+		downTan = Math.tan( fov.downDegrees * Math.PI / 180.0 ),
+		leftTan = Math.tan( fov.leftDegrees * Math.PI / 180.0 ),
+		rightTan = Math.tan( fov.rightDegrees * Math.PI / 180.0 ),
+		xScale = 2.0 / ( leftTan + rightTan ),
+		yScale = 2.0 / ( upTan + downTan );
+
+	out[ 0 ] = xScale;
+	out[ 1 ] = 0.0;
+	out[ 2 ] = 0.0;
+	out[ 3 ] = 0.0;
+	out[ 4 ] = 0.0;
+	out[ 5 ] = yScale;
+	out[ 6 ] = 0.0;
+	out[ 7 ] = 0.0;
+	out[ 8 ] = -( ( leftTan - rightTan ) * xScale * 0.5 );
+	out[ 9 ] = ( ( upTan - downTan ) * yScale * 0.5 );
+	out[ 10 ] = far / ( near - far );
+	out[ 11 ] = -1.0;
+	out[ 12 ] = 0.0;
+	out[ 13 ] = 0.0;
+	out[ 14 ] = ( far * near ) / ( near - far );
+	out[ 15 ] = 0.0;
+	return out;
+}
+
+/**
+ * Generates a orthogonal projection matrix with the given bounds
+ *
+ * @param {mat4} out mat4 frustum matrix will be written into
+ * @param {number} left Left bound of the frustum
+ * @param {number} right Right bound of the frustum
+ * @param {number} bottom Bottom bound of the frustum
+ * @param {number} top Top bound of the frustum
+ * @param {number} near Near bound of the frustum
+ * @param {number} far Far bound of the frustum
+ * @returns {mat4} out
+ */
+mat4.ortho = function( out, left, right, bottom, top, near, far )
+{
+	var lr = 1 / ( left - right ),
+		bt = 1 / ( bottom - top ),
+		nf = 1 / ( near - far );
+	out[ 0 ] = -2 * lr;
+	out[ 1 ] = 0;
+	out[ 2 ] = 0;
+	out[ 3 ] = 0;
+	out[ 4 ] = 0;
+	out[ 5 ] = -2 * bt;
+	out[ 6 ] = 0;
+	out[ 7 ] = 0;
+	out[ 8 ] = 0;
+	out[ 9 ] = 0;
+	out[ 10 ] = 2 * nf;
+	out[ 11 ] = 0;
+	out[ 12 ] = ( left + right ) * lr;
+	out[ 13 ] = ( top + bottom ) * bt;
+	out[ 14 ] = ( far + near ) * nf;
+	out[ 15 ] = 1;
+	return out;
+};
+
+/**
+ * Generates a look-at matrix with the given eye position, focal point, and up axis
+ *
+ * @param {mat4} out mat4 frustum matrix will be written into
+ * @param {vec3} eye Position of the viewer
+ * @param {vec3} center Point the viewer is looking at
+ * @param {vec3} up vec3 pointing up
+ * @returns {mat4} out
+ */
+mat4.lookAt = function( out, eye, center, up )
+{
+	var x0, x1, x2, y0, y1, y2, z0, z1, z2, len,
+		eyex = eye[ 0 ],
+		eyey = eye[ 1 ],
+		eyez = eye[ 2 ],
+		upx = up[ 0 ],
+		upy = up[ 1 ],
+		upz = up[ 2 ],
+		centerx = center[ 0 ],
+		centery = center[ 1 ],
+		centerz = center[ 2 ];
+
+	if ( Math.abs( eyex - centerx ) < glMatrix.EPSILON &&
+		Math.abs( eyey - centery ) < glMatrix.EPSILON &&
+		Math.abs( eyez - centerz ) < glMatrix.EPSILON )
+	{
+		return mat4.identity( out );
+	}
+
+	z0 = eyex - centerx;
+	z1 = eyey - centery;
+	z2 = eyez - centerz;
+
+	len = 1 / Math.sqrt( z0 * z0 + z1 * z1 + z2 * z2 );
+	z0 *= len;
+	z1 *= len;
+	z2 *= len;
+
+	x0 = upy * z2 - upz * z1;
+	x1 = upz * z0 - upx * z2;
+	x2 = upx * z1 - upy * z0;
+	len = Math.sqrt( x0 * x0 + x1 * x1 + x2 * x2 );
+	if ( !len )
+	{
+		x0 = 0;
+		x1 = 0;
+		x2 = 0;
+	}
+	else
+	{
+		len = 1 / len;
+		x0 *= len;
+		x1 *= len;
+		x2 *= len;
+	}
+
+	y0 = z1 * x2 - z2 * x1;
+	y1 = z2 * x0 - z0 * x2;
+	y2 = z0 * x1 - z1 * x0;
+
+	len = Math.sqrt( y0 * y0 + y1 * y1 + y2 * y2 );
+	if ( !len )
+	{
+		y0 = 0;
+		y1 = 0;
+		y2 = 0;
+	}
+	else
+	{
+		len = 1 / len;
+		y0 *= len;
+		y1 *= len;
+		y2 *= len;
+	}
+
+	out[ 0 ] = x0;
+	out[ 1 ] = y0;
+	out[ 2 ] = z0;
+	out[ 3 ] = 0;
+	out[ 4 ] = x1;
+	out[ 5 ] = y1;
+	out[ 6 ] = z1;
+	out[ 7 ] = 0;
+	out[ 8 ] = x2;
+	out[ 9 ] = y2;
+	out[ 10 ] = z2;
+	out[ 11 ] = 0;
+	out[ 12 ] = -( x0 * eyex + x1 * eyey + x2 * eyez );
+	out[ 13 ] = -( y0 * eyex + y1 * eyey + y2 * eyez );
+	out[ 14 ] = -( z0 * eyex + z1 * eyey + z2 * eyez );
+	out[ 15 ] = 1;
+
+	return out;
+};
+
+/**
+ * Returns a string representation of a mat4
+ *
+ * @param {mat4} a matrix to represent as a string
+ * @returns {String} string representation of the matrix
+ */
+mat4.str = function( a )
+{
+	return 'mat4(' + a[ 0 ] + ', ' + a[ 1 ] + ', ' + a[ 2 ] + ', ' + a[ 3 ] + ', ' +
+		a[ 4 ] + ', ' + a[ 5 ] + ', ' + a[ 6 ] + ', ' + a[ 7 ] + ', ' +
+		a[ 8 ] + ', ' + a[ 9 ] + ', ' + a[ 10 ] + ', ' + a[ 11 ] + ', ' +
+		a[ 12 ] + ', ' + a[ 13 ] + ', ' + a[ 14 ] + ', ' + a[ 15 ] + ')';
+};
+
+/**
+ * Returns Frobenius norm of a mat4
+ *
+ * @param {mat4} a the matrix to calculate Frobenius norm of
+ * @returns {Number} Frobenius norm
+ */
+mat4.frob = function( a )
+{
+	return ( Math.sqrt( Math.pow( a[ 0 ], 2 ) + Math.pow( a[ 1 ], 2 ) + Math.pow( a[ 2 ], 2 ) + Math.pow( a[ 3 ], 2 ) + Math.pow( a[ 4 ], 2 ) + Math.pow( a[ 5 ], 2 ) + Math.pow( a[ 6 ], 2 ) + Math.pow( a[ 7 ], 2 ) + Math.pow( a[ 8 ], 2 ) + Math.pow( a[ 9 ], 2 ) + Math.pow( a[ 10 ], 2 ) + Math.pow( a[ 11 ], 2 ) + Math.pow( a[ 12 ], 2 ) + Math.pow( a[ 13 ], 2 ) + Math.pow( a[ 14 ], 2 ) + Math.pow( a[ 15 ], 2 ) ) )
+};
+
+/**
+ * Adds two mat4's
+ *
+ * @param {mat4} out the receiving matrix
+ * @param {mat4} a the first operand
+ * @param {mat4} b the second operand
+ * @returns {mat4} out
+ */
+mat4.add = function( out, a, b )
+{
+	out[ 0 ] = a[ 0 ] + b[ 0 ];
+	out[ 1 ] = a[ 1 ] + b[ 1 ];
+	out[ 2 ] = a[ 2 ] + b[ 2 ];
+	out[ 3 ] = a[ 3 ] + b[ 3 ];
+	out[ 4 ] = a[ 4 ] + b[ 4 ];
+	out[ 5 ] = a[ 5 ] + b[ 5 ];
+	out[ 6 ] = a[ 6 ] + b[ 6 ];
+	out[ 7 ] = a[ 7 ] + b[ 7 ];
+	out[ 8 ] = a[ 8 ] + b[ 8 ];
+	out[ 9 ] = a[ 9 ] + b[ 9 ];
+	out[ 10 ] = a[ 10 ] + b[ 10 ];
+	out[ 11 ] = a[ 11 ] + b[ 11 ];
+	out[ 12 ] = a[ 12 ] + b[ 12 ];
+	out[ 13 ] = a[ 13 ] + b[ 13 ];
+	out[ 14 ] = a[ 14 ] + b[ 14 ];
+	out[ 15 ] = a[ 15 ] + b[ 15 ];
+	return out;
+};
+
+/**
+ * Subtracts matrix b from matrix a
+ *
+ * @param {mat4} out the receiving matrix
+ * @param {mat4} a the first operand
+ * @param {mat4} b the second operand
+ * @returns {mat4} out
+ */
+mat4.subtract = function( out, a, b )
+{
+	out[ 0 ] = a[ 0 ] - b[ 0 ];
+	out[ 1 ] = a[ 1 ] - b[ 1 ];
+	out[ 2 ] = a[ 2 ] - b[ 2 ];
+	out[ 3 ] = a[ 3 ] - b[ 3 ];
+	out[ 4 ] = a[ 4 ] - b[ 4 ];
+	out[ 5 ] = a[ 5 ] - b[ 5 ];
+	out[ 6 ] = a[ 6 ] - b[ 6 ];
+	out[ 7 ] = a[ 7 ] - b[ 7 ];
+	out[ 8 ] = a[ 8 ] - b[ 8 ];
+	out[ 9 ] = a[ 9 ] - b[ 9 ];
+	out[ 10 ] = a[ 10 ] - b[ 10 ];
+	out[ 11 ] = a[ 11 ] - b[ 11 ];
+	out[ 12 ] = a[ 12 ] - b[ 12 ];
+	out[ 13 ] = a[ 13 ] - b[ 13 ];
+	out[ 14 ] = a[ 14 ] - b[ 14 ];
+	out[ 15 ] = a[ 15 ] - b[ 15 ];
+	return out;
+};
+
+/**
+ * Alias for {@link mat4.subtract}
+ * @function
+ */
+mat4.sub = mat4.subtract;
+
+/**
+ * Multiply each element of the matrix by a scalar.
+ *
+ * @param {mat4} out the receiving matrix
+ * @param {mat4} a the matrix to scale
+ * @param {Number} b amount to scale the matrix's elements by
+ * @returns {mat4} out
+ */
+mat4.multiplyScalar = function( out, a, b )
+{
+	out[ 0 ] = a[ 0 ] * b;
+	out[ 1 ] = a[ 1 ] * b;
+	out[ 2 ] = a[ 2 ] * b;
+	out[ 3 ] = a[ 3 ] * b;
+	out[ 4 ] = a[ 4 ] * b;
+	out[ 5 ] = a[ 5 ] * b;
+	out[ 6 ] = a[ 6 ] * b;
+	out[ 7 ] = a[ 7 ] * b;
+	out[ 8 ] = a[ 8 ] * b;
+	out[ 9 ] = a[ 9 ] * b;
+	out[ 10 ] = a[ 10 ] * b;
+	out[ 11 ] = a[ 11 ] * b;
+	out[ 12 ] = a[ 12 ] * b;
+	out[ 13 ] = a[ 13 ] * b;
+	out[ 14 ] = a[ 14 ] * b;
+	out[ 15 ] = a[ 15 ] * b;
+	return out;
+};
+
+/**
+ * Adds two mat4's after multiplying each element of the second operand by a scalar value.
+ *
+ * @param {mat4} out the receiving vector
+ * @param {mat4} a the first operand
+ * @param {mat4} b the second operand
+ * @param {Number} scale the amount to scale b's elements by before adding
+ * @returns {mat4} out
+ */
+mat4.multiplyScalarAndAdd = function( out, a, b, scale )
+{
+	out[ 0 ] = a[ 0 ] + ( b[ 0 ] * scale );
+	out[ 1 ] = a[ 1 ] + ( b[ 1 ] * scale );
+	out[ 2 ] = a[ 2 ] + ( b[ 2 ] * scale );
+	out[ 3 ] = a[ 3 ] + ( b[ 3 ] * scale );
+	out[ 4 ] = a[ 4 ] + ( b[ 4 ] * scale );
+	out[ 5 ] = a[ 5 ] + ( b[ 5 ] * scale );
+	out[ 6 ] = a[ 6 ] + ( b[ 6 ] * scale );
+	out[ 7 ] = a[ 7 ] + ( b[ 7 ] * scale );
+	out[ 8 ] = a[ 8 ] + ( b[ 8 ] * scale );
+	out[ 9 ] = a[ 9 ] + ( b[ 9 ] * scale );
+	out[ 10 ] = a[ 10 ] + ( b[ 10 ] * scale );
+	out[ 11 ] = a[ 11 ] + ( b[ 11 ] * scale );
+	out[ 12 ] = a[ 12 ] + ( b[ 12 ] * scale );
+	out[ 13 ] = a[ 13 ] + ( b[ 13 ] * scale );
+	out[ 14 ] = a[ 14 ] + ( b[ 14 ] * scale );
+	out[ 15 ] = a[ 15 ] + ( b[ 15 ] * scale );
+	return out;
+};
+
+/**
+ * Returns whether or not the matrices have exactly the same elements in the same position (when compared with ===)
+ *
+ * @param {mat4} a The first matrix.
+ * @param {mat4} b The second matrix.
+ * @returns {Boolean} True if the matrices are equal, false otherwise.
+ */
+mat4.exactEquals = function( a, b )
+{
+	return a[ 0 ] === b[ 0 ] && a[ 1 ] === b[ 1 ] && a[ 2 ] === b[ 2 ] && a[ 3 ] === b[ 3 ] &&
+		a[ 4 ] === b[ 4 ] && a[ 5 ] === b[ 5 ] && a[ 6 ] === b[ 6 ] && a[ 7 ] === b[ 7 ] &&
+		a[ 8 ] === b[ 8 ] && a[ 9 ] === b[ 9 ] && a[ 10 ] === b[ 10 ] && a[ 11 ] === b[ 11 ] &&
+		a[ 12 ] === b[ 12 ] && a[ 13 ] === b[ 13 ] && a[ 14 ] === b[ 14 ] && a[ 15 ] === b[ 15 ];
+};
+
+/**
+ * Returns whether or not the matrices have approximately the same elements in the same position.
+ *
+ * @param {mat4} a The first matrix.
+ * @param {mat4} b The second matrix.
+ * @returns {Boolean} True if the matrices are equal, false otherwise.
+ */
+mat4.equals = function( a, b )
+{
+	var a0 = a[ 0 ],
+		a1 = a[ 1 ],
+		a2 = a[ 2 ],
+		a3 = a[ 3 ],
+		a4 = a[ 4 ],
+		a5 = a[ 5 ],
+		a6 = a[ 6 ],
+		a7 = a[ 7 ],
+		a8 = a[ 8 ],
+		a9 = a[ 9 ],
+		a10 = a[ 10 ],
+		a11 = a[ 11 ],
+		a12 = a[ 12 ],
+		a13 = a[ 13 ],
+		a14 = a[ 14 ],
+		a15 = a[ 15 ];
+
+	var b0 = b[ 0 ],
+		b1 = b[ 1 ],
+		b2 = b[ 2 ],
+		b3 = b[ 3 ],
+		b4 = b[ 4 ],
+		b5 = b[ 5 ],
+		b6 = b[ 6 ],
+		b7 = b[ 7 ],
+		b8 = b[ 8 ],
+		b9 = b[ 9 ],
+		b10 = b[ 10 ],
+		b11 = b[ 11 ],
+		b12 = b[ 12 ],
+		b13 = b[ 13 ],
+		b14 = b[ 14 ],
+		b15 = b[ 15 ];
+
+	return ( Math.abs( a0 - b0 ) <= glMatrix.EPSILON * Math.max( 1.0, Math.abs( a0 ), Math.abs( b0 ) ) &&
+		Math.abs( a1 - b1 ) <= glMatrix.EPSILON * Math.max( 1.0, Math.abs( a1 ), Math.abs( b1 ) ) &&
+		Math.abs( a2 - b2 ) <= glMatrix.EPSILON * Math.max( 1.0, Math.abs( a2 ), Math.abs( b2 ) ) &&
+		Math.abs( a3 - b3 ) <= glMatrix.EPSILON * Math.max( 1.0, Math.abs( a3 ), Math.abs( b3 ) ) &&
+		Math.abs( a4 - b4 ) <= glMatrix.EPSILON * Math.max( 1.0, Math.abs( a4 ), Math.abs( b4 ) ) &&
+		Math.abs( a5 - b5 ) <= glMatrix.EPSILON * Math.max( 1.0, Math.abs( a5 ), Math.abs( b5 ) ) &&
+		Math.abs( a6 - b6 ) <= glMatrix.EPSILON * Math.max( 1.0, Math.abs( a6 ), Math.abs( b6 ) ) &&
+		Math.abs( a7 - b7 ) <= glMatrix.EPSILON * Math.max( 1.0, Math.abs( a7 ), Math.abs( b7 ) ) &&
+		Math.abs( a8 - b8 ) <= glMatrix.EPSILON * Math.max( 1.0, Math.abs( a8 ), Math.abs( b8 ) ) &&
+		Math.abs( a9 - b9 ) <= glMatrix.EPSILON * Math.max( 1.0, Math.abs( a9 ), Math.abs( b9 ) ) &&
+		Math.abs( a10 - b10 ) <= glMatrix.EPSILON * Math.max( 1.0, Math.abs( a10 ), Math.abs( b10 ) ) &&
+		Math.abs( a11 - b11 ) <= glMatrix.EPSILON * Math.max( 1.0, Math.abs( a11 ), Math.abs( b11 ) ) &&
+		Math.abs( a12 - b12 ) <= glMatrix.EPSILON * Math.max( 1.0, Math.abs( a12 ), Math.abs( b12 ) ) &&
+		Math.abs( a13 - b13 ) <= glMatrix.EPSILON * Math.max( 1.0, Math.abs( a13 ), Math.abs( b13 ) ) &&
+		Math.abs( a14 - b14 ) <= glMatrix.EPSILON * Math.max( 1.0, Math.abs( a14 ), Math.abs( b14 ) ) &&
+		Math.abs( a15 - b15 ) <= glMatrix.EPSILON * Math.max( 1.0, Math.abs( a15 ), Math.abs( b15 ) ) );
+};
+
+
+
+module.exports = mat4;
+
+},{"./common.js":6}],12:[function(require,module,exports){
+/* Copyright (c) 2015, Brandon Jones, Colin MacKenzie IV.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE. */
+
+var glMatrix = require("./common.js");
+var mat3 = require("./mat3.js");
+var vec3 = require("./vec3.js");
+var vec4 = require("./vec4.js");
+
+/**
+ * @class Quaternion
+ * @name quat
+ */
+var quat = {};
+
+/**
+ * Creates a new identity quat
+ *
+ * @returns {quat} a new quaternion
+ */
+quat.create = function() {
+    var out = new glMatrix.ARRAY_TYPE(4);
+    out[0] = 0;
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = 1;
+    return out;
+};
+
+/**
+ * Sets a quaternion to represent the shortest rotation from one
+ * vector to another.
+ *
+ * Both vectors are assumed to be unit length.
+ *
+ * @param {quat} out the receiving quaternion.
+ * @param {vec3} a the initial vector
+ * @param {vec3} b the destination vector
+ * @returns {quat} out
+ */
+quat.rotationTo = (function() {
+    var tmpvec3   = vec3.create();
+    var xUnitVec3 = vec3.fromValues(1,0,0);
+    var yUnitVec3 = vec3.fromValues(0,1,0);
+
+    return function(out, a, b) {
+        var dot = vec3.dot(a, b);
+        if (dot < -0.999999) {
+            vec3.cross(tmpvec3, xUnitVec3, a);
+            if (vec3.length(tmpvec3) < 0.000001)
+                vec3.cross(tmpvec3, yUnitVec3, a);
+            vec3.normalize(tmpvec3, tmpvec3);
+            quat.setAxisAngle(out, tmpvec3, Math.PI);
+            return out;
+        } else if (dot > 0.999999) {
+            out[0] = 0;
+            out[1] = 0;
+            out[2] = 0;
+            out[3] = 1;
+            return out;
+        } else {
+            vec3.cross(tmpvec3, a, b);
+            out[0] = tmpvec3[0];
+            out[1] = tmpvec3[1];
+            out[2] = tmpvec3[2];
+            out[3] = 1 + dot;
+            return quat.normalize(out, out);
+        }
+    };
+})();
+
+/**
+ * Sets the specified quaternion with values corresponding to the given
+ * axes. Each axis is a vec3 and is expected to be unit length and
+ * perpendicular to all other specified axes.
+ *
+ * @param {vec3} view  the vector representing the viewing direction
+ * @param {vec3} right the vector representing the local "right" direction
+ * @param {vec3} up    the vector representing the local "up" direction
+ * @returns {quat} out
+ */
+quat.setAxes = (function() {
+    var matr = mat3.create();
+
+    return function(out, view, right, up) {
+        matr[0] = right[0];
+        matr[3] = right[1];
+        matr[6] = right[2];
+
+        matr[1] = up[0];
+        matr[4] = up[1];
+        matr[7] = up[2];
+
+        matr[2] = -view[0];
+        matr[5] = -view[1];
+        matr[8] = -view[2];
+
+        return quat.normalize(out, quat.fromMat3(out, matr));
+    };
+})();
+
+/**
+ * Creates a new quat initialized with values from an existing quaternion
+ *
+ * @param {quat} a quaternion to clone
+ * @returns {quat} a new quaternion
+ * @function
+ */
+quat.clone = vec4.clone;
+
+/**
+ * Creates a new quat initialized with the given values
+ *
+ * @param {Number} x X component
+ * @param {Number} y Y component
+ * @param {Number} z Z component
+ * @param {Number} w W component
+ * @returns {quat} a new quaternion
+ * @function
+ */
+quat.fromValues = vec4.fromValues;
+
+/**
+ * Copy the values from one quat to another
+ *
+ * @param {quat} out the receiving quaternion
+ * @param {quat} a the source quaternion
+ * @returns {quat} out
+ * @function
+ */
+quat.copy = vec4.copy;
+
+/**
+ * Set the components of a quat to the given values
+ *
+ * @param {quat} out the receiving quaternion
+ * @param {Number} x X component
+ * @param {Number} y Y component
+ * @param {Number} z Z component
+ * @param {Number} w W component
+ * @returns {quat} out
+ * @function
+ */
+quat.set = vec4.set;
+
+/**
+ * Set a quat to the identity quaternion
+ *
+ * @param {quat} out the receiving quaternion
+ * @returns {quat} out
+ */
+quat.identity = function(out) {
+    out[0] = 0;
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = 1;
+    return out;
+};
+
+/**
+ * Sets a quat from the given angle and rotation axis,
+ * then returns it.
+ *
+ * @param {quat} out the receiving quaternion
+ * @param {vec3} axis the axis around which to rotate
+ * @param {Number} rad the angle in radians
+ * @returns {quat} out
+ **/
+quat.setAxisAngle = function(out, axis, rad) {
+    rad = rad * 0.5;
+    var s = Math.sin(rad);
+    out[0] = s * axis[0];
+    out[1] = s * axis[1];
+    out[2] = s * axis[2];
+    out[3] = Math.cos(rad);
+    return out;
+};
+
+/**
+ * Gets the rotation axis and angle for a given
+ *  quaternion. If a quaternion is created with
+ *  setAxisAngle, this method will return the same
+ *  values as providied in the original parameter list
+ *  OR functionally equivalent values.
+ * Example: The quaternion formed by axis [0, 0, 1] and
+ *  angle -90 is the same as the quaternion formed by
+ *  [0, 0, 1] and 270. This method favors the latter.
+ * @param  {vec3} out_axis  Vector receiving the axis of rotation
+ * @param  {quat} q     Quaternion to be decomposed
+ * @return {Number}     Angle, in radians, of the rotation
+ */
+quat.getAxisAngle = function(out_axis, q) {
+    var rad = Math.acos(q[3]) * 2.0;
+    var s = Math.sin(rad / 2.0);
+    if (s != 0.0) {
+        out_axis[0] = q[0] / s;
+        out_axis[1] = q[1] / s;
+        out_axis[2] = q[2] / s;
+    } else {
+        // If s is zero, return any axis (no rotation - axis does not matter)
+        out_axis[0] = 1;
+        out_axis[1] = 0;
+        out_axis[2] = 0;
+    }
+    return rad;
+};
+
+/**
+ * Adds two quat's
+ *
+ * @param {quat} out the receiving quaternion
+ * @param {quat} a the first operand
+ * @param {quat} b the second operand
+ * @returns {quat} out
+ * @function
+ */
+quat.add = vec4.add;
+
+/**
+ * Multiplies two quat's
+ *
+ * @param {quat} out the receiving quaternion
+ * @param {quat} a the first operand
+ * @param {quat} b the second operand
+ * @returns {quat} out
+ */
+quat.multiply = function(out, a, b) {
+    var ax = a[0], ay = a[1], az = a[2], aw = a[3],
+        bx = b[0], by = b[1], bz = b[2], bw = b[3];
+
+    out[0] = ax * bw + aw * bx + ay * bz - az * by;
+    out[1] = ay * bw + aw * by + az * bx - ax * bz;
+    out[2] = az * bw + aw * bz + ax * by - ay * bx;
+    out[3] = aw * bw - ax * bx - ay * by - az * bz;
+    return out;
+};
+
+/**
+ * Alias for {@link quat.multiply}
+ * @function
+ */
+quat.mul = quat.multiply;
+
+/**
+ * Scales a quat by a scalar number
+ *
+ * @param {quat} out the receiving vector
+ * @param {quat} a the vector to scale
+ * @param {Number} b amount to scale the vector by
+ * @returns {quat} out
+ * @function
+ */
+quat.scale = vec4.scale;
+
+/**
+ * Rotates a quaternion by the given angle about the X axis
+ *
+ * @param {quat} out quat receiving operation result
+ * @param {quat} a quat to rotate
+ * @param {number} rad angle (in radians) to rotate
+ * @returns {quat} out
+ */
+quat.rotateX = function (out, a, rad) {
+    rad *= 0.5;
+
+    var ax = a[0], ay = a[1], az = a[2], aw = a[3],
+        bx = Math.sin(rad), bw = Math.cos(rad);
+
+    out[0] = ax * bw + aw * bx;
+    out[1] = ay * bw + az * bx;
+    out[2] = az * bw - ay * bx;
+    out[3] = aw * bw - ax * bx;
+    return out;
+};
+
+/**
+ * Rotates a quaternion by the given angle about the Y axis
+ *
+ * @param {quat} out quat receiving operation result
+ * @param {quat} a quat to rotate
+ * @param {number} rad angle (in radians) to rotate
+ * @returns {quat} out
+ */
+quat.rotateY = function (out, a, rad) {
+    rad *= 0.5;
+
+    var ax = a[0], ay = a[1], az = a[2], aw = a[3],
+        by = Math.sin(rad), bw = Math.cos(rad);
+
+    out[0] = ax * bw - az * by;
+    out[1] = ay * bw + aw * by;
+    out[2] = az * bw + ax * by;
+    out[3] = aw * bw - ay * by;
+    return out;
+};
+
+/**
+ * Rotates a quaternion by the given angle about the Z axis
+ *
+ * @param {quat} out quat receiving operation result
+ * @param {quat} a quat to rotate
+ * @param {number} rad angle (in radians) to rotate
+ * @returns {quat} out
+ */
+quat.rotateZ = function (out, a, rad) {
+    rad *= 0.5;
+
+    var ax = a[0], ay = a[1], az = a[2], aw = a[3],
+        bz = Math.sin(rad), bw = Math.cos(rad);
+
+    out[0] = ax * bw + ay * bz;
+    out[1] = ay * bw - ax * bz;
+    out[2] = az * bw + aw * bz;
+    out[3] = aw * bw - az * bz;
+    return out;
+};
+
+/**
+ * Calculates the W component of a quat from the X, Y, and Z components.
+ * Assumes that quaternion is 1 unit in length.
+ * Any existing W component will be ignored.
+ *
+ * @param {quat} out the receiving quaternion
+ * @param {quat} a quat to calculate W component of
+ * @returns {quat} out
+ */
+quat.calculateW = function (out, a) {
+    var x = a[0], y = a[1], z = a[2];
+
+    out[0] = x;
+    out[1] = y;
+    out[2] = z;
+    out[3] = Math.sqrt(Math.abs(1.0 - x * x - y * y - z * z));
+    return out;
+};
+
+/**
+ * Calculates the dot product of two quat's
+ *
+ * @param {quat} a the first operand
+ * @param {quat} b the second operand
+ * @returns {Number} dot product of a and b
+ * @function
+ */
+quat.dot = vec4.dot;
+
+/**
+ * Performs a linear interpolation between two quat's
+ *
+ * @param {quat} out the receiving quaternion
+ * @param {quat} a the first operand
+ * @param {quat} b the second operand
+ * @param {Number} t interpolation amount between the two inputs
+ * @returns {quat} out
+ * @function
+ */
+quat.lerp = vec4.lerp;
+
+/**
+ * Performs a spherical linear interpolation between two quat
+ *
+ * @param {quat} out the receiving quaternion
+ * @param {quat} a the first operand
+ * @param {quat} b the second operand
+ * @param {Number} t interpolation amount between the two inputs
+ * @returns {quat} out
+ */
+quat.slerp = function (out, a, b, t) {
+    // benchmarks:
+    //    http://jsperf.com/quaternion-slerp-implementations
+
+    var ax = a[0], ay = a[1], az = a[2], aw = a[3],
+        bx = b[0], by = b[1], bz = b[2], bw = b[3];
+
+    var        omega, cosom, sinom, scale0, scale1;
+
+    // calc cosine
+    cosom = ax * bx + ay * by + az * bz + aw * bw;
+    // adjust signs (if necessary)
+    if ( cosom < 0.0 ) {
+        cosom = -cosom;
+        bx = - bx;
+        by = - by;
+        bz = - bz;
+        bw = - bw;
+    }
+    // calculate coefficients
+    if ( (1.0 - cosom) > 0.000001 ) {
+        // standard case (slerp)
+        omega  = Math.acos(cosom);
+        sinom  = Math.sin(omega);
+        scale0 = Math.sin((1.0 - t) * omega) / sinom;
+        scale1 = Math.sin(t * omega) / sinom;
+    } else {
+        // "from" and "to" quaternions are very close
+        //  ... so we can do a linear interpolation
+        scale0 = 1.0 - t;
+        scale1 = t;
+    }
+    // calculate final values
+    out[0] = scale0 * ax + scale1 * bx;
+    out[1] = scale0 * ay + scale1 * by;
+    out[2] = scale0 * az + scale1 * bz;
+    out[3] = scale0 * aw + scale1 * bw;
+
+    return out;
+};
+
+/**
+ * Performs a spherical linear interpolation with two control points
+ *
+ * @param {quat} out the receiving quaternion
+ * @param {quat} a the first operand
+ * @param {quat} b the second operand
+ * @param {quat} c the third operand
+ * @param {quat} d the fourth operand
+ * @param {Number} t interpolation amount
+ * @returns {quat} out
+ */
+quat.sqlerp = (function () {
+  var temp1 = quat.create();
+  var temp2 = quat.create();
+
+  return function (out, a, b, c, d, t) {
+    quat.slerp(temp1, a, d, t);
+    quat.slerp(temp2, b, c, t);
+    quat.slerp(out, temp1, temp2, 2 * t * (1 - t));
+
+    return out;
+  };
+}());
+
+/**
+ * Calculates the inverse of a quat
+ *
+ * @param {quat} out the receiving quaternion
+ * @param {quat} a quat to calculate inverse of
+ * @returns {quat} out
+ */
+quat.invert = function(out, a) {
+    var a0 = a[0], a1 = a[1], a2 = a[2], a3 = a[3],
+        dot = a0*a0 + a1*a1 + a2*a2 + a3*a3,
+        invDot = dot ? 1.0/dot : 0;
+
+    // TODO: Would be faster to return [0,0,0,0] immediately if dot == 0
+
+    out[0] = -a0*invDot;
+    out[1] = -a1*invDot;
+    out[2] = -a2*invDot;
+    out[3] = a3*invDot;
+    return out;
+};
+
+/**
+ * Calculates the conjugate of a quat
+ * If the quaternion is normalized, this function is faster than quat.inverse and produces the same result.
+ *
+ * @param {quat} out the receiving quaternion
+ * @param {quat} a quat to calculate conjugate of
+ * @returns {quat} out
+ */
+quat.conjugate = function (out, a) {
+    out[0] = -a[0];
+    out[1] = -a[1];
+    out[2] = -a[2];
+    out[3] = a[3];
+    return out;
+};
+
+/**
+ * Calculates the length of a quat
+ *
+ * @param {quat} a vector to calculate length of
+ * @returns {Number} length of a
+ * @function
+ */
+quat.length = vec4.length;
+
+/**
+ * Alias for {@link quat.length}
+ * @function
+ */
+quat.len = quat.length;
+
+/**
+ * Calculates the squared length of a quat
+ *
+ * @param {quat} a vector to calculate squared length of
+ * @returns {Number} squared length of a
+ * @function
+ */
+quat.squaredLength = vec4.squaredLength;
+
+/**
+ * Alias for {@link quat.squaredLength}
+ * @function
+ */
+quat.sqrLen = quat.squaredLength;
+
+/**
+ * Normalize a quat
+ *
+ * @param {quat} out the receiving quaternion
+ * @param {quat} a quaternion to normalize
+ * @returns {quat} out
+ * @function
+ */
+quat.normalize = vec4.normalize;
+
+/**
+ * Creates a quaternion from the given 3x3 rotation matrix.
+ *
+ * NOTE: The resultant quaternion is not normalized, so you should be sure
+ * to renormalize the quaternion yourself where necessary.
+ *
+ * @param {quat} out the receiving quaternion
+ * @param {mat3} m rotation matrix
+ * @returns {quat} out
+ * @function
+ */
+quat.fromMat3 = function(out, m) {
+    // Algorithm in Ken Shoemake's article in 1987 SIGGRAPH course notes
+    // article "Quaternion Calculus and Fast Animation".
+    var fTrace = m[0] + m[4] + m[8];
+    var fRoot;
+
+    if ( fTrace > 0.0 ) {
+        // |w| > 1/2, may as well choose w > 1/2
+        fRoot = Math.sqrt(fTrace + 1.0);  // 2w
+        out[3] = 0.5 * fRoot;
+        fRoot = 0.5/fRoot;  // 1/(4w)
+        out[0] = (m[5]-m[7])*fRoot;
+        out[1] = (m[6]-m[2])*fRoot;
+        out[2] = (m[1]-m[3])*fRoot;
+    } else {
+        // |w| <= 1/2
+        var i = 0;
+        if ( m[4] > m[0] )
+          i = 1;
+        if ( m[8] > m[i*3+i] )
+          i = 2;
+        var j = (i+1)%3;
+        var k = (i+2)%3;
+
+        fRoot = Math.sqrt(m[i*3+i]-m[j*3+j]-m[k*3+k] + 1.0);
+        out[i] = 0.5 * fRoot;
+        fRoot = 0.5 / fRoot;
+        out[3] = (m[j*3+k] - m[k*3+j]) * fRoot;
+        out[j] = (m[j*3+i] + m[i*3+j]) * fRoot;
+        out[k] = (m[k*3+i] + m[i*3+k]) * fRoot;
+    }
+
+    return out;
+};
+
+/**
+ * Returns a string representation of a quatenion
+ *
+ * @param {quat} a vector to represent as a string
+ * @returns {String} string representation of the vector
+ */
+quat.str = function (a) {
+    return 'quat(' + a[0] + ', ' + a[1] + ', ' + a[2] + ', ' + a[3] + ')';
+};
+
+/**
+ * Returns whether or not the quaternions have exactly the same elements in the same position (when compared with ===)
+ *
+ * @param {quat} a The first quaternion.
+ * @param {quat} b The second quaternion.
+ * @returns {Boolean} True if the vectors are equal, false otherwise.
+ */
+quat.exactEquals = vec4.exactEquals;
+
+/**
+ * Returns whether or not the quaternions have approximately the same elements in the same position.
+ *
+ * @param {quat} a The first vector.
+ * @param {quat} b The second vector.
+ * @returns {Boolean} True if the vectors are equal, false otherwise.
+ */
+quat.equals = vec4.equals;
+
+module.exports = quat;
+
+},{"./common.js":6,"./mat3.js":10,"./vec3.js":14,"./vec4.js":15}],13:[function(require,module,exports){
+/* Copyright (c) 2015, Brandon Jones, Colin MacKenzie IV.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE. */
+
+var glMatrix = require("./common.js");
+
+/**
+ * @class 2 Dimensional Vector
+ * @name vec2
+ */
+var vec2 = {};
+
+/**
+ * Creates a new, empty vec2
+ *
+ * @returns {vec2} a new 2D vector
+ */
+vec2.create = function() {
+    var out = new glMatrix.ARRAY_TYPE(2);
+    out[0] = 0;
+    out[1] = 0;
+    return out;
+};
+
+/**
+ * Creates a new vec2 initialized with values from an existing vector
+ *
+ * @param {vec2} a vector to clone
+ * @returns {vec2} a new 2D vector
+ */
+vec2.clone = function(a) {
+    var out = new glMatrix.ARRAY_TYPE(2);
+    out[0] = a[0];
+    out[1] = a[1];
+    return out;
+};
+
+/**
+ * Creates a new vec2 initialized with the given values
+ *
+ * @param {Number} x X component
+ * @param {Number} y Y component
+ * @returns {vec2} a new 2D vector
+ */
+vec2.fromValues = function(x, y) {
+    var out = new glMatrix.ARRAY_TYPE(2);
+    out[0] = x;
+    out[1] = y;
+    return out;
+};
+
+/**
+ * Copy the values from one vec2 to another
+ *
+ * @param {vec2} out the receiving vector
+ * @param {vec2} a the source vector
+ * @returns {vec2} out
+ */
+vec2.copy = function(out, a) {
+    out[0] = a[0];
+    out[1] = a[1];
+    return out;
+};
+
+/**
+ * Set the components of a vec2 to the given values
+ *
+ * @param {vec2} out the receiving vector
+ * @param {Number} x X component
+ * @param {Number} y Y component
+ * @returns {vec2} out
+ */
+vec2.set = function(out, x, y) {
+    out[0] = x;
+    out[1] = y;
+    return out;
+};
+
+/**
+ * Adds two vec2's
+ *
+ * @param {vec2} out the receiving vector
+ * @param {vec2} a the first operand
+ * @param {vec2} b the second operand
+ * @returns {vec2} out
+ */
+vec2.add = function(out, a, b) {
+    out[0] = a[0] + b[0];
+    out[1] = a[1] + b[1];
+    return out;
+};
+
+/**
+ * Subtracts vector b from vector a
+ *
+ * @param {vec2} out the receiving vector
+ * @param {vec2} a the first operand
+ * @param {vec2} b the second operand
+ * @returns {vec2} out
+ */
+vec2.subtract = function(out, a, b) {
+    out[0] = a[0] - b[0];
+    out[1] = a[1] - b[1];
+    return out;
+};
+
+/**
+ * Alias for {@link vec2.subtract}
+ * @function
+ */
+vec2.sub = vec2.subtract;
+
+/**
+ * Multiplies two vec2's
+ *
+ * @param {vec2} out the receiving vector
+ * @param {vec2} a the first operand
+ * @param {vec2} b the second operand
+ * @returns {vec2} out
+ */
+vec2.multiply = function(out, a, b) {
+    out[0] = a[0] * b[0];
+    out[1] = a[1] * b[1];
+    return out;
+};
+
+/**
+ * Alias for {@link vec2.multiply}
+ * @function
+ */
+vec2.mul = vec2.multiply;
+
+/**
+ * Divides two vec2's
+ *
+ * @param {vec2} out the receiving vector
+ * @param {vec2} a the first operand
+ * @param {vec2} b the second operand
+ * @returns {vec2} out
+ */
+vec2.divide = function(out, a, b) {
+    out[0] = a[0] / b[0];
+    out[1] = a[1] / b[1];
+    return out;
+};
+
+/**
+ * Alias for {@link vec2.divide}
+ * @function
+ */
+vec2.div = vec2.divide;
+
+/**
+ * Math.ceil the components of a vec2
+ *
+ * @param {vec2} out the receiving vector
+ * @param {vec2} a vector to ceil
+ * @returns {vec2} out
+ */
+vec2.ceil = function (out, a) {
+    out[0] = Math.ceil(a[0]);
+    out[1] = Math.ceil(a[1]);
+    return out;
+};
+
+/**
+ * Math.floor the components of a vec2
+ *
+ * @param {vec2} out the receiving vector
+ * @param {vec2} a vector to floor
+ * @returns {vec2} out
+ */
+vec2.floor = function (out, a) {
+    out[0] = Math.floor(a[0]);
+    out[1] = Math.floor(a[1]);
+    return out;
+};
+
+/**
+ * Returns the minimum of two vec2's
+ *
+ * @param {vec2} out the receiving vector
+ * @param {vec2} a the first operand
+ * @param {vec2} b the second operand
+ * @returns {vec2} out
+ */
+vec2.min = function(out, a, b) {
+    out[0] = Math.min(a[0], b[0]);
+    out[1] = Math.min(a[1], b[1]);
+    return out;
+};
+
+/**
+ * Returns the maximum of two vec2's
+ *
+ * @param {vec2} out the receiving vector
+ * @param {vec2} a the first operand
+ * @param {vec2} b the second operand
+ * @returns {vec2} out
+ */
+vec2.max = function(out, a, b) {
+    out[0] = Math.max(a[0], b[0]);
+    out[1] = Math.max(a[1], b[1]);
+    return out;
+};
+
+/**
+ * Math.round the components of a vec2
+ *
+ * @param {vec2} out the receiving vector
+ * @param {vec2} a vector to round
+ * @returns {vec2} out
+ */
+vec2.round = function (out, a) {
+    out[0] = Math.round(a[0]);
+    out[1] = Math.round(a[1]);
+    return out;
+};
+
+/**
+ * Scales a vec2 by a scalar number
+ *
+ * @param {vec2} out the receiving vector
+ * @param {vec2} a the vector to scale
+ * @param {Number} b amount to scale the vector by
+ * @returns {vec2} out
+ */
+vec2.scale = function(out, a, b) {
+    out[0] = a[0] * b;
+    out[1] = a[1] * b;
+    return out;
+};
+
+/**
+ * Adds two vec2's after scaling the second operand by a scalar value
+ *
+ * @param {vec2} out the receiving vector
+ * @param {vec2} a the first operand
+ * @param {vec2} b the second operand
+ * @param {Number} scale the amount to scale b by before adding
+ * @returns {vec2} out
+ */
+vec2.scaleAndAdd = function(out, a, b, scale) {
+    out[0] = a[0] + (b[0] * scale);
+    out[1] = a[1] + (b[1] * scale);
+    return out;
+};
+
+/**
+ * Calculates the euclidian distance between two vec2's
+ *
+ * @param {vec2} a the first operand
+ * @param {vec2} b the second operand
+ * @returns {Number} distance between a and b
+ */
+vec2.distance = function(a, b) {
+    var x = b[0] - a[0],
+        y = b[1] - a[1];
+    return Math.sqrt(x*x + y*y);
+};
+
+/**
+ * Alias for {@link vec2.distance}
+ * @function
+ */
+vec2.dist = vec2.distance;
+
+/**
+ * Calculates the squared euclidian distance between two vec2's
+ *
+ * @param {vec2} a the first operand
+ * @param {vec2} b the second operand
+ * @returns {Number} squared distance between a and b
+ */
+vec2.squaredDistance = function(a, b) {
+    var x = b[0] - a[0],
+        y = b[1] - a[1];
+    return x*x + y*y;
+};
+
+/**
+ * Alias for {@link vec2.squaredDistance}
+ * @function
+ */
+vec2.sqrDist = vec2.squaredDistance;
+
+/**
+ * Calculates the length of a vec2
+ *
+ * @param {vec2} a vector to calculate length of
+ * @returns {Number} length of a
+ */
+vec2.length = function (a) {
+    var x = a[0],
+        y = a[1];
+    return Math.sqrt(x*x + y*y);
+};
+
+/**
+ * Alias for {@link vec2.length}
+ * @function
+ */
+vec2.len = vec2.length;
+
+/**
+ * Calculates the squared length of a vec2
+ *
+ * @param {vec2} a vector to calculate squared length of
+ * @returns {Number} squared length of a
+ */
+vec2.squaredLength = function (a) {
+    var x = a[0],
+        y = a[1];
+    return x*x + y*y;
+};
+
+/**
+ * Alias for {@link vec2.squaredLength}
+ * @function
+ */
+vec2.sqrLen = vec2.squaredLength;
+
+/**
+ * Negates the components of a vec2
+ *
+ * @param {vec2} out the receiving vector
+ * @param {vec2} a vector to negate
+ * @returns {vec2} out
+ */
+vec2.negate = function(out, a) {
+    out[0] = -a[0];
+    out[1] = -a[1];
+    return out;
+};
+
+/**
+ * Returns the inverse of the components of a vec2
+ *
+ * @param {vec2} out the receiving vector
+ * @param {vec2} a vector to invert
+ * @returns {vec2} out
+ */
+vec2.inverse = function(out, a) {
+  out[0] = 1.0 / a[0];
+  out[1] = 1.0 / a[1];
+  return out;
+};
+
+/**
+ * Normalize a vec2
+ *
+ * @param {vec2} out the receiving vector
+ * @param {vec2} a vector to normalize
+ * @returns {vec2} out
+ */
+vec2.normalize = function(out, a) {
+    var x = a[0],
+        y = a[1];
+    var len = x*x + y*y;
+    if (len > 0) {
+        //TODO: evaluate use of glm_invsqrt here?
+        len = 1 / Math.sqrt(len);
+        out[0] = a[0] * len;
+        out[1] = a[1] * len;
+    }
+    return out;
+};
+
+/**
+ * Calculates the dot product of two vec2's
+ *
+ * @param {vec2} a the first operand
+ * @param {vec2} b the second operand
+ * @returns {Number} dot product of a and b
+ */
+vec2.dot = function (a, b) {
+    return a[0] * b[0] + a[1] * b[1];
+};
+
+/**
+ * Computes the cross product of two vec2's
+ * Note that the cross product must by definition produce a 3D vector
+ *
+ * @param {vec3} out the receiving vector
+ * @param {vec2} a the first operand
+ * @param {vec2} b the second operand
+ * @returns {vec3} out
+ */
+vec2.cross = function(out, a, b) {
+    var z = a[0] * b[1] - a[1] * b[0];
+    out[0] = out[1] = 0;
+    out[2] = z;
+    return out;
+};
+
+/**
+ * Performs a linear interpolation between two vec2's
+ *
+ * @param {vec2} out the receiving vector
+ * @param {vec2} a the first operand
+ * @param {vec2} b the second operand
+ * @param {Number} t interpolation amount between the two inputs
+ * @returns {vec2} out
+ */
+vec2.lerp = function (out, a, b, t) {
+    var ax = a[0],
+        ay = a[1];
+    out[0] = ax + t * (b[0] - ax);
+    out[1] = ay + t * (b[1] - ay);
+    return out;
+};
+
+/**
+ * Generates a random vector with the given scale
+ *
+ * @param {vec2} out the receiving vector
+ * @param {Number} [scale] Length of the resulting vector. If ommitted, a unit vector will be returned
+ * @returns {vec2} out
+ */
+vec2.random = function (out, scale) {
+    scale = scale || 1.0;
+    var r = glMatrix.RANDOM() * 2.0 * Math.PI;
+    out[0] = Math.cos(r) * scale;
+    out[1] = Math.sin(r) * scale;
+    return out;
+};
+
+/**
+ * Transforms the vec2 with a mat2
+ *
+ * @param {vec2} out the receiving vector
+ * @param {vec2} a the vector to transform
+ * @param {mat2} m matrix to transform with
+ * @returns {vec2} out
+ */
+vec2.transformMat2 = function(out, a, m) {
+    var x = a[0],
+        y = a[1];
+    out[0] = m[0] * x + m[2] * y;
+    out[1] = m[1] * x + m[3] * y;
+    return out;
+};
+
+/**
+ * Transforms the vec2 with a mat2d
+ *
+ * @param {vec2} out the receiving vector
+ * @param {vec2} a the vector to transform
+ * @param {mat2d} m matrix to transform with
+ * @returns {vec2} out
+ */
+vec2.transformMat2d = function(out, a, m) {
+    var x = a[0],
+        y = a[1];
+    out[0] = m[0] * x + m[2] * y + m[4];
+    out[1] = m[1] * x + m[3] * y + m[5];
+    return out;
+};
+
+/**
+ * Transforms the vec2 with a mat3
+ * 3rd vector component is implicitly '1'
+ *
+ * @param {vec2} out the receiving vector
+ * @param {vec2} a the vector to transform
+ * @param {mat3} m matrix to transform with
+ * @returns {vec2} out
+ */
+vec2.transformMat3 = function(out, a, m) {
+    var x = a[0],
+        y = a[1];
+    out[0] = m[0] * x + m[3] * y + m[6];
+    out[1] = m[1] * x + m[4] * y + m[7];
+    return out;
+};
+
+/**
+ * Transforms the vec2 with a mat4
+ * 3rd vector component is implicitly '0'
+ * 4th vector component is implicitly '1'
+ *
+ * @param {vec2} out the receiving vector
+ * @param {vec2} a the vector to transform
+ * @param {mat4} m matrix to transform with
+ * @returns {vec2} out
+ */
+vec2.transformMat4 = function(out, a, m) {
+    var x = a[0], 
+        y = a[1];
+    out[0] = m[0] * x + m[4] * y + m[12];
+    out[1] = m[1] * x + m[5] * y + m[13];
+    return out;
+};
+
+/**
+ * Perform some operation over an array of vec2s.
+ *
+ * @param {Array} a the array of vectors to iterate over
+ * @param {Number} stride Number of elements between the start of each vec2. If 0 assumes tightly packed
+ * @param {Number} offset Number of elements to skip at the beginning of the array
+ * @param {Number} count Number of vec2s to iterate over. If 0 iterates over entire array
+ * @param {Function} fn Function to call for each vector in the array
+ * @param {Object} [arg] additional argument to pass to fn
+ * @returns {Array} a
+ * @function
+ */
+vec2.forEach = (function() {
+    var vec = vec2.create();
+
+    return function(a, stride, offset, count, fn, arg) {
+        var i, l;
+        if(!stride) {
+            stride = 2;
+        }
+
+        if(!offset) {
+            offset = 0;
+        }
+        
+        if(count) {
+            l = Math.min((count * stride) + offset, a.length);
+        } else {
+            l = a.length;
+        }
+
+        for(i = offset; i < l; i += stride) {
+            vec[0] = a[i]; vec[1] = a[i+1];
+            fn(vec, vec, arg);
+            a[i] = vec[0]; a[i+1] = vec[1];
+        }
+        
+        return a;
+    };
+})();
+
+/**
+ * Returns a string representation of a vector
+ *
+ * @param {vec2} a vector to represent as a string
+ * @returns {String} string representation of the vector
+ */
+vec2.str = function (a) {
+    return 'vec2(' + a[0] + ', ' + a[1] + ')';
+};
+
+/**
+ * Returns whether or not the vectors exactly have the same elements in the same position (when compared with ===)
+ *
+ * @param {vec2} a The first vector.
+ * @param {vec2} b The second vector.
+ * @returns {Boolean} True if the vectors are equal, false otherwise.
+ */
+vec2.exactEquals = function (a, b) {
+    return a[0] === b[0] && a[1] === b[1];
+};
+
+/**
+ * Returns whether or not the vectors have approximately the same elements in the same position.
+ *
+ * @param {vec2} a The first vector.
+ * @param {vec2} b The second vector.
+ * @returns {Boolean} True if the vectors are equal, false otherwise.
+ */
+vec2.equals = function (a, b) {
+    var a0 = a[0], a1 = a[1];
+    var b0 = b[0], b1 = b[1];
+    return (Math.abs(a0 - b0) <= glMatrix.EPSILON*Math.max(1.0, Math.abs(a0), Math.abs(b0)) &&
+            Math.abs(a1 - b1) <= glMatrix.EPSILON*Math.max(1.0, Math.abs(a1), Math.abs(b1)));
+};
+
+module.exports = vec2;
+
+},{"./common.js":6}],14:[function(require,module,exports){
+/* Copyright (c) 2015, Brandon Jones, Colin MacKenzie IV.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE. */
+
+var glMatrix = require( "./common.js" );
+
+/**
+ * @class 3 Dimensional Vector
+ * @name vec3
+ */
+var vec3 = {};
+
+/**
+ * Creates a new, empty vec3
+ *
+ * @returns {vec3} a new 3D vector
+ */
+vec3.create = function()
+{
+	var out = new glMatrix.ARRAY_TYPE( 3 );
+	out[ 0 ] = 0;
+	out[ 1 ] = 0;
+	out[ 2 ] = 0;
+	return out;
+};
+
+/**
+ * Creates a new vec3 initialized with values from an existing vector
+ *
+ * @param {vec3} a vector to clone
+ * @returns {vec3} a new 3D vector
+ */
+vec3.clone = function( a )
+{
+	var out = new glMatrix.ARRAY_TYPE( 3 );
+	out[ 0 ] = a[ 0 ];
+	out[ 1 ] = a[ 1 ];
+	out[ 2 ] = a[ 2 ];
+	return out;
+};
+
+/**
+ * Creates a new vec3 initialized with the given values
+ *
+ * @param {Number} x X component
+ * @param {Number} y Y component
+ * @param {Number} z Z component
+ * @returns {vec3} a new 3D vector
+ */
+vec3.fromValues = function( x, y, z )
+{
+	var out = new glMatrix.ARRAY_TYPE( 3 );
+	out[ 0 ] = x;
+	out[ 1 ] = y;
+	out[ 2 ] = z;
+	return out;
+};
+
+/**
+ * Copy the values from one vec3 to another
+ *
+ * @param {vec3} out the receiving vector
+ * @param {vec3} a the source vector
+ * @returns {vec3} out
+ */
+vec3.copy = function( out, a )
+{
+	out[ 0 ] = a[ 0 ];
+	out[ 1 ] = a[ 1 ];
+	out[ 2 ] = a[ 2 ];
+	return out;
+};
+
+/**
+ * Set the components of a vec3 to the given values
+ *
+ * @param {vec3} out the receiving vector
+ * @param {Number} x X component
+ * @param {Number} y Y component
+ * @param {Number} z Z component
+ * @returns {vec3} out
+ */
+vec3.set = function( out, x, y, z )
+{
+	out[ 0 ] = x;
+	out[ 1 ] = y;
+	out[ 2 ] = z;
+	return out;
+};
+
+/**
+ * Adds two vec3's
+ *
+ * @param {vec3} out the receiving vector
+ * @param {vec3} a the first operand
+ * @param {vec3} b the second operand
+ * @returns {vec3} out
+ */
+vec3.add = function( out, a, b )
+{
+	out[ 0 ] = a[ 0 ] + b[ 0 ];
+	out[ 1 ] = a[ 1 ] + b[ 1 ];
+	out[ 2 ] = a[ 2 ] + b[ 2 ];
+	return out;
+};
+
+/**
+ * Subtracts vector b from vector a
+ *
+ * @param {vec3} out the receiving vector
+ * @param {vec3} a the first operand
+ * @param {vec3} b the second operand
+ * @returns {vec3} out
+ */
+vec3.subtract = function( out, a, b )
+{
+	out[ 0 ] = a[ 0 ] - b[ 0 ];
+	out[ 1 ] = a[ 1 ] - b[ 1 ];
+	out[ 2 ] = a[ 2 ] - b[ 2 ];
+	return out;
+};
+
+/**
+ * Alias for {@link vec3.subtract}
+ * @function
+ */
+vec3.sub = vec3.subtract;
+
+/**
+ * Multiplies two vec3's
+ *
+ * @param {vec3} out the receiving vector
+ * @param {vec3} a the first operand
+ * @param {vec3} b the second operand
+ * @returns {vec3} out
+ */
+vec3.multiply = function( out, a, b )
+{
+	out[ 0 ] = a[ 0 ] * b[ 0 ];
+	out[ 1 ] = a[ 1 ] * b[ 1 ];
+	out[ 2 ] = a[ 2 ] * b[ 2 ];
+	return out;
+};
+
+/**
+ * Alias for {@link vec3.multiply}
+ * @function
+ */
+vec3.mul = vec3.multiply;
+
+/**
+ * Divides two vec3's
+ *
+ * @param {vec3} out the receiving vector
+ * @param {vec3} a the first operand
+ * @param {vec3} b the second operand
+ * @returns {vec3} out
+ */
+vec3.divide = function( out, a, b )
+{
+	out[ 0 ] = a[ 0 ] / b[ 0 ];
+	out[ 1 ] = a[ 1 ] / b[ 1 ];
+	out[ 2 ] = a[ 2 ] / b[ 2 ];
+	return out;
+};
+
+/**
+ * Alias for {@link vec3.divide}
+ * @function
+ */
+vec3.div = vec3.divide;
+
+/**
+ * Math.ceil the components of a vec3
+ *
+ * @param {vec3} out the receiving vector
+ * @param {vec3} a vector to ceil
+ * @returns {vec3} out
+ */
+vec3.ceil = function( out, a )
+{
+	out[ 0 ] = Math.ceil( a[ 0 ] );
+	out[ 1 ] = Math.ceil( a[ 1 ] );
+	out[ 2 ] = Math.ceil( a[ 2 ] );
+	return out;
+};
+
+/**
+ * Math.floor the components of a vec3
+ *
+ * @param {vec3} out the receiving vector
+ * @param {vec3} a vector to floor
+ * @returns {vec3} out
+ */
+vec3.floor = function( out, a )
+{
+	out[ 0 ] = Math.floor( a[ 0 ] );
+	out[ 1 ] = Math.floor( a[ 1 ] );
+	out[ 2 ] = Math.floor( a[ 2 ] );
+	return out;
+};
+
+/**
+ * Returns the minimum of two vec3's
+ *
+ * @param {vec3} out the receiving vector
+ * @param {vec3} a the first operand
+ * @param {vec3} b the second operand
+ * @returns {vec3} out
+ */
+vec3.min = function( out, a, b )
+{
+	out[ 0 ] = Math.min( a[ 0 ], b[ 0 ] );
+	out[ 1 ] = Math.min( a[ 1 ], b[ 1 ] );
+	out[ 2 ] = Math.min( a[ 2 ], b[ 2 ] );
+	return out;
+};
+
+/**
+ * Returns the maximum of two vec3's
+ *
+ * @param {vec3} out the receiving vector
+ * @param {vec3} a the first operand
+ * @param {vec3} b the second operand
+ * @returns {vec3} out
+ */
+vec3.max = function( out, a, b )
+{
+	out[ 0 ] = Math.max( a[ 0 ], b[ 0 ] );
+	out[ 1 ] = Math.max( a[ 1 ], b[ 1 ] );
+	out[ 2 ] = Math.max( a[ 2 ], b[ 2 ] );
+	return out;
+};
+
+/**
+ * Math.round the components of a vec3
+ *
+ * @param {vec3} out the receiving vector
+ * @param {vec3} a vector to round
+ * @returns {vec3} out
+ */
+vec3.round = function( out, a )
+{
+	out[ 0 ] = Math.round( a[ 0 ] );
+	out[ 1 ] = Math.round( a[ 1 ] );
+	out[ 2 ] = Math.round( a[ 2 ] );
+	return out;
+};
+
+/**
+ * Scales a vec3 by a scalar number
+ *
+ * @param {vec3} out the receiving vector
+ * @param {vec3} a the vector to scale
+ * @param {Number} b amount to scale the vector by
+ * @returns {vec3} out
+ */
+vec3.scale = function( out, a, b )
+{
+	out[ 0 ] = a[ 0 ] * b;
+	out[ 1 ] = a[ 1 ] * b;
+	out[ 2 ] = a[ 2 ] * b;
+	return out;
+};
+
+/**
+ * Adds two vec3's after scaling the second operand by a scalar value
+ *
+ * @param {vec3} out the receiving vector
+ * @param {vec3} a the first operand
+ * @param {vec3} b the second operand
+ * @param {Number} scale the amount to scale b by before adding
+ * @returns {vec3} out
+ */
+vec3.scaleAndAdd = function( out, a, b, scale )
+{
+	out[ 0 ] = a[ 0 ] + ( b[ 0 ] * scale );
+	out[ 1 ] = a[ 1 ] + ( b[ 1 ] * scale );
+	out[ 2 ] = a[ 2 ] + ( b[ 2 ] * scale );
+	return out;
+};
+
+/**
+ * Calculates the euclidian distance between two vec3's
+ *
+ * @param {vec3} a the first operand
+ * @param {vec3} b the second operand
+ * @returns {Number} distance between a and b
+ */
+vec3.distance = function( a, b )
+{
+	var x = b[ 0 ] - a[ 0 ],
+		y = b[ 1 ] - a[ 1 ],
+		z = b[ 2 ] - a[ 2 ];
+	return Math.sqrt( x * x + y * y + z * z );
+};
+
+/**
+ * Alias for {@link vec3.distance}
+ * @function
+ */
+vec3.dist = vec3.distance;
+
+/**
+ * Calculates the squared euclidian distance between two vec3's
+ *
+ * @param {vec3} a the first operand
+ * @param {vec3} b the second operand
+ * @returns {Number} squared distance between a and b
+ */
+vec3.squaredDistance = function( a, b )
+{
+	var x = b[ 0 ] - a[ 0 ],
+		y = b[ 1 ] - a[ 1 ],
+		z = b[ 2 ] - a[ 2 ];
+	return x * x + y * y + z * z;
+};
+
+/**
+ * Alias for {@link vec3.squaredDistance}
+ * @function
+ */
+vec3.sqrDist = vec3.squaredDistance;
+
+/**
+ * Calculates the length of a vec3
+ *
+ * @param {vec3} a vector to calculate length of
+ * @returns {Number} length of a
+ */
+vec3.length = function( a )
+{
+	var x = a[ 0 ],
+		y = a[ 1 ],
+		z = a[ 2 ];
+	return Math.sqrt( x * x + y * y + z * z );
+};
+
+/**
+ * Alias for {@link vec3.length}
+ * @function
+ */
+vec3.len = vec3.length;
+
+/**
+ * Calculates the squared length of a vec3
+ *
+ * @param {vec3} a vector to calculate squared length of
+ * @returns {Number} squared length of a
+ */
+vec3.squaredLength = function( a )
+{
+	var x = a[ 0 ],
+		y = a[ 1 ],
+		z = a[ 2 ];
+	return x * x + y * y + z * z;
+};
+
+/**
+ * Alias for {@link vec3.squaredLength}
+ * @function
+ */
+vec3.sqrLen = vec3.squaredLength;
+
+/**
+ * Negates the components of a vec3
+ *
+ * @param {vec3} out the receiving vector
+ * @param {vec3} a vector to negate
+ * @returns {vec3} out
+ */
+vec3.negate = function( out, a )
+{
+	out[ 0 ] = -a[ 0 ];
+	out[ 1 ] = -a[ 1 ];
+	out[ 2 ] = -a[ 2 ];
+	return out;
+};
+
+/**
+ * Returns the inverse of the components of a vec3
+ *
+ * @param {vec3} out the receiving vector
+ * @param {vec3} a vector to invert
+ * @returns {vec3} out
+ */
+vec3.inverse = function( out, a )
+{
+	out[ 0 ] = 1.0 / a[ 0 ];
+	out[ 1 ] = 1.0 / a[ 1 ];
+	out[ 2 ] = 1.0 / a[ 2 ];
+	return out;
+};
+
+/**
+ * Normalize a vec3
+ *
+ * @param {vec3} out the receiving vector
+ * @param {vec3} a vector to normalize
+ * @returns {vec3} out
+ */
+vec3.normalize = function( out, a )
+{
+	var x = a[ 0 ],
+		y = a[ 1 ],
+		z = a[ 2 ];
+	var len = x * x + y * y + z * z;
+	if ( len > 0 )
+	{
+		//TODO: evaluate use of glm_invsqrt here?
+		len = 1 / Math.sqrt( len );
+		out[ 0 ] = a[ 0 ] * len;
+		out[ 1 ] = a[ 1 ] * len;
+		out[ 2 ] = a[ 2 ] * len;
+	}
+	return out;
+};
+
+/**
+ * Calculates the dot product of two vec3's
+ *
+ * @param {vec3} a the first operand
+ * @param {vec3} b the second operand
+ * @returns {Number} dot product of a and b
+ */
+vec3.dot = function( a, b )
+{
+	return a[ 0 ] * b[ 0 ] + a[ 1 ] * b[ 1 ] + a[ 2 ] * b[ 2 ];
+};
+
+/**
+ * Computes the cross product of two vec3's
+ *
+ * @param {vec3} out the receiving vector
+ * @param {vec3} a the first operand
+ * @param {vec3} b the second operand
+ * @returns {vec3} out
+ */
+vec3.cross = function( out, a, b )
+{
+	var ax = a[ 0 ],
+		ay = a[ 1 ],
+		az = a[ 2 ],
+		bx = b[ 0 ],
+		by = b[ 1 ],
+		bz = b[ 2 ];
+
+	out[ 0 ] = ay * bz - az * by;
+	out[ 1 ] = az * bx - ax * bz;
+	out[ 2 ] = ax * by - ay * bx;
+	return out;
+};
+
+/**
+ * Performs a linear interpolation between two vec3's
+ *
+ * @param {vec3} out the receiving vector
+ * @param {vec3} a the first operand
+ * @param {vec3} b the second operand
+ * @param {Number} t interpolation amount between the two inputs
+ * @returns {vec3} out
+ */
+vec3.lerp = function( out, a, b, t )
+{
+	var ax = a[ 0 ],
+		ay = a[ 1 ],
+		az = a[ 2 ];
+	out[ 0 ] = ax + t * ( b[ 0 ] - ax );
+	out[ 1 ] = ay + t * ( b[ 1 ] - ay );
+	out[ 2 ] = az + t * ( b[ 2 ] - az );
+	return out;
+};
+
+/**
+ * Performs a hermite interpolation with two control points
+ *
+ * @param {vec3} out the receiving vector
+ * @param {vec3} a the first operand
+ * @param {vec3} b the second operand
+ * @param {vec3} c the third operand
+ * @param {vec3} d the fourth operand
+ * @param {Number} t interpolation amount between the two inputs
+ * @returns {vec3} out
+ */
+vec3.hermite = function( out, a, b, c, d, t )
+{
+	var factorTimes2 = t * t,
+		factor1 = factorTimes2 * ( 2 * t - 3 ) + 1,
+		factor2 = factorTimes2 * ( t - 2 ) + t,
+		factor3 = factorTimes2 * ( t - 1 ),
+		factor4 = factorTimes2 * ( 3 - 2 * t );
+
+	out[ 0 ] = a[ 0 ] * factor1 + b[ 0 ] * factor2 + c[ 0 ] * factor3 + d[ 0 ] * factor4;
+	out[ 1 ] = a[ 1 ] * factor1 + b[ 1 ] * factor2 + c[ 1 ] * factor3 + d[ 1 ] * factor4;
+	out[ 2 ] = a[ 2 ] * factor1 + b[ 2 ] * factor2 + c[ 2 ] * factor3 + d[ 2 ] * factor4;
+
+	return out;
+};
+
+/**
+ * Performs a bezier interpolation with two control points
+ *
+ * @param {vec3} out the receiving vector
+ * @param {vec3} a the first operand
+ * @param {vec3} b the second operand
+ * @param {vec3} c the third operand
+ * @param {vec3} d the fourth operand
+ * @param {Number} t interpolation amount between the two inputs
+ * @returns {vec3} out
+ */
+vec3.bezier = function( out, a, b, c, d, t )
+{
+	var inverseFactor = 1 - t,
+		inverseFactorTimesTwo = inverseFactor * inverseFactor,
+		factorTimes2 = t * t,
+		factor1 = inverseFactorTimesTwo * inverseFactor,
+		factor2 = 3 * t * inverseFactorTimesTwo,
+		factor3 = 3 * factorTimes2 * inverseFactor,
+		factor4 = factorTimes2 * t;
+
+	out[ 0 ] = a[ 0 ] * factor1 + b[ 0 ] * factor2 + c[ 0 ] * factor3 + d[ 0 ] * factor4;
+	out[ 1 ] = a[ 1 ] * factor1 + b[ 1 ] * factor2 + c[ 1 ] * factor3 + d[ 1 ] * factor4;
+	out[ 2 ] = a[ 2 ] * factor1 + b[ 2 ] * factor2 + c[ 2 ] * factor3 + d[ 2 ] * factor4;
+
+	return out;
+};
+
+/**
+ * Generates a random vector with the given scale
+ *
+ * @param {vec3} out the receiving vector
+ * @param {Number} [scale] Length of the resulting vector. If ommitted, a unit vector will be returned
+ * @returns {vec3} out
+ */
+vec3.random = function( out, scale )
+{
+	scale = scale || 1.0;
+
+	var r = glMatrix.RANDOM() * 2.0 * Math.PI;
+	var z = ( glMatrix.RANDOM() * 2.0 ) - 1.0;
+	var zScale = Math.sqrt( 1.0 - z * z ) * scale;
+
+	out[ 0 ] = Math.cos( r ) * zScale;
+	out[ 1 ] = Math.sin( r ) * zScale;
+	out[ 2 ] = z * scale;
+	return out;
+};
+
+/**
+ * Transforms the vec3 with a mat4.
+ * 4th vector component is implicitly '1'
+ *
+ * @param {vec3} out the receiving vector
+ * @param {vec3} a the vector to transform
+ * @param {mat4} m matrix to transform with
+ * @returns {vec3} out
+ */
+vec3.transformMat4 = function( out, a, m )
+{
+	var x = a[ 0 ],
+		y = a[ 1 ],
+		z = a[ 2 ],
+		w = m[ 3 ] * x + m[ 7 ] * y + m[ 11 ] * z + m[ 15 ];
+	w = w || 1.0;
+	out[ 0 ] = ( m[ 0 ] * x + m[ 4 ] * y + m[ 8 ] * z + m[ 12 ] ) / w;
+	out[ 1 ] = ( m[ 1 ] * x + m[ 5 ] * y + m[ 9 ] * z + m[ 13 ] ) / w;
+	out[ 2 ] = ( m[ 2 ] * x + m[ 6 ] * y + m[ 10 ] * z + m[ 14 ] ) / w;
+	return out;
+};
+
+/**
+ * Transforms the vec3 with a mat3.
+ *
+ * @param {vec3} out the receiving vector
+ * @param {vec3} a the vector to transform
+ * @param {mat4} m the 3x3 matrix to transform with
+ * @returns {vec3} out
+ */
+vec3.transformMat3 = function( out, a, m )
+{
+	var x = a[ 0 ],
+		y = a[ 1 ],
+		z = a[ 2 ];
+	out[ 0 ] = x * m[ 0 ] + y * m[ 3 ] + z * m[ 6 ];
+	out[ 1 ] = x * m[ 1 ] + y * m[ 4 ] + z * m[ 7 ];
+	out[ 2 ] = x * m[ 2 ] + y * m[ 5 ] + z * m[ 8 ];
+	return out;
+};
+
+/**
+ * Transforms the vec3 with a quat
+ *
+ * @param {vec3} out the receiving vector
+ * @param {vec3} a the vector to transform
+ * @param {quat} q quaternion to transform with
+ * @returns {vec3} out
+ */
+vec3.transformQuat = function( out, a, q )
+{
+	// benchmarks: http://jsperf.com/quaternion-transform-vec3-implementations
+
+	var x = a[ 0 ],
+		y = a[ 1 ],
+		z = a[ 2 ],
+		qx = q[ 0 ],
+		qy = q[ 1 ],
+		qz = q[ 2 ],
+		qw = q[ 3 ],
+
+		// calculate quat * vec
+		ix = qw * x + qy * z - qz * y,
+		iy = qw * y + qz * x - qx * z,
+		iz = qw * z + qx * y - qy * x,
+		iw = -qx * x - qy * y - qz * z;
+
+	// calculate result * inverse quat
+	out[ 0 ] = ix * qw + iw * -qx + iy * -qz - iz * -qy;
+	out[ 1 ] = iy * qw + iw * -qy + iz * -qx - ix * -qz;
+	out[ 2 ] = iz * qw + iw * -qz + ix * -qy - iy * -qx;
+	return out;
+};
+
+/**
+ * Rotate a 3D vector around the x-axis
+ * @param {vec3} out The receiving vec3
+ * @param {vec3} a The vec3 point to rotate
+ * @param {vec3} b The origin of the rotation
+ * @param {Number} c The angle of rotation
+ * @returns {vec3} out
+ */
+vec3.rotateX = function( out, a, b, c )
+{
+	var p = [],
+		r = [];
+	//Translate point to the origin
+	p[ 0 ] = a[ 0 ] - b[ 0 ];
+	p[ 1 ] = a[ 1 ] - b[ 1 ];
+	p[ 2 ] = a[ 2 ] - b[ 2 ];
+
+	//perform rotation
+	r[ 0 ] = p[ 0 ];
+	r[ 1 ] = p[ 1 ] * Math.cos( c ) - p[ 2 ] * Math.sin( c );
+	r[ 2 ] = p[ 1 ] * Math.sin( c ) + p[ 2 ] * Math.cos( c );
+
+	//translate to correct position
+	out[ 0 ] = r[ 0 ] + b[ 0 ];
+	out[ 1 ] = r[ 1 ] + b[ 1 ];
+	out[ 2 ] = r[ 2 ] + b[ 2 ];
+
+	return out;
+};
+
+/**
+ * Rotate a 3D vector around the y-axis
+ * @param {vec3} out The receiving vec3
+ * @param {vec3} a The vec3 point to rotate
+ * @param {vec3} b The origin of the rotation
+ * @param {Number} c The angle of rotation
+ * @returns {vec3} out
+ */
+vec3.rotateY = function( out, a, b, c )
+{
+	var p = [],
+		r = [];
+	//Translate point to the origin
+	p[ 0 ] = a[ 0 ] - b[ 0 ];
+	p[ 1 ] = a[ 1 ] - b[ 1 ];
+	p[ 2 ] = a[ 2 ] - b[ 2 ];
+
+	//perform rotation
+	r[ 0 ] = p[ 2 ] * Math.sin( c ) + p[ 0 ] * Math.cos( c );
+	r[ 1 ] = p[ 1 ];
+	r[ 2 ] = p[ 2 ] * Math.cos( c ) - p[ 0 ] * Math.sin( c );
+
+	//translate to correct position
+	out[ 0 ] = r[ 0 ] + b[ 0 ];
+	out[ 1 ] = r[ 1 ] + b[ 1 ];
+	out[ 2 ] = r[ 2 ] + b[ 2 ];
+
+	return out;
+};
+
+/**
+ * Rotate a 3D vector around the z-axis
+ * @param {vec3} out The receiving vec3
+ * @param {vec3} a The vec3 point to rotate
+ * @param {vec3} b The origin of the rotation
+ * @param {Number} c The angle of rotation
+ * @returns {vec3} out
+ */
+vec3.rotateZ = function( out, a, b, c )
+{
+	var p = [],
+		r = [];
+	//Translate point to the origin
+	p[ 0 ] = a[ 0 ] - b[ 0 ];
+	p[ 1 ] = a[ 1 ] - b[ 1 ];
+	p[ 2 ] = a[ 2 ] - b[ 2 ];
+
+	//perform rotation
+	r[ 0 ] = p[ 0 ] * Math.cos( c ) - p[ 1 ] * Math.sin( c );
+	r[ 1 ] = p[ 0 ] * Math.sin( c ) + p[ 1 ] * Math.cos( c );
+	r[ 2 ] = p[ 2 ];
+
+	//translate to correct position
+	out[ 0 ] = r[ 0 ] + b[ 0 ];
+	out[ 1 ] = r[ 1 ] + b[ 1 ];
+	out[ 2 ] = r[ 2 ] + b[ 2 ];
+
+	return out;
+};
+
+/**
+ * Perform some operation over an array of vec3s.
+ *
+ * @param {Array} a the array of vectors to iterate over
+ * @param {Number} stride Number of elements between the start of each vec3. If 0 assumes tightly packed
+ * @param {Number} offset Number of elements to skip at the beginning of the array
+ * @param {Number} count Number of vec3s to iterate over. If 0 iterates over entire array
+ * @param {Function} fn Function to call for each vector in the array
+ * @param {Object} [arg] additional argument to pass to fn
+ * @returns {Array} a
+ * @function
+ */
+vec3.forEach = ( function()
+{
+	var vec = vec3.create();
+
+	return function( a, stride, offset, count, fn, arg )
+	{
+		var i, l;
+		if ( !stride )
+		{
+			stride = 3;
+		}
+
+		if ( !offset )
+		{
+			offset = 0;
+		}
+
+		if ( count )
+		{
+			l = Math.min( ( count * stride ) + offset, a.length );
+		}
+		else
+		{
+			l = a.length;
+		}
+
+		for ( i = offset; i < l; i += stride )
+		{
+			vec[ 0 ] = a[ i ];
+			vec[ 1 ] = a[ i + 1 ];
+			vec[ 2 ] = a[ i + 2 ];
+			fn( vec, vec, arg );
+			a[ i ] = vec[ 0 ];
+			a[ i + 1 ] = vec[ 1 ];
+			a[ i + 2 ] = vec[ 2 ];
+		}
+
+		return a;
+	};
+} )();
+
+/**
+ * Get the angle between two 3D vectors
+ * @param {vec3} a The first operand
+ * @param {vec3} b The second operand
+ * @returns {Number} The angle in radians
+ */
+vec3.angle = function( a, b )
+{
+
+	var tempA = vec3.fromValues( a[ 0 ], a[ 1 ], a[ 2 ] );
+	var tempB = vec3.fromValues( b[ 0 ], b[ 1 ], b[ 2 ] );
+
+	vec3.normalize( tempA, tempA );
+	vec3.normalize( tempB, tempB );
+
+	var cosine = vec3.dot( tempA, tempB );
+
+	if ( cosine > 1.0 )
+	{
+		return 0;
+	}
+	else if ( cosine < -1.0 )
+	{
+		return Math.PI;
+	}
+	else
+	{
+		return Math.acos( cosine );
+	}
+};
+
+/**
+ * Returns a string representation of a vector
+ *
+ * @param {vec3} a vector to represent as a string
+ * @returns {String} string representation of the vector
+ */
+vec3.str = function( a )
+{
+	return 'vec3(' + a[ 0 ] + ', ' + a[ 1 ] + ', ' + a[ 2 ] + ')';
+};
+
+/**
+ * Returns whether or not the vectors have exactly the same elements in the same position (when compared with ===)
+ *
+ * @param {vec3} a The first vector.
+ * @param {vec3} b The second vector.
+ * @returns {Boolean} True if the vectors are equal, false otherwise.
+ */
+vec3.exactEquals = function( a, b )
+{
+	return a[ 0 ] === b[ 0 ] && a[ 1 ] === b[ 1 ] && a[ 2 ] === b[ 2 ];
+};
+
+/**
+ * Returns whether or not the vectors have approximately the same elements in the same position.
+ *
+ * @param {vec3} a The first vector.
+ * @param {vec3} b The second vector.
+ * @returns {Boolean} True if the vectors are equal, false otherwise.
+ */
+vec3.equals = function( a, b )
+{
+	var a0 = a[ 0 ],
+		a1 = a[ 1 ],
+		a2 = a[ 2 ];
+	var b0 = b[ 0 ],
+		b1 = b[ 1 ],
+		b2 = b[ 2 ];
+	return ( Math.abs( a0 - b0 ) <= glMatrix.EPSILON * Math.max( 1.0, Math.abs( a0 ), Math.abs( b0 ) ) &&
+		Math.abs( a1 - b1 ) <= glMatrix.EPSILON * Math.max( 1.0, Math.abs( a1 ), Math.abs( b1 ) ) &&
+		Math.abs( a2 - b2 ) <= glMatrix.EPSILON * Math.max( 1.0, Math.abs( a2 ), Math.abs( b2 ) ) );
+};
+
+module.exports = vec3;
+
+},{"./common.js":6}],15:[function(require,module,exports){
+/* Copyright (c) 2015, Brandon Jones, Colin MacKenzie IV.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE. */
+
+var glMatrix = require("./common.js");
+
+/**
+ * @class 4 Dimensional Vector
+ * @name vec4
+ */
+var vec4 = {};
+
+/**
+ * Creates a new, empty vec4
+ *
+ * @returns {vec4} a new 4D vector
+ */
+vec4.create = function() {
+    var out = new glMatrix.ARRAY_TYPE(4);
+    out[0] = 0;
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = 0;
+    return out;
+};
+
+/**
+ * Creates a new vec4 initialized with values from an existing vector
+ *
+ * @param {vec4} a vector to clone
+ * @returns {vec4} a new 4D vector
+ */
+vec4.clone = function(a) {
+    var out = new glMatrix.ARRAY_TYPE(4);
+    out[0] = a[0];
+    out[1] = a[1];
+    out[2] = a[2];
+    out[3] = a[3];
+    return out;
+};
+
+/**
+ * Creates a new vec4 initialized with the given values
+ *
+ * @param {Number} x X component
+ * @param {Number} y Y component
+ * @param {Number} z Z component
+ * @param {Number} w W component
+ * @returns {vec4} a new 4D vector
+ */
+vec4.fromValues = function(x, y, z, w) {
+    var out = new glMatrix.ARRAY_TYPE(4);
+    out[0] = x;
+    out[1] = y;
+    out[2] = z;
+    out[3] = w;
+    return out;
+};
+
+/**
+ * Copy the values from one vec4 to another
+ *
+ * @param {vec4} out the receiving vector
+ * @param {vec4} a the source vector
+ * @returns {vec4} out
+ */
+vec4.copy = function(out, a) {
+    out[0] = a[0];
+    out[1] = a[1];
+    out[2] = a[2];
+    out[3] = a[3];
+    return out;
+};
+
+/**
+ * Set the components of a vec4 to the given values
+ *
+ * @param {vec4} out the receiving vector
+ * @param {Number} x X component
+ * @param {Number} y Y component
+ * @param {Number} z Z component
+ * @param {Number} w W component
+ * @returns {vec4} out
+ */
+vec4.set = function(out, x, y, z, w) {
+    out[0] = x;
+    out[1] = y;
+    out[2] = z;
+    out[3] = w;
+    return out;
+};
+
+/**
+ * Adds two vec4's
+ *
+ * @param {vec4} out the receiving vector
+ * @param {vec4} a the first operand
+ * @param {vec4} b the second operand
+ * @returns {vec4} out
+ */
+vec4.add = function(out, a, b) {
+    out[0] = a[0] + b[0];
+    out[1] = a[1] + b[1];
+    out[2] = a[2] + b[2];
+    out[3] = a[3] + b[3];
+    return out;
+};
+
+/**
+ * Subtracts vector b from vector a
+ *
+ * @param {vec4} out the receiving vector
+ * @param {vec4} a the first operand
+ * @param {vec4} b the second operand
+ * @returns {vec4} out
+ */
+vec4.subtract = function(out, a, b) {
+    out[0] = a[0] - b[0];
+    out[1] = a[1] - b[1];
+    out[2] = a[2] - b[2];
+    out[3] = a[3] - b[3];
+    return out;
+};
+
+/**
+ * Alias for {@link vec4.subtract}
+ * @function
+ */
+vec4.sub = vec4.subtract;
+
+/**
+ * Multiplies two vec4's
+ *
+ * @param {vec4} out the receiving vector
+ * @param {vec4} a the first operand
+ * @param {vec4} b the second operand
+ * @returns {vec4} out
+ */
+vec4.multiply = function(out, a, b) {
+    out[0] = a[0] * b[0];
+    out[1] = a[1] * b[1];
+    out[2] = a[2] * b[2];
+    out[3] = a[3] * b[3];
+    return out;
+};
+
+/**
+ * Alias for {@link vec4.multiply}
+ * @function
+ */
+vec4.mul = vec4.multiply;
+
+/**
+ * Divides two vec4's
+ *
+ * @param {vec4} out the receiving vector
+ * @param {vec4} a the first operand
+ * @param {vec4} b the second operand
+ * @returns {vec4} out
+ */
+vec4.divide = function(out, a, b) {
+    out[0] = a[0] / b[0];
+    out[1] = a[1] / b[1];
+    out[2] = a[2] / b[2];
+    out[3] = a[3] / b[3];
+    return out;
+};
+
+/**
+ * Alias for {@link vec4.divide}
+ * @function
+ */
+vec4.div = vec4.divide;
+
+/**
+ * Math.ceil the components of a vec4
+ *
+ * @param {vec4} out the receiving vector
+ * @param {vec4} a vector to ceil
+ * @returns {vec4} out
+ */
+vec4.ceil = function (out, a) {
+    out[0] = Math.ceil(a[0]);
+    out[1] = Math.ceil(a[1]);
+    out[2] = Math.ceil(a[2]);
+    out[3] = Math.ceil(a[3]);
+    return out;
+};
+
+/**
+ * Math.floor the components of a vec4
+ *
+ * @param {vec4} out the receiving vector
+ * @param {vec4} a vector to floor
+ * @returns {vec4} out
+ */
+vec4.floor = function (out, a) {
+    out[0] = Math.floor(a[0]);
+    out[1] = Math.floor(a[1]);
+    out[2] = Math.floor(a[2]);
+    out[3] = Math.floor(a[3]);
+    return out;
+};
+
+/**
+ * Returns the minimum of two vec4's
+ *
+ * @param {vec4} out the receiving vector
+ * @param {vec4} a the first operand
+ * @param {vec4} b the second operand
+ * @returns {vec4} out
+ */
+vec4.min = function(out, a, b) {
+    out[0] = Math.min(a[0], b[0]);
+    out[1] = Math.min(a[1], b[1]);
+    out[2] = Math.min(a[2], b[2]);
+    out[3] = Math.min(a[3], b[3]);
+    return out;
+};
+
+/**
+ * Returns the maximum of two vec4's
+ *
+ * @param {vec4} out the receiving vector
+ * @param {vec4} a the first operand
+ * @param {vec4} b the second operand
+ * @returns {vec4} out
+ */
+vec4.max = function(out, a, b) {
+    out[0] = Math.max(a[0], b[0]);
+    out[1] = Math.max(a[1], b[1]);
+    out[2] = Math.max(a[2], b[2]);
+    out[3] = Math.max(a[3], b[3]);
+    return out;
+};
+
+/**
+ * Math.round the components of a vec4
+ *
+ * @param {vec4} out the receiving vector
+ * @param {vec4} a vector to round
+ * @returns {vec4} out
+ */
+vec4.round = function (out, a) {
+    out[0] = Math.round(a[0]);
+    out[1] = Math.round(a[1]);
+    out[2] = Math.round(a[2]);
+    out[3] = Math.round(a[3]);
+    return out;
+};
+
+/**
+ * Scales a vec4 by a scalar number
+ *
+ * @param {vec4} out the receiving vector
+ * @param {vec4} a the vector to scale
+ * @param {Number} b amount to scale the vector by
+ * @returns {vec4} out
+ */
+vec4.scale = function(out, a, b) {
+    out[0] = a[0] * b;
+    out[1] = a[1] * b;
+    out[2] = a[2] * b;
+    out[3] = a[3] * b;
+    return out;
+};
+
+/**
+ * Adds two vec4's after scaling the second operand by a scalar value
+ *
+ * @param {vec4} out the receiving vector
+ * @param {vec4} a the first operand
+ * @param {vec4} b the second operand
+ * @param {Number} scale the amount to scale b by before adding
+ * @returns {vec4} out
+ */
+vec4.scaleAndAdd = function(out, a, b, scale) {
+    out[0] = a[0] + (b[0] * scale);
+    out[1] = a[1] + (b[1] * scale);
+    out[2] = a[2] + (b[2] * scale);
+    out[3] = a[3] + (b[3] * scale);
+    return out;
+};
+
+/**
+ * Calculates the euclidian distance between two vec4's
+ *
+ * @param {vec4} a the first operand
+ * @param {vec4} b the second operand
+ * @returns {Number} distance between a and b
+ */
+vec4.distance = function(a, b) {
+    var x = b[0] - a[0],
+        y = b[1] - a[1],
+        z = b[2] - a[2],
+        w = b[3] - a[3];
+    return Math.sqrt(x*x + y*y + z*z + w*w);
+};
+
+/**
+ * Alias for {@link vec4.distance}
+ * @function
+ */
+vec4.dist = vec4.distance;
+
+/**
+ * Calculates the squared euclidian distance between two vec4's
+ *
+ * @param {vec4} a the first operand
+ * @param {vec4} b the second operand
+ * @returns {Number} squared distance between a and b
+ */
+vec4.squaredDistance = function(a, b) {
+    var x = b[0] - a[0],
+        y = b[1] - a[1],
+        z = b[2] - a[2],
+        w = b[3] - a[3];
+    return x*x + y*y + z*z + w*w;
+};
+
+/**
+ * Alias for {@link vec4.squaredDistance}
+ * @function
+ */
+vec4.sqrDist = vec4.squaredDistance;
+
+/**
+ * Calculates the length of a vec4
+ *
+ * @param {vec4} a vector to calculate length of
+ * @returns {Number} length of a
+ */
+vec4.length = function (a) {
+    var x = a[0],
+        y = a[1],
+        z = a[2],
+        w = a[3];
+    return Math.sqrt(x*x + y*y + z*z + w*w);
+};
+
+/**
+ * Alias for {@link vec4.length}
+ * @function
+ */
+vec4.len = vec4.length;
+
+/**
+ * Calculates the squared length of a vec4
+ *
+ * @param {vec4} a vector to calculate squared length of
+ * @returns {Number} squared length of a
+ */
+vec4.squaredLength = function (a) {
+    var x = a[0],
+        y = a[1],
+        z = a[2],
+        w = a[3];
+    return x*x + y*y + z*z + w*w;
+};
+
+/**
+ * Alias for {@link vec4.squaredLength}
+ * @function
+ */
+vec4.sqrLen = vec4.squaredLength;
+
+/**
+ * Negates the components of a vec4
+ *
+ * @param {vec4} out the receiving vector
+ * @param {vec4} a vector to negate
+ * @returns {vec4} out
+ */
+vec4.negate = function(out, a) {
+    out[0] = -a[0];
+    out[1] = -a[1];
+    out[2] = -a[2];
+    out[3] = -a[3];
+    return out;
+};
+
+/**
+ * Returns the inverse of the components of a vec4
+ *
+ * @param {vec4} out the receiving vector
+ * @param {vec4} a vector to invert
+ * @returns {vec4} out
+ */
+vec4.inverse = function(out, a) {
+  out[0] = 1.0 / a[0];
+  out[1] = 1.0 / a[1];
+  out[2] = 1.0 / a[2];
+  out[3] = 1.0 / a[3];
+  return out;
+};
+
+/**
+ * Normalize a vec4
+ *
+ * @param {vec4} out the receiving vector
+ * @param {vec4} a vector to normalize
+ * @returns {vec4} out
+ */
+vec4.normalize = function(out, a) {
+    var x = a[0],
+        y = a[1],
+        z = a[2],
+        w = a[3];
+    var len = x*x + y*y + z*z + w*w;
+    if (len > 0) {
+        len = 1 / Math.sqrt(len);
+        out[0] = x * len;
+        out[1] = y * len;
+        out[2] = z * len;
+        out[3] = w * len;
+    }
+    return out;
+};
+
+/**
+ * Calculates the dot product of two vec4's
+ *
+ * @param {vec4} a the first operand
+ * @param {vec4} b the second operand
+ * @returns {Number} dot product of a and b
+ */
+vec4.dot = function (a, b) {
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+};
+
+/**
+ * Performs a linear interpolation between two vec4's
+ *
+ * @param {vec4} out the receiving vector
+ * @param {vec4} a the first operand
+ * @param {vec4} b the second operand
+ * @param {Number} t interpolation amount between the two inputs
+ * @returns {vec4} out
+ */
+vec4.lerp = function (out, a, b, t) {
+    var ax = a[0],
+        ay = a[1],
+        az = a[2],
+        aw = a[3];
+    out[0] = ax + t * (b[0] - ax);
+    out[1] = ay + t * (b[1] - ay);
+    out[2] = az + t * (b[2] - az);
+    out[3] = aw + t * (b[3] - aw);
+    return out;
+};
+
+/**
+ * Generates a random vector with the given scale
+ *
+ * @param {vec4} out the receiving vector
+ * @param {Number} [scale] Length of the resulting vector. If ommitted, a unit vector will be returned
+ * @returns {vec4} out
+ */
+vec4.random = function (out, scale) {
+    scale = scale || 1.0;
+
+    //TODO: This is a pretty awful way of doing this. Find something better.
+    out[0] = glMatrix.RANDOM();
+    out[1] = glMatrix.RANDOM();
+    out[2] = glMatrix.RANDOM();
+    out[3] = glMatrix.RANDOM();
+    vec4.normalize(out, out);
+    vec4.scale(out, out, scale);
+    return out;
+};
+
+/**
+ * Transforms the vec4 with a mat4.
+ *
+ * @param {vec4} out the receiving vector
+ * @param {vec4} a the vector to transform
+ * @param {mat4} m matrix to transform with
+ * @returns {vec4} out
+ */
+vec4.transformMat4 = function(out, a, m) {
+    var x = a[0], y = a[1], z = a[2], w = a[3];
+    out[0] = m[0] * x + m[4] * y + m[8] * z + m[12] * w;
+    out[1] = m[1] * x + m[5] * y + m[9] * z + m[13] * w;
+    out[2] = m[2] * x + m[6] * y + m[10] * z + m[14] * w;
+    out[3] = m[3] * x + m[7] * y + m[11] * z + m[15] * w;
+    return out;
+};
+
+/**
+ * Transforms the vec4 with a quat
+ *
+ * @param {vec4} out the receiving vector
+ * @param {vec4} a the vector to transform
+ * @param {quat} q quaternion to transform with
+ * @returns {vec4} out
+ */
+vec4.transformQuat = function(out, a, q) {
+    var x = a[0], y = a[1], z = a[2],
+        qx = q[0], qy = q[1], qz = q[2], qw = q[3],
+
+        // calculate quat * vec
+        ix = qw * x + qy * z - qz * y,
+        iy = qw * y + qz * x - qx * z,
+        iz = qw * z + qx * y - qy * x,
+        iw = -qx * x - qy * y - qz * z;
+
+    // calculate result * inverse quat
+    out[0] = ix * qw + iw * -qx + iy * -qz - iz * -qy;
+    out[1] = iy * qw + iw * -qy + iz * -qx - ix * -qz;
+    out[2] = iz * qw + iw * -qz + ix * -qy - iy * -qx;
+    out[3] = a[3];
+    return out;
+};
+
+/**
+ * Perform some operation over an array of vec4s.
+ *
+ * @param {Array} a the array of vectors to iterate over
+ * @param {Number} stride Number of elements between the start of each vec4. If 0 assumes tightly packed
+ * @param {Number} offset Number of elements to skip at the beginning of the array
+ * @param {Number} count Number of vec4s to iterate over. If 0 iterates over entire array
+ * @param {Function} fn Function to call for each vector in the array
+ * @param {Object} [arg] additional argument to pass to fn
+ * @returns {Array} a
+ * @function
+ */
+vec4.forEach = (function() {
+    var vec = vec4.create();
+
+    return function(a, stride, offset, count, fn, arg) {
+        var i, l;
+        if(!stride) {
+            stride = 4;
+        }
+
+        if(!offset) {
+            offset = 0;
+        }
+
+        if(count) {
+            l = Math.min((count * stride) + offset, a.length);
+        } else {
+            l = a.length;
+        }
+
+        for(i = offset; i < l; i += stride) {
+            vec[0] = a[i]; vec[1] = a[i+1]; vec[2] = a[i+2]; vec[3] = a[i+3];
+            fn(vec, vec, arg);
+            a[i] = vec[0]; a[i+1] = vec[1]; a[i+2] = vec[2]; a[i+3] = vec[3];
+        }
+
+        return a;
+    };
+})();
+
+/**
+ * Returns a string representation of a vector
+ *
+ * @param {vec4} a vector to represent as a string
+ * @returns {String} string representation of the vector
+ */
+vec4.str = function (a) {
+    return 'vec4(' + a[0] + ', ' + a[1] + ', ' + a[2] + ', ' + a[3] + ')';
+};
+
+/**
+ * Returns whether or not the vectors have exactly the same elements in the same position (when compared with ===)
+ *
+ * @param {vec4} a The first vector.
+ * @param {vec4} b The second vector.
+ * @returns {Boolean} True if the vectors are equal, false otherwise.
+ */
+vec4.exactEquals = function (a, b) {
+    return a[0] === b[0] && a[1] === b[1] && a[2] === b[2] && a[3] === b[3];
+};
+
+/**
+ * Returns whether or not the vectors have approximately the same elements in the same position.
+ *
+ * @param {vec4} a The first vector.
+ * @param {vec4} b The second vector.
+ * @returns {Boolean} True if the vectors are equal, false otherwise.
+ */
+vec4.equals = function (a, b) {
+    var a0 = a[0], a1 = a[1], a2 = a[2], a3 = a[3];
+    var b0 = b[0], b1 = b[1], b2 = b[2], b3 = b[3];
+    return (Math.abs(a0 - b0) <= glMatrix.EPSILON*Math.max(1.0, Math.abs(a0), Math.abs(b0)) &&
+            Math.abs(a1 - b1) <= glMatrix.EPSILON*Math.max(1.0, Math.abs(a1), Math.abs(b1)) &&
+            Math.abs(a2 - b2) <= glMatrix.EPSILON*Math.max(1.0, Math.abs(a2), Math.abs(b2)) &&
+            Math.abs(a3 - b3) <= glMatrix.EPSILON*Math.max(1.0, Math.abs(a3), Math.abs(b3)));
+};
+
+module.exports = vec4;
+
+},{"./common.js":6}],16:[function(require,module,exports){
+function parse_args( length, args )
+{
+	return args.length ? [...args,length] : [length];
+}
+
+function Matrix_Template( base, length )
+{
+	class Matrix extends Float32Array
+	{
+		////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+		static get idenity()
+		{
+			return base.idenity( new this.constructor() )
+		}
+		static get ELEMENTS()
+		{
+			return length;
+		}
+		static get BYTE_LENGTH()
+		{
+			return length * Float32Array.BYTES_PER_ELEMENT;
+		}
+		static get BYTES()
+		{
+			return length * Float32Array.BYTES_PER_ELEMENT;
+		}
+		////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+		static clone( m )
+		{
+			return new this.constructor( m );
+		}
+		static invert( m, out=(new this.constructor()) )
+		{
+			return base.invert( out, m );
+		}
+		static determinant( m )
+		{
+			return base.determinant( m );
+		}
+		static multiply( a,b, out=(new this.constructor()) )
+		{
+			return base.multiply( out, a, b );
+		}
+		static mul( a,b, out=(new this.constructor()) )
+		{
+			return base.mul( out, a, b  );
+		}
+		static rotate( m, radians, out=(new this.constructor()) )
+		{
+			return base.rotate( out, m, radians );
+		}
+		static scale( m, vec2, out=(new this.constructor()) )
+		{
+			return base.scale( out, m, vec2 );
+		}
+		static fromRotation( radians, out=(new this.constructor()) )
+		{
+			return base.fromRotation( out, radians );
+		}
+		static fromScaling( factor, out=(new this.constructor()) )
+		{
+			return base.fromScaling( out, factor );
+		}
+		static str( m )
+		{
+			return base.str( m );
+		}
+		static frob( m )
+		{
+			return base.frob( m );
+		}
+		static exactEquals( a, b )
+		{
+			return base.exactEquals( a, b );
+		}
+		static equals( a, b )
+		{
+			return base.equals( a, b );
+		}
+		static multiplyScalar( m, factor, out=(new this.constructor()) )
+		{
+			return base.multiplyScalar( out, m, factor );
+		}
+		static multiplyScalarAndAdd( a, b, factor, out=(new this.constructor()) )
+		{
+			return base.multiplyScalarAndAdd( out, a, b, factor );
+		}
+		////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+		constructor( ...args )
+		{
+			super( ...(parse_args( length, args )) );
+			base.identity( this );
+		}
+		////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+		get isMatrix()
+		{
+			return true;
+		}
+		get str()
+		{
+			return base.str( this );
+		}
+		get frob()
+		{
+			return base.frob( this );
+		}
+		get clone()
+		{
+			return new this.constructor( this );
+		}
+		get determinant()
+		{
+			return base.determinant( this );
+		}
+		get inverse()
+		{
+			return base.invert( out, this );
+		}
+		////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+		copy( other )
+		{
+			return base.copy( this, other );
+		}
+		setToIdentity()
+		{
+			return base.identity( this );
+		}
+		set( ...args )
+		{
+			return base.set( this, ...args );
+		}
+		invert()
+		{
+			return base.invert( this, this );
+		}
+		multiply( other )
+		{
+			return base.multiply( this, this, other );
+		}
+		mul( other )
+		{
+			return base.mul( this, this, other );
+		}
+		rotate( radians )
+		{
+			return base.rotate( this, this, radians );
+		}
+		scale( vec2 )
+		{
+			return base.scale( this, this, vec2 );
+		}
+		add( other )
+		{
+			return base.add( this, this, other );
+		}
+		subtract( other )
+		{
+			return base.subtract( this, this, other );
+		}
+		sub( other )
+		{
+			return base.subtract( this, this, other );
+		}
+		exactEquals( other )
+		{
+			return base.exactEquals( this, other );
+		}
+		equals( other )
+		{
+			return base.equals( this, other );
+		}
+		multiplyScalar( factor )
+		{
+			return base.multiplyScalar( this, this, factor );
+		}
+		multiplyScalarAndAdd( other, factor )
+		{
+			return base.multiplyScalarAndAdd( this, this, other, factor );
+		}
+		////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	}
+	return Matrix;
+}
+module.exports = {Matrix_Template};
+},{}],17:[function(require,module,exports){
+const  { Vector2    } = require( "./vector2"    );
+const  { Vector3    } = require( "./vector3"    );
+const  { Vector4    } = require( "./vector4"    );
+const  { Quaternion } = require( "./quaternion" );
+const  { Matrix2    } = require( "./matrix2"    );
+const  { Matrix2d   } = require( "./matrix2d"   );
+const  { Matrix3    } = require( "./matrix3"    );
+const  { Matrix4    } = require( "./matrix4"    );
+
+module.exports =
+{
+	Vector2,
+	Vector3,
+	Vector4,
+	Quaternion,
+	Matrix2,
+	Matrix2d,
+	Matrix3,
+	Matrix4
+};
+
+
+},{"./matrix2":18,"./matrix2d":19,"./matrix3":20,"./matrix4":21,"./quaternion":22,"./vector2":24,"./vector3":25,"./vector4":26}],18:[function(require,module,exports){
+const { mat2            } = require( "./gl-matrix/index" );
+const { Matrix_Template } = require( "./matrix.base"     );
+
+class Matrix2 extends Matrix_Template( mat2, 4 )
+{
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	static transpose( m )
+	{
+		return mat2.transpose( new Matrix2(), m );
+	}
+	static adjoint( m )
+	{
+		return mat2.adjoint( new Matrix2(), m );
+	}
+	static LDU( mLower, mDiag, mUpper, m )
+	{
+		return mat2.LDU( mLower, mDiag, mUpper, m );
+	}
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	constructor( ...args )
+	{
+		super( ...args );
+	}
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	get isMatrix2()
+	{
+		return true;
+	}
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	transpose()
+	{
+		return mat2.transpose( this, this );
+	}
+	adjoint()
+	{
+		return mat2.adjoint( this, this );
+	}
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+}
+module.exports = {Matrix2};
+},{"./gl-matrix/index":7,"./matrix.base":16}],19:[function(require,module,exports){
+const { mat2d            } = require( "./gl-matrix/index" );
+const { Matrix_Template } = require( "./matrix.base"     );
+
+class Matrix2d extends Matrix_Template( mat2d, 6 )
+{
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	static translate( m, vec2 )
+	{
+		return mat2d.translate( new Matrix2d, m, vec2 );
+	}
+	static fromTranslation( vec2 )
+	{
+		return mat2d.fromTranslation( new Matrix2d, vec2 );
+	}
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	constructor( ...args )
+	{
+		super( ...args );
+	}
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	get isMatrix2d()
+	{
+		return true;
+	}
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	translate( vec2 )
+	{
+		return mat2d.translate( this, this, vec2 );
+	}
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+}
+module.exports = {Matrix2d};
+},{"./gl-matrix/index":7,"./matrix.base":16}],20:[function(require,module,exports){
+const { mat3            } = require( "./gl-matrix/index" );
+const { Matrix_Template } = require( "./matrix.base"     );
+
+class Matrix3 extends Matrix_Template( mat3, 9 )
+{
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	static fromMat4( mat4 )
+	{
+		return mat3.fromMat4( new Matrix3(), mat4 );
+	}
+	static fromTranslation( vec2 )
+	{
+		return mat3.fromTranslation( new Matrix3(), vec2 );
+	}
+	static fromMat2d( mat2d )
+	{
+		return mat3.fromMat2d( new Matrix3(), mat2d );
+	}
+	static fromQuat( quat )
+	{
+		return mat3.fromQuat( new Matrix3(), quat );
+	}
+	static normalFromMat4( mat4 )
+	{
+		return mat3.normalFromMat4( new Matrix3(), mat4 );
+	}
+	static transpose( mat3 )
+	{
+		return mat3.transpose( new Matrix3(), mat3 );
+	}
+	static adjoint( mat3 )
+	{
+		return mat3.adjoint( new Matrix3(), mat3 );
+	}
+	static translate( mat3, vec2 )
+	{
+		return mat3.translate( new Matrix3(), mat3, vec2 );
+	}
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	constructor( ...args )
+	{
+		super( ...args );
+	}
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	get isMatrix3()
+	{
+		return true;
+	}
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	transpose()
+	{
+		return mat3.transpose( this, this );
+	}
+	adjoint()
+	{
+		return mat3.adjoint( this, this );
+	}
+	translate( vec2 )
+	{
+		return mat3.translate( this, this, vec2 );
+	}
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+}
+module.exports = {Matrix3};
+},{"./gl-matrix/index":7,"./matrix.base":16}],21:[function(require,module,exports){
+const { mat4            } = require( "./gl-matrix/index" );
+const { Matrix_Template } = require( "./matrix.base"     );
+const { Vector3         } = require( "./vector3"         );
+
+class Matrix4 extends Matrix_Template( mat4, 16 )
+{
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	static perspective( fovy, aspect, near, far, out=(new Matrix4()) )
+	{
+		return mat4.perspective( out, fovy, aspect, near, far );
+	}
+	static perspectiveFromFieldOfView( fov, near, far, out=(new Matrix4()) )
+	{
+		return mat4.perspectiveFromFieldOfView( out, fov, near, far );
+	}
+	static ortho( left, right, bottom, top, near, far, out=(new Matrix4()) )
+	{
+		return mat4.ortho( out, left, right, bottom, top, near, far );
+	}
+	static frustum( left, right, bottom, top, near, far, out=(new Matrix4()) )
+	{
+		return mat4.frustum( out, left, right, bottom, top, near, far );
+	}
+	static lookAt( eye, center, up, out=(new Matrix4()) )
+	{
+		return mat4.lookAt( out, eye, center, up );
+	}
+	static fromTranslation( vec3, out=(new Matrix4()) )
+	{
+		return mat4.fromTranslation( out, vec3 );
+	}
+	static fromRotation( radians, axis, out=(new Matrix4()) )
+	{
+		return mat4.fromXRotation( out, radians, axis );
+	}
+	static fromXRotation( radians, out=(new Matrix4()) )
+	{
+		return mat4.fromXRotation( out, radians );
+	}
+	static fromYRotation( radians, out=(new Matrix4()) )
+	{
+		return mat4.fromYRotation( out, radians );
+	}
+	static fromZRotation( radians, out=(new Matrix4()) )
+	{
+		return mat4.fromZRotation( out, radians );
+	}
+	static fromRotationTranslation( q_rotation, v3_translation, out=(new Matrix4()) )
+	{
+		return mat4.fromRotationTranslation( out, q_rotation, v3_translation );
+	}
+	static fromRotationTranslationScale( q_rotation, v3_translation, v3_scaling, out=(new Matrix4()) )
+	{
+		return mat4.fromRotationTranslationScale( out, q_rotation,  v3_translation, v3_scaling );
+	}
+	static fromRotationTranslationScaleOrigin( q_rotation, v3_translation, v3_scaling, v3_origin, out=(new Matrix4()) )
+	{
+		return mat4.fromRotationTranslationScaleOrigin( out, q_rotation, v3_translation, v3_scaling, v3_origin, out=(new Matrix4()) );
+	}
+	static fromQuat( quat, out=(new Matrix4()) )
+	{
+		return mat4.fromQuat( out, quat );
+	}
+	static transpose( mat4, out=(new Matrix4()) )
+	{
+		return mat4.transpose( out, mat4 );
+	}
+	static adjoint( mat4, out=(new Matrix4()) )
+	{
+		return mat4.adjoint( out, mat4 );
+	}
+	static translate( mat4, vec3, out=(new Matrix4()) )
+	{
+		return mat4.translate( out, mat4, vec3 );
+	}
+	static rotate( mat4, radians, axis, out=(new Matrix4()) )
+	{
+		return mat4.rotate( out, mat4, radians, axis );
+	}
+	static rotateX( mat4, radians, out=(new Matrix4()) )
+	{
+		return mat4.rotateX( out, mat4, radians );
+	}
+	static rotateY( mat4, radians, out=(new Matrix4()) )
+	{
+		return mat4.rotateY( out, mat4, radians );
+	}
+	static rotateZ( mat4, radians, out=(new Matrix4()) )
+	{
+		return mat4.rotateZ( out, mat4, radians );
+	}
+	static translation( mat4, out=(new Vector3()) )
+	{
+		return mat4.getTranslation( out, mat4 );
+	}
+	static scaling( mat4, out=(new Vector3()) )
+	{
+		return mat4.getScaling( out, mat4 );
+	}
+	static rotation( mat4, out=(new Quaternion()) )
+	{
+		return mat4.getRotation( out, mat4 );
+	}
+	static decomposition( mat4, out_t=(new Vector3()), out_r=(new Quaternion()), out_s=(new Vector3()) )
+	{
+		return {
+			translation : Matrix4.translation( this, out_t ),
+			rotation    : Matrix4.rotation( this, out_r ),
+			scale       : Matrix4.scaling( this, out_s )
+		};
+	}
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	constructor( ...args )
+	{
+		super( ...args );
+	}
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	get isMatrix4()
+	{
+		return true;
+	}
+	get translation()
+	{
+		return mat4.getTranslation( new Vector3(), this );
+	}
+	get scaling()
+	{
+		return mat4.getScaling( new Vector3(), this );
+	}
+	get rotation()
+	{
+		return mat4.getRotation( new Quaternion(), this );
+	}
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	compose( r, t, s )
+	{
+		Matrix4.fromRotationTranslationScale( r, t, s, this );
+		return this;
+	}
+	decompose( r=(new Quaternion()), t=(new Vector3()), s=(new Vector3()) )
+	{
+		Matrix4.translation( this, t );
+		Matrix4.rotation( this, r );
+		Matrix4.scaling( this, s );
+		return this;
+	}
+	lookAt( eye, center, up )
+	{
+		return mat4.lookAt( this, eye, center, up );
+	}
+	transpose()
+	{
+		return mat4.transpose( this, this );
+	}
+	adjoint()
+	{
+		return mat4.adjoint( this, this );
+	}
+	translate( vec3 )
+	{
+		return mat4.translate( this, this, vec3 );
+	}
+	rotate( radians, axis )
+	{
+		return mat4.rotate( this, this, radians, axis );
+	}
+	rotateX( radians )
+	{
+		return mat4.rotateX( this, this, radians );
+	}
+	rotateY( radians )
+	{
+		return mat4.rotateY( this, this, radians );
+	}
+	rotateZ( radians )
+	{
+		return mat4.rotateZ( this, this, radians );
+	}
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+}
+
+module.exports = {Matrix4};
+},{"./gl-matrix/index":7,"./matrix.base":16,"./vector3":25}],22:[function(require,module,exports){
+const { quat         } = require( "./gl-matrix/index" );
+const { Vector3      } = require( "./vector3"         );
+const { Vector4      } = require( "./vector4"         );
+const { Matrix4      } = require( "./matrix4"         );
+
+class Quaternion extends Vector4
+{
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	static rotation( a, b )
+	{
+		return quat.rotationTo( new Quaternion(), a, b );
+	}
+	static setAxes( v3_view, v3_right, v3_up )
+	{
+		return quat.setAxes( new Quaternion(), v3_view, v3_right, v3_up );
+	}
+	static get identity()
+	{
+		return quat.identity( new Quaternion() );
+	}
+	static setToIdentity()
+	{
+		return quat.identity( new Quaternion() );
+	}
+	static setAxisAngle( v3_axis, rad )
+	{
+		return quat.setAxisAngle( new Quaternion(), v3_axis, rad );
+	}
+	static getAxisAngle( q, v3_axis = new Vector3() )
+	{
+		return { axis: v3_axis, radians: quat.getAxisAngle( v3_axis, q ) };
+	}
+	static multiply( a, b )
+	{
+		return quat.multiply( new Quaternion(), a, b );
+	}
+	static mul( a, b )
+	{
+		return quat.mul( new Quaternion(), a, b );
+	}
+	static rotateX( q, radians )
+	{
+		return quat.rotateX( new Quaternion(), q, radians );
+	}
+	static rotateY( q, radians )
+	{
+		return quat.rotateY( new Quaternion(), q, radians );
+	}
+	static rotateZ( q, radians )
+	{
+		return quat.rotateZ( new Quaternion(), q, radians );
+	}
+	static calculateW( q )
+	{
+		return quat.calculateW( new Quaternion(), q );
+	}
+	static slerp( q_a, q_b, factor )
+	{
+		return quat.slerp( new Quaternion(), q_a, q_b, factor );
+	}
+	static sqlerp( q_a, q_b, q_c, q_d, factor )
+	{
+		return quat.sqlerp( new Quaternion(), q_a, q_b, q_c, q_d, factor );
+	}
+	static invert( q )
+	{
+		return quat.invert( new Quaternion(), q );
+	}
+	static conjugate( q )
+	{
+		return quat.conjugate( new Quaternion(), q );
+	}
+	static fromMat3( mat3 )
+	{
+		return quat.fromMat3( new Quaternion(), mat3 );
+	}
+	static toMat4( quat )
+	{
+		return Matrix4.fromQuat( this );
+	}
+	static str( q )
+	{
+		return quat.str( q );
+	}
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	constructor( ...args )
+	{
+		super( ...args );
+		quat.identity( this );
+	}
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	get isQuaternion()
+	{
+		return true;
+	}
+	get str()
+	{
+		return quat.str( this );
+	}
+	get mat4()
+	{
+		return Matrix4.fromQuat( this );
+	}
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	rotationTo( b )
+	{
+		return quat.rotationTo( this, this, b );
+	}
+	setAxes( v3_view, v3_right, v3_up )
+	{
+		return quat.setAxes( this, v3_view, v3_right, v3_up );
+	}
+	toIdentity()
+	{
+		return quat.identity( this );
+	}
+	setAxisAngle( v3_axis, rad )
+	{
+		return quat.setAxisAngle( this, v3_axis, rad );
+	}
+	getAxisAngle( v3_axis = new Vector3() )
+	{
+		return { axis: v3_axis, radians: quat.getAxisAngle( v3_axis, this ) };
+	}
+	multiply( other )
+	{
+		return quat.multiply( this, this, other );
+	}
+	mul( other )
+	{
+		return quat.mul( this, this, other );
+	}
+	rotateX( radians )
+	{
+		return quat.rotateX( this, this, radians );
+	}
+	rotateY( radians )
+	{
+		return quat.rotateY( this, this, radians );
+	}
+	rotateZ( radians )
+	{
+		return quat.rotateZ( this, this, radians );
+	}
+	calculateW()
+	{
+		return quat.calculateW( this, this );
+	}
+	slerp( q_a, q_b, factor )
+	{
+		return quat.slerp( this, q_a, q_b, factor );
+	}
+	sqlerp( q_a, q_b, q_c, q_d, factor )
+	{
+		return quat.sqlerp( this, q_a, q_b, q_c, q_d, factor );
+	}
+	invert()
+	{
+		return quat.invert( this, this );
+	}
+	conjugate()
+	{
+		return quat.conjugate( this, this );
+	}
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+}
+
+module.exports = {Quaternion};
+},{"./gl-matrix/index":7,"./matrix4":21,"./vector3":25,"./vector4":26}],23:[function(require,module,exports){
+function parse_args( length, args )
+{
+	return args.length ? [...args,length] : [length];
+}
+
+function Vector_Template( base, length )
+{
+	class Vector extends Float32Array
+	{
+		////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+		static get ELEMENTS()
+		{
+			return length;
+		}
+		static get BYTE_LENGTH()
+		{
+			return length * Float32Array.BYTES_PER_ELEMENT;
+		}
+		static get BYTES()
+		{
+			return length * Float32Array.BYTES_PER_ELEMENT;
+		}
+		////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+		static clone( a )
+		{
+			return new this.constructor( a );
+		}
+		static add( a, b, out=(new this.constructor()) )
+		{
+			return base.add( out, a, b );
+		}
+		static sub( a, b, out=(new this.constructor()) )
+		{
+			return base.subtract( out, a, b );
+		}
+		static subtract( a, b, out=(new this.constructor()) )
+		{
+			return base.subtract( out, a, b );
+		}
+		static mul( a, b, out=(new this.constructor()) )
+		{
+			return base.multiply( out, a, b );
+		}
+		static multiply( a, b, out=(new this.constructor()) )
+		{
+			return base.multiply( out, a, b );
+		}
+		static div( a, b, out=(new this.constructor()) )
+		{
+			return base.divide( out, a, b );
+		}
+		static divide( a, b, out=(new this.constructor()) )
+		{
+			return base.divide( out, a, b );
+		}
+		static ceil( a, out=(new this.constructor()) )
+		{
+			return base.ciel( out, a );
+		}
+		static floor( a, out=(new this.constructor()) )
+		{
+			return base.floor( out, a );
+		}
+		static round( a, out=(new this.constructor()) )
+		{
+			return base.round( out, a );
+		}
+		static min( a, b, out=(new this.constructor()) )
+		{
+			return base.min( out, a, b );
+		}
+		static max( a, b, out=(new this.constructor()) )
+		{
+			return base.max( out, a, b );
+		}
+		static each( array, stride, offset, count, fn, arg )
+		{
+			return base.each( array, stride, offset, count, fn, arg );
+		}
+		static scale( a, factor, out=(new this.constructor()) )
+		{
+			return base.scale( out, a, factor );
+		}
+		static scaleAndAdd( a, b, factor, out=(new this.constructor()) )
+		{
+			return base.scaleAndAdd( out, a, b, factor );
+		}
+		static distance( a, b, out=(new this.constructor()) )
+		{
+			return base.distance( out, b );
+		}
+		static dist( a, b, out=(new this.constructor()) )
+		{
+			return base.distance( out, b );
+		}
+		static squaredDistance( a, b )
+		{
+			return base.squaredDistance( a, b );
+		}
+		static sqrDist( a, b )
+		{
+			return base.squaredDistance( b );
+		}
+		static length( a )
+		{
+			return base.length( a );
+		}
+		static len( a )
+		{
+			return base.length( a );
+		}
+		static squaredLength( a )
+		{
+			return base.squaredLength( a );
+		}
+		static sqrLen( a )
+		{
+			return base.squaredLength();
+		}
+		static negate( a, out=(new this.constructor()) )
+		{
+			return base.negate( out, a );
+		}
+		static inverse( out=(new this.constructor()) )
+		{
+			return base.inverse( out, a );
+		}
+		static normalize( a, out=(new this.constructor()) )
+		{
+			return base.normalize( out, a );
+		}
+		static dot( a, b )
+		{
+			return base.dot( a, b );
+		}
+		static lerp( a, b, factor )
+		{
+			return base.lerp( out, a, b, factor );
+		}
+		static random( factor = 1.0, out=(new this.constructor()) )
+		{
+			return base.random( out, factor );
+		}
+		static transformMat4( a, mat4, out=(new this.constructor()) )
+		{
+			return base.transformMat4( out, a, mat4 );
+		}
+		static toString( a )
+		{
+			return base.str( a );
+		}
+		static exactEquals( a, b )
+		{
+			return base.exactEquals( a, b );
+		}
+		static equals( a, b )
+		{
+			return base.equals( a, b );
+		}
+		////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+		constructor( ...args )
+		{
+			super( ...(parse_args( length, args )) );
+		}
+		////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+		get isVector()
+		{
+			return true;
+		}
+		get clone()
+		{
+			return new this.constructor( this );
+		}
+		get magnitude()
+		{
+			return base.length( this );
+		}
+		get mag()
+		{
+			return base.length( this );
+		}
+		get squaredLength()
+		{
+			return base.squaredLength( this );
+		}
+		get sqrLen()
+		{
+			return base.squaredLength( this );
+		}
+		get negation()
+		{
+			return base.negate( this.clone, this );
+		}
+		get inverse()
+		{
+			return base.inverse( this.clone, this );
+		}
+		////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+		copy( other )
+		{
+			return base.set( this, ...other );
+		}
+		set( ...args )
+		{
+			return base.set( this, ...args );
+		}
+		add( other )
+		{
+			return base.add( this, this, other );
+		}
+		subtract( other )
+		{
+			return base.subtract( this, this, other );
+		}
+		sub( other )
+		{
+			return this.subtract( other );
+		}
+		multiply( other )
+		{
+			return base.multiply( this, this, other );
+		}
+		mul()
+		{
+			return this.multiply( other );
+		}
+		divide( other )
+		{
+			return base.divide( this, this, other );
+		}
+		div()
+		{
+			return this.divide( other );
+		}
+		ceil()
+		{
+			return base.ceil( this, this );
+		}
+		floor()
+		{
+			return base.floor( this, this );
+		}
+		min()
+		{
+			return base.min( this, other );
+		}
+		max()
+		{
+			return base.max( this, other );
+		}
+		round()
+		{
+			return base.round( this, this );
+		}
+		scale( factor )
+		{
+			return base.scale( this, this, factor );
+		}
+		scaleAndAdd( other, factor )
+		{
+			return base.scaleAndAdd( this, this, other, factor );
+		}
+		distance( other )
+		{
+			return base.distance( this, other );
+		}
+		dist( other )
+		{
+			return this.distance( other );
+		}
+		squaredDistance( other )
+		{
+			return base.squaredDistance( this, other );
+		}
+		sqrDist( other )
+		{
+			return this.squaredDistance( other );
+		}
+		negate()
+		{
+			return base.negate( this, this );
+		}
+		invert()
+		{
+			return base.inverse( this, this );
+		}
+		normalize()
+		{
+			return base.normalize( this, this );
+		}
+		dot( other )
+		{
+			return base.dot( this, other );
+		}
+		lerp( other, factor )
+		{
+			return base.lerp( this, this, other, factor );
+		}
+		random( factor = 1.0 )
+		{
+			return base.random( this, factor );
+		}
+		transformMat4( mat4 )
+		{
+			return base.transformMat4( this, this, mat4 );
+		}
+		toString()
+		{
+			return base.str( this );
+		}
+		get [Symbol.toStringTag]()
+		{
+			return base.str( this );
+		}
+		exactEquals( other )
+		{
+			return base.exactEquals( this, other );
+		}
+		equals( other )
+		{
+			return base.equals( this, other );
+		}
+	}
+	return Vector;
+}
+
+module.exports = {Vector_Template};
+},{}],24:[function(require,module,exports){
+const { vec2            } = require( "./gl-matrix/index" );
+const { Vector_Template } = require( "./vector.base"     );
+const BaseClass = Vector_Template( vec2, 2 );
+
+class Vector2 extends BaseClass
+{
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	static cross( a, b )
+	{
+		return vec2.cross( new Vector2(), a, b );
+	}
+	static transformMat2( v, m )
+	{
+		return vec2.transformMat2( new Vector2(), v, m );
+	}
+	static transformMat2d( v, m )
+	{
+		return vec2.transformMat2d( new Vector2(), v, m );
+	}
+	static transformMat3( v, m )
+	{
+		return vec2.transformMat3( new Vector3(), v, m );
+	}
+	static fromObject( {x=0.0, y=0.0}, out=(new Vector2()) )
+	{
+		return vec2.set( out, x, y );
+	}
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	constructor( ...args )
+	{
+		super( ...args );
+	}
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	get isVector2()
+	{
+		return true;
+	}
+	get x()
+	{
+		return this[ 0 ];
+	}
+	get y()
+	{
+		return this[ 1 ];
+	}
+	set x( value )
+	{
+		this[ 0 ] = value;
+	}
+	set y( value )
+	{
+		this[ 1 ] = value;
+	}
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	setFromObject( {x=0.0,y=0.0} )
+	{
+		return vec2.set( this, x, y );
+	}
+	cross( b )
+	{
+		return vec2.cross( this, this, b );
+	}
+	transformMat2( m )
+	{
+		return vec2.transformMat2( this, this, m );
+	}
+	transformMat2d( m )
+	{
+		return vec2.transformMat2d( this, this, m );
+	}
+	transformMat3( m )
+	{
+		return vec2.transformMat3( this, this, m );
+	}
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+}
+
+
+module.exports = {Vector2};
+},{"./gl-matrix/index":7,"./vector.base":23}],25:[function(require,module,exports){
+const { vec3            } = require( "./gl-matrix/index" );
+const { Vector_Template } = require( "./vector.base"     );
+
+class Vector3 extends Vector_Template( vec3, 3 )
+{
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	static cross( a, b )
+	{
+		return vec3.cross( new Vector3(), a, b );
+	}
+	static hermite( v1, v2, v3, v4, factor )
+	{
+		return vec3.hermite( new Vector3(), v1, v2, v3, v4, factor );
+	}
+	static bezier( v1, v2, v3, v4, factor )
+	{
+		return vec3.bezier( new Vector3(), v1, v2, v3, v4, factor );
+	}
+	static transformMat3( v, m )
+	{
+		return vec3.transformMat3( new Vector3(), v, m );
+	}
+	static transformQuat( v, q )
+	{
+		return basetransformQuat( new Vector3(), v, q );
+	}
+	static rotateX( v, origin, angle )
+	{
+		return vec3.rotateX( new Vector3(), v, origin, angle );
+	}
+	static rotateY( v, origin, angle )
+	{
+		return vec3.rotateY( new Vector3(), v, origin, angle );
+	}
+	static rotateZ( v, origin, angle )
+	{
+		return vec3.rotateZ( new Vector3(), v, origin, angle );
+	}
+	static angle( a, b )
+	{
+		return vec3.angle( a, b );
+	}
+	static fromObject( {x=0.0, y=0.0, z=0.0}, out=(new Vector4()) )
+	{
+		return vec3.set( out, x, y, z );
+	}
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	get isVector3()
+	{
+		return true;
+	}
+	get x()
+	{
+		return this[ 0 ];
+	}
+	get y()
+	{
+		return this[ 1 ];
+	}
+	get z()
+	{
+		return this[ 2 ];
+	}
+	set x( value )
+	{
+		this[ 0 ] = value;
+	}
+	set y( value )
+	{
+		this[ 1 ] = value;
+	}
+	set z( value )
+	{
+		this[ 2 ] = value;
+	}
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	setFromObject( {x=0.0, y=0.0, z=0.0} )
+	{
+		return vec3.set( this, x, y, z );
+	}
+	cross( b )
+	{
+		return vec3.cross( this, this, b );
+	}
+	transformMat3( m )
+	{
+		return vec3.transformMat3( this, this, m );
+	}
+	transformQuat( q )
+	{
+		return vec3.transformQuat( this, this, q );
+	}
+	rotateX( angle, origin=[0,0,0] )
+	{
+		return vec3.rotateX( this, this, origin, angle );
+	}
+	rotateY( angle, origin=[0,0,0] )
+	{
+		return vec3.rotateY( this, this, origin, angle );
+	}
+	rotateZ( angle, origin=[0,0,0] )
+	{
+		return vec3.rotateZ( this, this, origin, angle );
+	}
+	angle( other )
+	{
+		return vec3.angle( this, other );
+	}
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+}
+module.exports = {Vector3};
+},{"./gl-matrix/index":7,"./vector.base":23}],26:[function(require,module,exports){
+const { vec4            } = require( "./gl-matrix/index" );
+const { Vector_Template } = require( "./vector.base"     );
+
+class Vector4 extends Vector_Template( vec4, 4 )
+{
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	static transformQuat( vec4, quat )
+	{
+		return vec4.transformQuat( new Vector4(), vec4, quat );
+	}
+	static fromObject( {x=0.0, y=0.0, z=0.0, w=0.0}, out=(new Vector4()) )
+	{
+		return vec4.set( out, x, y, z, w );
+	}
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	get isVector4(){ return true;       }
+	get x()        { return this[ 0 ];  }
+	get y()        { return this[ 1 ];  }
+	get z()        { return this[ 2 ];  }
+	get w()        { return this[ 3 ];  }
+	set x( value ) { this[ 0 ] = value; }
+	set y( value ) { this[ 1 ] = value; }
+	set z( value ) { this[ 2 ] = value; }
+	set w( value ) { this[ 3 ] = value; }
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	setFromObject( {x=0.0, y=0.0, z=0.0, w=0.0} )
+	{
+		return vec4.set( this, x, y, z, w );
+	}
+	transformQuat( quat )
+	{
+		return vec4.transformQuat( this, this, quat );
+	}
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+}
+module.exports = {Vector4};
+},{"./gl-matrix/index":7,"./vector.base":23}],27:[function(require,module,exports){
+
+class Timestep
+{
+	constructor( fps, callback )
+	{
+		this.fps       = fps;
+		this.duration  = 1000 / fps;
+		this.delta     = 0.0;
+		this.timer     = null;
+		this.prev_time = 0.0;
+		this.curr_time = 0.0;
+		this.callback  = callback;
+		this.running   = null;
+	}
+	start()
+	{
+		this.running = true;
+		requestAnimationFrame( this.callback );
+		this.timer   = setTimeout( ()=>(this.update()), this.duration );
+	}
+	update()
+	{
+		if( !this.running ) return;
+
+		this.prev_time = this.curr_time;
+		this.curr_time = performance.now();
+		this.delta    += this.curr_time - this.prev_time;
+
+		if( this.delta >= this.duration )
+		{
+			this.delta = 0.0;
+			requestAnimationFrame( this.callback );
+			clearTimeout( this.timer );
+			this.timer   = setTimeout( ()=>(this.update()), this.duration );
+		}
+		else
+		{
+			clearTimeout( this.timer );
+			this.timer = setTimeout( ()=>(this.update()), (this.duration-this.delta)|0 );
+		}
+	}
+	stop()
+	{
+		clearTimeout( this.timer );
+		this.running = false;
+	}
+}
+
+module.exports = Timestep;
+},{}],28:[function(require,module,exports){
+
+const isArray           = Array.isArray;
+const isArrayBufferView = ArrayBuffer.isView;
+const isArrayBuffer     = (x) => (x instanceof ArrayBuffer);
+const isDataView        = (x) => (x instanceof Dataview);
+const isTypedArray      = (x) => ( ArrayBuffer.isView(x) && !(x instanceof Dataview) );
+const isUint8Array      = (x) => (x instanceof Uint8Array);
+const isUint16Array     = (x) => (x instanceof Uint16Array);
+const isUint32Array     = (x) => (x instanceof Uint32Array);
+const isInt8Array       = (x) => (x instanceof Int8Array);
+const isInt32Array      = (x) => (x instanceof Int16Array);
+const isInt16Array      = (x) => (x instanceof Int32Array);
+const isUint8CArray     = (x) => (x instanceof Uint8ClampedArray);
+const isFloatArray      = (x) => (x instanceof Float32Array);
+const isDoubleArray     = (x) => (x instanceof Float64Array);
+
+function isArrayBufferViewType( x )
+{
+	return (
+		Float32Array.isPrototypeOf(x) ||
+		Uint8Array.isPrototypeOf(x)   ||
+		Uint16Array.isPrototypeOf(x)  ||
+		Uint32Array.isPrototypeOf(x)  ||
+		Int8Array.isPrototypeOf(x)    ||
+		Int16Array.isPrototypeOf(x)   ||
+		Int32Array.isPrototypeOf(x)   ||
+		Float32Array.isPrototypeOf(x) ||
+		Float64Array.isPrototypeOf(x)
+	);
+}
+
+module.exports =
+{
+	isArray,
+	isArrayBufferViewType,
+	isArrayBufferView,
+	isArrayBuffer,
+	isDataView,
+	isTypedArray,
+	isUint8Array,
+	isUint16Array,
+	isUint32Array,
+	isInt8Array,
+	isInt32Array,
+	isInt16Array,
+	isUint8CArray,
+	isFloatArray,
+	isDoubleArray
+};
+},{}],29:[function(require,module,exports){
+require( './globals' );
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+class Location
+{
+	constructor( program, attribute )
+	{
+		this.pid   = program.id;
+		this.index = gl.getAttribLocation( program.id, `a_${attribute.name}` );
+		if( this.index === -1 )
+			throw `invalid attribute index for a_${attribute.name}`;
+	}
+}
+class Attribute
+{
+	constructor( name, size, type, normalize, stride, offset )
+	{
+		this.locations = new WeakMap();
+		this.location  = null;
+		this.name      = name;
+		this.size      = size;
+		this.type      = type;
+		this.normalize = normalize;
+		this.stride    = stride;
+		this.offset    = offset;
+	}
+	bind( program=Program.current )
+	{
+		if( Program.current === null )
+			throw 'No Program';
+		if( !(this.location = this.locations.get( program )) )
+				this.locations.set( program, (this.location = new Location( program, this )) );
+		return this;
+	}
+	enable()
+	{
+		this.bind();
+		gl.vertexAttribPointer( this.location.index, (this.size)|0, this.type, this.normalize, (this.stride)|0, (this.offset)|0 );
+		gl.enableVertexAttribArray( this.location.index );
+		return this;
+	}
+	toString()
+	{
+		return `[Attribute]{ name: a_${this.name}, index:${this.location.index}, size:${this.size}, type:${this.type}, normalize:${this.normalize}, stride:${this.stride}, offset:${this.offset} }`
+	}
+	disable()
+	{
+		gl.disableVertexAttribArray( this.location.index );
+		return this;
+	}
+};
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+module.exports = Attribute;
+},{"./globals":33}],30:[function(require,module,exports){
+require( './globals' );
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+const _usage =
+{
+	static :
+	{
+		copy : WEBGL2.STATIC_COPY,
+		draw : WEBGL2.STATIC_DRAW,
+		read : WEBGL2.STATIC_READ
+	},
+	dynamic :
+	{
+		copy : WEBGL2.DYNAMIC_COPY,
+		draw : WEBGL2.DYNAMIC_DRAW,
+		read : WEBGL2.DYNAMIC_READ
+	},
+	stream :
+	{
+		copy : WEBGL2.STREAM_COPY,
+		draw : WEBGL2.STREAM_DRAW,
+		read : WEBGL2.STREAM_READ
+	}
+};
+
+const _target =
+{
+
+	array    : WEBGL2.ARRAY_BUFFER,
+	elements : WEBGL2.ELEMENT_ARRAY_BUFFER,
+	copy :
+	{
+		read  : WEBGL2.COPY_READ_BUFFER,
+		write : WEBGL2.COPY_WRITE_BUFFER
+	},
+	transformFeedback : WEBGL2.TRANSFORM_FEEDBACK_BUFFER,
+	uniform           : WEBGL2.UNIFORM_BUFFER,
+	pixel :
+	{
+		pack   : WEBGL2.PIXEL_PACK_BUFFER,
+		unpack : WEBGL2.PIXEL_UNPACK_BUFFER
+	}
+};
+
+class GlBuffer
+{
+	////////////////////////////////////////////////////////////////
+	static get usage()  { return _usage;  }
+	static get target() { return _target; }
+
+	static get static()   { return _usage.static;    }
+	static get dynamic()  { return _usage.dynamic;   }
+	static get stream()   { return _usage.stream;    }
+	static get verticies(){ return _target.array;    }
+	static get indicies() { return _target.elements; }
+	static get copy()     { return _target.copy;     }
+
+
+	////////////////////////////////////////////////////////////////
+	constructor( target=_target.array, usage=_usage.static.draw, data, offset, length )
+	{
+		this.target = target;
+		this.usage  = usage;
+		this.ref    = gl.createBuffer();
+		this.bound  = false;
+	}
+	bind()
+	{
+		if( !this.bound )
+		{
+			gl.bindBuffer( this.target, this.ref );
+			this.bound = true;
+		}
+		return this;
+	}
+	unbind()
+	{
+		if( this.bound )
+		{
+			gl.bindBuffer( this.target, null );
+			this.bound = false;
+		}
+		return this;
+	}
+	delete()
+	{
+		gl.deleteBuffer( this.ref );
+		return this;
+	}
+/*
+	// WebGL1:
+	void gl.bufferData(target, size, usage);
+	void gl.bufferData(target, ArrayBuffer? srcData, usage);
+	void gl.bufferData(target, ArrayBufferView srcData, usage);
+	// WebGL2:
+	void gl.bufferData(target, ArrayBufferView srcData, usage, srcOffset, length);
+*/
+	data( data )
+	{
+		gl.bufferData( this.target, data, this.usage );
+		return this;
+	}
+/*
+	// WebGL1:
+	void gl.bufferSubData(target, offset, ArrayBuffer srcData);
+	void gl.bufferSubData(target, offset, ArrayBufferView srcData);
+	// WebGL2:
+	void gl.bufferSubData(target, dstByteOffset, ArrayBufferView srcData, srcOffset, length);
+*/
+	subData( offset, data )
+	{
+		gl.bufferSubData( this.target, offset, data );
+		return this;
+	}
+}
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+module.exports = GlBuffer;
+
+},{"./globals":33}],31:[function(require,module,exports){
+require( './globals' );
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+const _draw_mode =
+{
+	points    : WEBGL2.POINTS,
+	lines     : WEBGL2.LINES,
+	line      :
+	{
+		loop  : WEBGL2.LINE_LOOP,
+		strip : WEBGL2.LINE_STRIP
+	},
+	triangles : WEBGL2.TRIANGLES,
+	triangle  :
+	{
+		strip : WEBGL2.TRIANGLE_STRIP,
+		fan   : WEBGL2.TRIANGLE_FAN
+	}
+};
+
+const _contexts_ = new WeakMap();
+
+class Context
+{
+	static get mode()
+	{
+		return _draw_mode;
+	}
+	static get current()
+	{
+		return window.gl;
+	}
+	static set current( context )
+	{
+		window.gl = context;
+	}
+	static For( cavnas )
+	{
+		return _contexts_.get( canvas );
+	}
+	////////////////////////////////////////////////////////////////
+	constructor( canvas = document.createElement('canvas') )
+	{
+		this.canvas      = canvas;
+		this.gl          = canvas.getContext("webgl2")
+		_contexts_.set( canvas, this );
+		this.clearbits   = 0;
+	}
+	makeCurrent()
+	{
+		Context.current = _contexts_.get( this.canvas ).gl;
+		return this;
+	}
+
+	// CANVAS OPERATION ////////////////////////////////////////////
+	get id()        { return this.canvas.id; }
+	get element()   { return this.canvas; }
+	get width()     { return this.canvas.offsetWidth; }
+	get height()    { return this.canvas.offsetHeight; }
+	get size()      { return [this.width, this.height]; }
+	set id(v)       { canvas.id = v; }
+	set width(v)
+	{
+		this.canvas.width = v;
+		gl.viewport(0, 0, v, this.height);
+	}
+	set height(v)
+	{
+		this.canvas.height = v;
+		gl.viewport(0, 0, this.width, v);
+	}
+	set size(v) { this.resize(...v); }
+	resize( width, height )
+	{
+		[this.canvas.width, this.canvas.height] = [width, height];
+		this.viewport(0, 0, width, height);
+		return this;
+	}
+
+	// OPENGL OPERATIONS ///////////////////////////////////////////
+	clearDepth( bool, depth=1 )
+	{
+		if( bool )
+		{
+			gl.enable( gl.DEPTH_TEST );
+			gl.clearDepth( depth );
+			this.clearbits |= gl.DEPTH_BUFFER_BIT;
+			return this;
+		}
+		else
+		{
+			gl.disable( gl.DEPTH_TEST );
+			this.clearbits &= ~(1 << gl.DEPTH_BUFFER_BIT);
+		}
+		return this;
+	}
+	clearColor(r,g,b,a)
+	{
+		this.clearbits   |= gl.COLOR_BUFFER_BIT;
+		gl.clearColor(r,g,b,a);
+		return this;
+	}
+	clear()
+	{
+		gl.clear( this.clearbits );
+		return this;
+	}
+	cull( mode )
+	{
+		gl.enable( gl.CULL_FACE );
+
+		return this;
+	}
+	blend( bool )
+	{
+		if( bool )
+		{
+			gl.enable( gl.BLEND );
+		}
+		else
+		{
+			gl.disable( gl.BLEND );
+		}
+		return this;
+	}
+	viewport( x,y, w,h )
+	{
+		//this.uResolution.set( [w,h] )
+		gl.viewport( x,y, w,h );
+		return this;
+	}
+	draw( mode, first, count )
+	{
+		gl.drawArrays( mode, first, count );
+	}
+	drawElements( mode, count, type, offset )
+	{
+		gl.drawElements( mode, count, type, offset )
+	}
+};
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+module.exports = Context;
+
+},{"./globals":33}],32:[function(require,module,exports){
+
+require( './globals' );
+
+const Buffer    = require( './buffer'    );
+const Program   = require( './program'   );
+const Shader    = require( './shader'    );
+const Attribute = require( './attribute' );
+const Type      = require( './type'      );
+const Context   = require( './context'   );
+const Uniform   = require( './uniform'   );
+
+module.exports =
+{
+	Buffer,
+	Program,
+	Shader,
+	Attribute,
+	Type,
+	Context,
+	Uniform,
+};
+
+},{"./attribute":29,"./buffer":30,"./context":31,"./globals":33,"./program":34,"./shader":35,"./type":36,"./uniform":37}],33:[function(require,module,exports){
+
+if( window.gl === undefined ) window.gl     = null;
+if( window.GL === undefined ) window.WEBGL2 = WebGL2RenderingContext.prototype;
+
+},{}],34:[function(require,module,exports){
+require( './globals' );
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+let _current_ = null;
+
+class Program
+{
+	static get current()
+	{
+		return _current_;
+	}
+	////////////////////////////////////////////////////////////////
+
+	constructor( vshader, fshader )//, uniforms )// attributes, uniforms )
+	{
+		this.id         = gl.createProgram();
+		this.vert       = vshader;
+		this.frag       = fshader;
+		this.ready      = false;
+		this.error      = false;
+		//this.attributes = attributes;
+		//this.uniforms   = uniforms;
+		this.enabled    = false;
+
+		this.uniform = {
+			resolution:
+			{
+				id: null,
+				value: null
+			},
+			scale:
+			{
+				id: null,
+				value: null
+			}
+		};
+
+		gl.attachShader( this.id, vshader.id );
+		gl.attachShader( this.id, fshader.id );
+
+		if( this.link() )
+		{
+			//this.attributes.forEach( ( a ) => ( a.bind( this ) ) );
+			//this.uniforms.forEach(   ( u ) => ( u.bind( this ) ) );
+		}
+	}
+
+	link()
+	{
+		gl.linkProgram( this.id );
+		if( !this.linked )
+		{
+			console.log( this.info );
+			return !( this.error = true );
+		}
+		return( this.ready = true );
+	}
+	enable()
+	{
+		if( _current_ !== this )
+		{
+			if( _current_ !== null ) _current_.disable();
+			_current_ = this;
+		}
+		if( !this.enabled )
+		{
+			gl.useProgram( this.id );
+			//this.attributes.forEach( ( a ) => ( a.bind( this ).enable() ) );
+			//this.uniforms.forEach(   ( u ) => ( u.bind( this ).enable() ) );
+			this.enabled = true;
+		}
+		return this;
+	}
+	disable()
+	{
+		if( _current_ !== null && _current_ === this )
+		{
+			_current_ = null;
+		}
+		if( this.enabled )
+		{
+			//this.attributes.forEach( ( a ) => ( a.disable() ) );
+			//this.uniforms.forEach(   ( u ) => ( u.disable() ) );
+			gl.useProgram( null );
+			this.enabled = false;
+		}
+		return this;
+	}
+
+	get attributeCount()
+	{
+		return gl.getProgramParameter( this.id, gl.ACTIVE_ATTRIBUTES );
+	}
+	get uniformCount()
+	{
+		return gl.getProgramParameter( this.id, gl.ACTIVE_UNIFORMS );
+	}
+	get attributes()
+	{
+		let num = this.attributeCount;
+		let r = new Array( num );
+
+		for( let i = 0; i<num; i++)
+		{
+			r[i] = gl.getActiveAttrib( this.id, i );
+		}
+		return r;
+	}
+	get uniforms()
+	{
+		let num = this.uniformCount;
+		let r = new Array( num );
+
+		for( let i = 0; i<num; i++)
+		{
+			r[i] = gl.getActiveUniform( this.id, i );
+		}
+		return r;
+	}
+
+	get linked()
+	{
+		return gl.getProgramParameter( this.id, gl.LINK_STATUS );
+	}
+	get info()
+	{
+		return gl.getProgramInfoLog( this.id );
+	}
+}
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+module.exports = Program;
+
+},{"./globals":33}],35:[function(require,module,exports){
+require( './globals' );
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+class Shader
+{
+	////////////////////////////////////////////////////////////////
+	static get vertex()   { return gl.VERTEX_SHADER; }
+	static get fragment() { return gl.FRAGMENT_SHADER; }
+	////////////////////////////////////////////////////////////////
+
+	constructor( type, source )
+	{
+		this.id    = gl.createShader( type );
+		this.error = false;
+		this.ready = false;
+		this.compile( source );
+	}
+	compile( source )
+	{
+		gl.shaderSource( this.id, source );
+		gl.compileShader( this.id );
+
+		if( !this.compiled )
+		{
+			this.error = true;
+			console.log( this.info );
+			return this;
+		}
+		this.ready = true;
+		return this;
+	}
+	get compiled()
+	{
+		return gl.getShaderParameter( this.id, gl.COMPILE_STATUS );
+	}
+	get info()
+	{
+		return gl.getShaderInfoLog( this.id );
+	}
+}
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+module.exports = Shader;
+
+},{"./globals":33}],36:[function(require,module,exports){
+require( './globals' );
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+const { Composite, Handle, Primitive, Type, View } = require( '../buffer/type' );
+const Attribute = require( './attribute' );
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+class GLPrimitive extends Primitive
+{
+	constructor( glenum, array_type, getter, setter )
+	{
+		super( array_type, getter, setter );
+		this.glenum = glenum;
+	}
+	get isGLPrimitive()
+	{
+		return true;
+	}
+}
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+class GLView extends View
+{
+	constructor( glenum, type, normalize=false )
+	{
+		super( type );
+		this.glenum    = glenum;
+		this.normalize = normalize;
+	}
+	get isGLView()
+	{
+		return true;
+	}
+}
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+class GLComposite extends Composite
+{
+	constructor( members, normalize=false )
+	{
+		super( members, false );
+		this._attributes = [];
+		this.normalize = normalize;
+
+		Object.defineProperty( this.handle, 'enableGlAttributes',
+		{
+			value : function () { this.typeinfo.enable(); }
+		} );
+		Object.defineProperty( this.handle, 'disableGlAttributes',
+		{
+			value : function () { this.typeinfo.disable(); }
+		} );
+
+		return this.handle;
+	}
+	enable()
+	{
+		this.attributes.forEach( (a)=>(a.enable()) );
+	}
+	disable()
+	{
+		this.attributes.forEach( (a)=>(a.disable()) );
+	}
+	get attributes()
+	{
+		if( this._attributes.length === 0 )
+		{
+			GenGLAttribute( this );
+		}
+		return this._attributes;
+	}
+
+	get isGLComposite()
+	{
+		return true;
+	}
+}
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+function GenGLAttribute( gltype, id_chain='', attribs=gltype._attributes, stride=gltype.size  )
+{
+	let field, type, id, len, glenum, norm, size, off;
+
+	for( let key of gltype.keys )
+	{
+		field  = gltype.layout[key];
+		type   = field.type;
+		id     = `${id_chain}${field.key}`;
+		len    = field.length;
+		glenum = type.glenum;
+		norm   = !!type.normalize;
+		size   = type.size;
+		off    = field.offset;
+		if( !!field.isPrimitive )
+		{
+			attribs.push(new Attribute( id, len, glenum, norm, stride, off ));
+			continue;
+		}
+		if( !!field.isView      )
+		{
+			attribs.push(new Attribute( id, len, glenum, norm, stride, off ));
+			continue;
+		}
+		if( !!field.isComposite && field.isUniform )
+		{
+			attribs.push(new Attribute( id, len, type.uniType.glenum, norm, stride, off ));
+			continue;
+		}
+		if( !!field.isComposite && !field.isUniform )
+		{
+			GenGLAttribute( type, `${id}_`, attribs, stride );
+			continue;
+		}
+	}
+}
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+const uint8	 = new GLPrimitive( WEBGL2.UNSIGNED_BYTE,  Uint8Array,   DataView.prototype.getUint8,   DataView.prototype.setUint8   );
+const uint16 = new GLPrimitive( WEBGL2.UNSIGNED_SHORT, Uint16Array,  DataView.prototype.getUint16,  DataView.prototype.setUint16  );
+const uint32 = new GLPrimitive( WEBGL2.UNSIGNED_INT,   Uint32Array,  DataView.prototype.getUint32,  DataView.prototype.setUint32  );
+const int8	 = new GLPrimitive( WEBGL2.BYTE,           Int8Array,    DataView.prototype.getInt8,    DataView.prototype.setInt8    );
+const int16	 = new GLPrimitive( WEBGL2.SHORT,          Int16Array,   DataView.prototype.getInt16,   DataView.prototype.setInt16   );
+const int32	 = new GLPrimitive( WEBGL2.INT,            Int32Array,   DataView.prototype.getInt32,   DataView.prototype.setInt32   );
+const float	 = new GLPrimitive( WEBGL2.FLOAT,          Float32Array, DataView.prototype.getFloat32, DataView.prototype.setFloat32 );
+const uint   = uint32;
+const int    = int32;
+const byte   = int8;
+const ubyte  = uint8;
+const ushort = uint16;
+const short  = int16;
+
+const { Vector2, Vector3, Vector4, Quaternion, Matrix2, Matrix2d, Matrix3, Matrix4 } = require( '../math/matrix');
+const { RGBA } = require( '../math/color' );
+
+const v2   = new GLView( WEBGL2.FLOAT,         Vector2  );
+const v3   = new GLView( WEBGL2.FLOAT,         Vector3  );
+const v4   = new GLView( WEBGL2.FLOAT,         Vector4  );
+const m2   = new GLView( WEBGL2.FLOAT,         Matrix2  );
+const m2d  = new GLView( WEBGL2.FLOAT,         Matrix2d );
+const m3   = new GLView( WEBGL2.FLOAT,         Matrix3  );
+const m4   = new GLView( WEBGL2.FLOAT,         Matrix4  );
+const rgba = new GLView( WEBGL2.UNSIGNED_BYTE, RGBA     , true );
+
+module.exports =
+{
+	Primitive : GLPrimitive,
+	View      : GLView,
+	Composite : GLComposite,
+
+	uint8 	  : uint8,
+	uint16 	  : uint16,
+	uint32 	  : uint32,
+	int8 	  : int8,
+	int16 	  : int16,
+	int32 	  : int32,
+	float 	  : float,
+	uint 	  : uint32,
+	int 	  : int32,
+	ubyte 	  : uint8,
+	byte 	  : int8,
+
+	Vector2   : v2,
+	Vector3   : v3,
+	Vector4   : v4,
+	Matrix2   : m2,
+	Matrix2d  : m2d,
+	Matrix3   : m3,
+	Matrix4   : m4,
+
+	RGBA      : rgba
+};
+
+},{"../buffer/type":2,"../math/color":5,"../math/matrix":17,"./attribute":29,"./globals":33}],37:[function(require,module,exports){
+const Program = require( './program' );
+const base = require( '../math/matrix');
+
+class Location
+{
+	constructor( program, uniform )
+	{
+		this.pid = program.id;
+		this.id  = gl.getUniformLocation( program.id,`u_${uniform.name}` );
+	}
+}
+function ExtendValueType( func )
+{
+	return class Value
+	{
+		constructor( name, value )
+		{
+			this.locations = new WeakMap();
+			this.location  = null;
+			this.name      = name;
+			this.func      = func;
+			this.value     = value;
+		}
+		set( value )
+		{
+			this.value = value;
+		}
+		bind( program=Program.current )
+		{
+			if( Program.current === null )
+				throw 'No Program';
+			if( !(this.location = this.locations.get( program )) )
+				this.locations.set( program, (this.location = new Location( program, this )) );
+			return this;
+		}
+		enable()
+		{
+			this.bind();
+			this.func.call( gl, this.location.id, this.value );
+			return this;
+		}
+		disable()
+		{
+			return this;
+		}
+	}
+}
+function ExtendArrayType( base, func )
+{
+	return class Uniform extends base
+	{
+		constructor( name, ...args )
+		{
+			super( ...args );
+			this.locations = new WeakMap();
+			this.location  = null;
+			this.name      = name;
+			this.func      = func;
+		}
+		bind( program=Program.current )
+		{
+			if( Program.current === null )
+				throw 'No Program';
+			if( !(this.location = this.locations.get( program )) )
+				this.locations.set( program, (this.location = new Location( program, this )) );
+			return this;
+		}
+		enable()
+		{
+			this.bind();
+			if( this.isVector )
+			{
+				this.func.call( gl, this.location.id, this );
+			}
+			else
+			{
+				this.func.call( gl, this.location.id, false, this );
+			}
+			return this;
+		}
+		disable()
+		{
+			return this;
+		}
+	}
+}
+const Integer = ExtendValueType( WEBGL2.uniform1i );
+const Float   = ExtendValueType( WEBGL2.uniform1f );
+
+const Vector2 = ExtendArrayType( base.Vector2, WEBGL2.uniform2fv       );
+const Vector3 = ExtendArrayType( base.Vector3, WEBGL2.uniform3fv       );
+const Vector4 = ExtendArrayType( base.Vector4, WEBGL2.uniform4fv       );
+const Matrix2 = ExtendArrayType( base.Matrix2, WEBGL2.uniformMatrix2fv );
+const Matrix3 = ExtendArrayType( base.Matrix3, WEBGL2.uniformMatrix3fv );
+const Matrix4 = ExtendArrayType( base.Matrix4, WEBGL2.uniformMatrix4fv );
+
+module.exports =
+{
+	Integer,
+	Float,
+	Vector2,
+	Vector3,
+	Vector4,
+	Matrix2,
+	Matrix3,
+	Matrix4,
+};
+
+
+/*
+void gl.uniformMatrix2fv(location, transpose, data, optional srcOffset, optional srcLength);
+void gl.uniformMatrix3x2fv(location, transpose, data, optional srcOffset, optional srcLength);
+void gl.uniformMatrix4x2fv(location, transpose, data, optional srcOffset, optional srcLength);
+void gl.uniformMatrix2x3fv(location, transpose, data, optional srcOffset, optional srcLength);
+void gl.uniformMatrix3fv(location, transpose, data, optional srcOffset, optional srcLength);
+void gl.uniformMatrix4x3fv(location, transpose, data, optional srcOffset, optional srcLength);
+void gl.uniformMatrix2x4fv(location, transpose, data, optional srcOffset, optional srcLength);
+void gl.uniformMatrix3x4fv(location, transpose, data, optional srcOffset, optional srcLength);
+void gl.uniformMatrix4fv(location, transpose, data, optional srcOffset, optional srcLength);
+*/
+
+},{"../math/matrix":17,"./program":34}],38:[function(require,module,exports){
 /**
  * @license Complex.js v2.0.3 11/02/2016
  *
@@ -1255,7 +10883,7 @@ require=(function(){function e(t,n,r){function s(o,u){if(!n[o]){if(!t[o]){var a=
 
 })(this);
 
-},{}],3:[function(require,module,exports){
+},{}],39:[function(require,module,exports){
 /*! decimal.js v9.0.1 https://github.com/MikeMcl/decimal.js/LICENCE */
 ;(function (globalScope) {
   'use strict';
@@ -6089,7 +15717,7 @@ require=(function(){function e(t,n,r){function s(o,u){if(!n[o]){if(!t[o]){var a=
   }
 })(this);
 
-},{}],4:[function(require,module,exports){
+},{}],40:[function(require,module,exports){
 "use strict";
 var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
     var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
@@ -6112,7 +15740,7 @@ var BrowserUtil = (function () {
 }());
 exports.BrowserUtil = BrowserUtil;
 
-},{"./doc":26}],5:[function(require,module,exports){
+},{"./doc":62}],41:[function(require,module,exports){
 "use strict";
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -6233,7 +15861,7 @@ function shapeAndValues(array) {
     }
 }
 
-},{"../../globals":29,"../../tensor":137,"../../util":143}],6:[function(require,module,exports){
+},{"../../globals":65,"../../tensor":173,"../../util":179}],42:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -6384,7 +16012,7 @@ function datasetFromElements(items) {
 }
 exports.datasetFromElements = datasetFromElements;
 
-},{"../../globals":29,"./batch_dataset":5,"./statistics":12,"./streams/data_stream":14,"seedrandom":1000}],7:[function(require,module,exports){
+},{"../../globals":65,"./batch_dataset":41,"./statistics":48,"./streams/data_stream":50,"seedrandom":1036}],43:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -6544,7 +16172,7 @@ var CSVDataset = (function (_super) {
 }(dataset_1.Dataset));
 exports.CSVDataset = CSVDataset;
 
-},{"../dataset":6,"./text_line_dataset":8}],8:[function(require,module,exports){
+},{"../dataset":42,"./text_line_dataset":44}],44:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -6581,7 +16209,7 @@ var TextLineDataset = (function (_super) {
 }(dataset_1.Dataset));
 exports.TextLineDataset = TextLineDataset;
 
-},{"../dataset":6}],9:[function(require,module,exports){
+},{"../dataset":42}],45:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var DataSource = (function () {
@@ -6591,7 +16219,7 @@ var DataSource = (function () {
 }());
 exports.DataSource = DataSource;
 
-},{}],10:[function(require,module,exports){
+},{}],46:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -6622,7 +16250,7 @@ var FileDataSource = (function (_super) {
 }(datasource_1.DataSource));
 exports.FileDataSource = FileDataSource;
 
-},{"../datasource":9,"../streams/filereader_stream":15}],11:[function(require,module,exports){
+},{"../datasource":45,"../streams/filereader_stream":51}],47:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -6653,7 +16281,7 @@ var URLDataSource = (function (_super) {
 }(datasource_1.DataSource));
 exports.URLDataSource = URLDataSource;
 
-},{"../datasource":9,"../streams/url_stream":17}],12:[function(require,module,exports){
+},{"../datasource":45,"../streams/url_stream":53}],48:[function(require,module,exports){
 "use strict";
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -6774,7 +16402,7 @@ function computeDatasetStatistics(dataset, sampleSize, shuffleWindowSize) {
 }
 exports.computeDatasetStatistics = computeDatasetStatistics;
 
-},{"../../tensor":137}],13:[function(require,module,exports){
+},{"../../tensor":173}],49:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -6936,7 +16564,7 @@ function utfWidth(firstByte) {
     }
 }
 
-},{"./data_stream":14,"./string_stream":16,"utf8":1010}],14:[function(require,module,exports){
+},{"./data_stream":50,"./string_stream":52,"utf8":1046}],50:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -7447,7 +17075,7 @@ var ShuffleStream = (function (_super) {
 }(PrefetchStream));
 exports.ShuffleStream = ShuffleStream;
 
-},{"../../../globals":29,"../../../util":143,"../util/growing_ring_buffer":18,"../util/ring_buffer":19,"seedrandom":1000}],15:[function(require,module,exports){
+},{"../../../globals":65,"../../../util":179,"../util/growing_ring_buffer":54,"../util/ring_buffer":55,"seedrandom":1036}],51:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -7551,7 +17179,7 @@ var FileReaderStream = (function (_super) {
 }(byte_stream_1.ByteStream));
 exports.FileReaderStream = FileReaderStream;
 
-},{"./byte_stream":13}],16:[function(require,module,exports){
+},{"./byte_stream":49}],52:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -7667,7 +17295,7 @@ var SplitStreamImpl = (function (_super) {
     return SplitStreamImpl;
 }(data_stream_1.QueueStream));
 
-},{"./data_stream":14}],17:[function(require,module,exports){
+},{"./data_stream":50}],53:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -7780,7 +17408,7 @@ var URLStreamImpl = (function (_super) {
     return URLStreamImpl;
 }(data_stream_1.QueueStream));
 
-},{"./byte_stream":13,"./data_stream":14,"./filereader_stream":15}],18:[function(require,module,exports){
+},{"./byte_stream":49,"./data_stream":50,"./filereader_stream":51}],54:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -7832,7 +17460,7 @@ var GrowingRingBuffer = (function (_super) {
 }(ring_buffer_1.RingBuffer));
 exports.GrowingRingBuffer = GrowingRingBuffer;
 
-},{"./ring_buffer":19}],19:[function(require,module,exports){
+},{"./ring_buffer":55}],55:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var RingBuffer = (function () {
@@ -7922,7 +17550,7 @@ var RingBuffer = (function () {
 }());
 exports.RingBuffer = RingBuffer;
 
-},{}],20:[function(require,module,exports){
+},{}],56:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var dataset_1 = require("./data/dataset");
@@ -7938,7 +17566,7 @@ exports.FileDataSource = file_data_source_1.FileDataSource;
 var url_data_source_1 = require("./data/sources/url_data_source");
 exports.URLDataSource = url_data_source_1.URLDataSource;
 
-},{"./data/dataset":6,"./data/datasets/csv_dataset":7,"./data/datasets/text_line_dataset":8,"./data/sources/file_data_source":10,"./data/sources/url_data_source":11}],21:[function(require,module,exports){
+},{"./data/dataset":42,"./data/datasets/csv_dataset":43,"./data/datasets/text_line_dataset":44,"./data/sources/file_data_source":46,"./data/sources/url_data_source":47}],57:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var tensor_1 = require("../tensor");
@@ -8038,7 +17666,7 @@ var CheckpointLoader = (function () {
 }());
 exports.CheckpointLoader = CheckpointLoader;
 
-},{"../tensor":137}],22:[function(require,module,exports){
+},{"../tensor":173}],58:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var tensor_1 = require("../tensor");
@@ -8203,7 +17831,7 @@ var InMemoryDataset = (function () {
 }());
 exports.InMemoryDataset = InMemoryDataset;
 
-},{"../tensor":137,"../util":143}],23:[function(require,module,exports){
+},{"../tensor":173,"../util":179}],59:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -8305,7 +17933,7 @@ var InGPUMemoryShuffledInputProviderBuilder = (function (_super) {
 }(InMemoryShuffledInputProviderBuilder));
 exports.InGPUMemoryShuffledInputProviderBuilder = InGPUMemoryShuffledInputProviderBuilder;
 
-},{"../util":143}],24:[function(require,module,exports){
+},{"../util":179}],60:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -8452,7 +18080,7 @@ function parseTypedArrayFromPng(info, shape) {
     });
 }
 
-},{"../tensor":137,"../util":143,"./dataset":22}],25:[function(require,module,exports){
+},{"../tensor":173,"../util":179,"./dataset":58}],61:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 function isMobile() {
@@ -8464,7 +18092,7 @@ function isMobile() {
 }
 exports.isMobile = isMobile;
 
-},{}],26:[function(require,module,exports){
+},{}],62:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 function doc(info) {
@@ -8477,7 +18105,7 @@ function doc(info) {
 }
 exports.doc = doc;
 
-},{}],27:[function(require,module,exports){
+},{}],63:[function(require,module,exports){
 "use strict";
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -8799,7 +18427,7 @@ var Engine = (function () {
 }());
 exports.Engine = Engine;
 
-},{"./environment":28,"./globals":29,"./ops/ops":114,"./profiler":135,"./tape":136,"./tensor":137,"./util":143}],28:[function(require,module,exports){
+},{"./environment":64,"./globals":65,"./ops/ops":150,"./profiler":171,"./tape":172,"./tensor":173,"./util":179}],64:[function(require,module,exports){
 (function (global){
 "use strict";
 var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
@@ -9159,7 +18787,7 @@ function getOrMakeEnvironment() {
 exports.ENV = getOrMakeEnvironment();
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"./device_util":25,"./doc":26,"./engine":27,"./math":96,"./util":143}],29:[function(require,module,exports){
+},{"./device_util":61,"./doc":62,"./engine":63,"./math":132,"./util":179}],65:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var gradients_1 = require("./gradients");
@@ -9175,7 +18803,7 @@ exports.valueAndGrads = gradients_1.Gradients.valueAndGrads;
 exports.variableGrads = gradients_1.Gradients.variableGrads;
 exports.customGrad = gradients_1.Gradients.customGrad;
 
-},{"./gradients":30,"./tracking":140}],30:[function(require,module,exports){
+},{"./gradients":66,"./tracking":176}],66:[function(require,module,exports){
 "use strict";
 var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
     var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
@@ -9311,7 +18939,7 @@ function checkGrads(grads) {
     }
 }
 
-},{"./doc":26,"./environment":28,"./globals":29,"./tensor":137,"./util":143}],31:[function(require,module,exports){
+},{"./doc":62,"./environment":64,"./globals":65,"./tensor":173,"./util":179}],67:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var globals_1 = require("../globals");
@@ -9409,7 +19037,7 @@ var EluFunc = (function () {
 }());
 exports.EluFunc = EluFunc;
 
-},{"../globals":29,"../tensor":137}],32:[function(require,module,exports){
+},{"../globals":65,"../tensor":173}],68:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var globals_1 = require("../globals");
@@ -9436,7 +19064,7 @@ var SquareCostFunc = (function () {
 }());
 exports.SquareCostFunc = SquareCostFunc;
 
-},{"../globals":29,"../ops/ops":114}],33:[function(require,module,exports){
+},{"../globals":65,"../ops/ops":150}],69:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -10144,7 +19772,7 @@ var ArgMaxEqualsNode = (function (_super) {
 }(Node));
 exports.ArgMaxEqualsNode = ArgMaxEqualsNode;
 
-},{"../ops/concat_util":104,"../ops/conv_util":106,"../tensor":137,"../util":143,"./initializers":36}],34:[function(require,module,exports){
+},{"../ops/concat_util":140,"../ops/conv_util":142,"../tensor":173,"../util":179,"./initializers":72}],70:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var globals_1 = require("../globals");
@@ -10359,7 +19987,7 @@ var GraphRunner = (function () {
 }());
 exports.GraphRunner = GraphRunner;
 
-},{"../globals":29,"../tensor":137,"./session":58}],35:[function(require,module,exports){
+},{"../globals":65,"../tensor":173,"./session":94}],71:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var graph_1 = require("./graph");
@@ -10436,7 +20064,7 @@ function isPassthroughNode(node, map) {
 }
 exports.isPassthroughNode = isPassthroughNode;
 
-},{"./graph":33,"./priority_queue":57}],36:[function(require,module,exports){
+},{"./graph":69,"./priority_queue":93}],72:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var ops = require("../ops/ops");
@@ -10556,7 +20184,7 @@ var RandomUniformInitializer = (function () {
 }());
 exports.RandomUniformInitializer = RandomUniformInitializer;
 
-},{"../ops/ops":114}],37:[function(require,module,exports){
+},{"../ops/ops":150}],73:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var graph_1 = require("./graph");
@@ -10688,7 +20316,7 @@ function emitOpFromNode(node) {
     }
 }
 
-},{"./graph":33,"./graph_util":35,"./ops/add":38,"./ops/argmax":39,"./ops/argmaxequals":40,"./ops/concat":41,"./ops/convolution":42,"./ops/divide":43,"./ops/element_wise_activation":44,"./ops/element_wise_cost":45,"./ops/exp":46,"./ops/linear_combination":47,"./ops/log":48,"./ops/matmul":49,"./ops/max_pool":50,"./ops/multiply":51,"./ops/reduce_sum":53,"./ops/reshape":54,"./ops/softmax":55,"./ops/subtract":56}],38:[function(require,module,exports){
+},{"./graph":69,"./graph_util":71,"./ops/add":74,"./ops/argmax":75,"./ops/argmaxequals":76,"./ops/concat":77,"./ops/convolution":78,"./ops/divide":79,"./ops/element_wise_activation":80,"./ops/element_wise_cost":81,"./ops/exp":82,"./ops/linear_combination":83,"./ops/log":84,"./ops/matmul":85,"./ops/max_pool":86,"./ops/multiply":87,"./ops/reduce_sum":89,"./ops/reshape":90,"./ops/softmax":91,"./ops/subtract":92}],74:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -10786,7 +20414,7 @@ var Add = (function (_super) {
 }(op_1.Operation));
 exports.Add = Add;
 
-},{"../../globals":29,"../../util":143,"../graph_util":35,"./op":52}],39:[function(require,module,exports){
+},{"../../globals":65,"../../util":179,"../graph_util":71,"./op":88}],75:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -10823,7 +20451,7 @@ var ArgMax = (function (_super) {
 }(op_1.Operation));
 exports.ArgMax = ArgMax;
 
-},{"../../globals":29,"./op":52}],40:[function(require,module,exports){
+},{"../../globals":65,"./op":88}],76:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -10862,7 +20490,7 @@ var ArgMaxEquals = (function (_super) {
 }(op_1.Operation));
 exports.ArgMaxEquals = ArgMaxEquals;
 
-},{"../../globals":29,"./op":52}],41:[function(require,module,exports){
+},{"../../globals":65,"./op":88}],77:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -11007,7 +20635,7 @@ function concatBackProp(math, aTensor, bTensor, yTensor, axis, gradArrays, infAr
     gradArrays.add(bTensor, slice2Result);
 }
 
-},{"../../globals":29,"../../ops/concat_util":104,"../../util":143,"./op":52}],42:[function(require,module,exports){
+},{"../../globals":65,"../../ops/concat_util":140,"../../util":179,"./op":88}],78:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -11079,7 +20707,7 @@ var Convolution2D = (function (_super) {
 }(op_1.Operation));
 exports.Convolution2D = Convolution2D;
 
-},{"../../globals":29,"../../ops/conv_util":106,"../../util":143,"./op":52}],43:[function(require,module,exports){
+},{"../../globals":65,"../../ops/conv_util":142,"../../util":179,"./op":88}],79:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -11175,7 +20803,7 @@ var Divide = (function (_super) {
 }(op_1.Operation));
 exports.Divide = Divide;
 
-},{"../../globals":29,"../../util":143,"../graph_util":35,"./op":52}],44:[function(require,module,exports){
+},{"../../globals":65,"../../util":179,"../graph_util":71,"./op":88}],80:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -11296,7 +20924,7 @@ var PReLU = (function (_super) {
 }(op_1.Operation));
 exports.PReLU = PReLU;
 
-},{"../../globals":29,"../activation_functions":31,"./op":52}],45:[function(require,module,exports){
+},{"../../globals":65,"../activation_functions":67,"./op":88}],81:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -11368,7 +20996,7 @@ var MeanSquaredCost = (function (_super) {
 }(ElementWiseCost));
 exports.MeanSquaredCost = MeanSquaredCost;
 
-},{"../../environment":28,"../../globals":29,"../../tensor":137,"../../util":143,"../cost_functions":32,"../graph_util":35,"./op":52}],46:[function(require,module,exports){
+},{"../../environment":64,"../../globals":65,"../../tensor":173,"../../util":179,"../cost_functions":68,"../graph_util":71,"./op":88}],82:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -11413,7 +21041,7 @@ var Exp = (function (_super) {
 }(op_1.Operation));
 exports.Exp = Exp;
 
-},{"../../globals":29,"../graph_util":35,"./op":52}],47:[function(require,module,exports){
+},{"../../globals":65,"../graph_util":71,"./op":88}],83:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -11478,7 +21106,7 @@ var LinearCombination = (function (_super) {
 }(op_1.Operation));
 exports.LinearCombination = LinearCombination;
 
-},{"../../globals":29,"../graph_util":35,"./op":52}],48:[function(require,module,exports){
+},{"../../globals":65,"../graph_util":71,"./op":88}],84:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -11523,7 +21151,7 @@ var Log = (function (_super) {
 }(op_1.Operation));
 exports.Log = Log;
 
-},{"../../globals":29,"../graph_util":35,"./op":52}],49:[function(require,module,exports){
+},{"../../globals":65,"../graph_util":71,"./op":88}],85:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -11592,7 +21220,7 @@ var MatMul = (function (_super) {
 }(op_1.Operation));
 exports.MatMul = MatMul;
 
-},{"../../globals":29,"../graph_util":35,"./op":52}],50:[function(require,module,exports){
+},{"../../globals":65,"../graph_util":71,"./op":88}],86:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -11647,7 +21275,7 @@ var MaxPool = (function (_super) {
 }(op_1.Operation));
 exports.MaxPool = MaxPool;
 
-},{"../../globals":29,"../../ops/conv_util":106,"../../util":143,"./op":52}],51:[function(require,module,exports){
+},{"../../globals":65,"../../ops/conv_util":142,"../../util":179,"./op":88}],87:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -11731,7 +21359,7 @@ var Multiply = (function (_super) {
 }(op_1.Operation));
 exports.Multiply = Multiply;
 
-},{"../../globals":29,"../../util":143,"../graph_util":35,"./op":52}],52:[function(require,module,exports){
+},{"../../globals":65,"../../util":179,"../graph_util":71,"./op":88}],88:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var Operation = (function () {
@@ -11743,7 +21371,7 @@ var Operation = (function () {
 }());
 exports.Operation = Operation;
 
-},{}],53:[function(require,module,exports){
+},{}],89:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -11796,7 +21424,7 @@ var ReduceSum = (function (_super) {
 }(op_1.Operation));
 exports.ReduceSum = ReduceSum;
 
-},{"../../environment":28,"../../globals":29,"../../tensor":137,"../../util":143,"../graph_util":35,"./op":52}],54:[function(require,module,exports){
+},{"../../environment":64,"../../globals":65,"../../tensor":173,"../../util":179,"../graph_util":71,"./op":88}],90:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -11843,7 +21471,7 @@ var Reshape = (function (_super) {
 }(op_1.Operation));
 exports.Reshape = Reshape;
 
-},{"../../globals":29,"../../util":143,"./op":52}],55:[function(require,module,exports){
+},{"../../globals":65,"../../util":179,"./op":88}],91:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -11942,7 +21570,7 @@ function crossEntropyCost(math, y, target, epsilon) {
 }
 exports.crossEntropyCost = crossEntropyCost;
 
-},{"../../environment":28,"../../globals":29,"../../tensor":137,"../../util":143,"../graph":33,"../graph_util":35,"./op":52}],56:[function(require,module,exports){
+},{"../../environment":64,"../../globals":65,"../../tensor":173,"../../util":179,"../graph":69,"../graph_util":71,"./op":88}],92:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -12024,7 +21652,7 @@ var Subtract = (function (_super) {
 }(op_1.Operation));
 exports.Subtract = Subtract;
 
-},{"../../globals":29,"../../util":143,"../graph_util":35,"./op":52}],57:[function(require,module,exports){
+},{"../../globals":65,"../../util":179,"../graph_util":71,"./op":88}],93:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 function defaultCompare(a, b) {
@@ -12155,7 +21783,7 @@ var PriorityQueue = (function () {
 }());
 exports.PriorityQueue = PriorityQueue;
 
-},{}],58:[function(require,module,exports){
+},{}],94:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var globals_1 = require("../globals");
@@ -12297,7 +21925,7 @@ var Session = (function () {
 }());
 exports.Session = Session;
 
-},{"../globals":29,"../tensor":137,"../util":143,"./operation_emitter":37,"./session_util":59,"./tensor_array_map":60}],59:[function(require,module,exports){
+},{"../globals":65,"../tensor":173,"../util":179,"./operation_emitter":73,"./session_util":95,"./tensor_array_map":96}],95:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var tensor_1 = require("../tensor");
@@ -12425,7 +22053,7 @@ function throwErrorIfEvaluationSetContainsPlaceholderNodes(evaluationSet) {
 }
 exports.throwErrorIfEvaluationSetContainsPlaceholderNodes = throwErrorIfEvaluationSetContainsPlaceholderNodes;
 
-},{"../tensor":137,"../util":143,"./graph":33,"./graph_util":35}],60:[function(require,module,exports){
+},{"../tensor":173,"../util":179,"./graph":69,"./graph_util":71}],96:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -12525,7 +22153,7 @@ var SummedTensorArrayMap = (function (_super) {
 }(TensorArrayMapBase));
 exports.SummedTensorArrayMap = SummedTensorArrayMap;
 
-},{}],61:[function(require,module,exports){
+},{}],97:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -13877,7 +23505,7 @@ var NDArrayMathCPU = (function (_super) {
 }(math_1.NDArrayMath));
 exports.NDArrayMathCPU = NDArrayMathCPU;
 
-},{"../environment":28,"../math":96,"../ops/axis_util":98,"../ops/broadcast_util":101,"../ops/concat_util":104,"../ops/ops":114,"../ops/selu_util":120,"../tensor":137,"../types":142,"../util":143,"seedrandom":1000}],62:[function(require,module,exports){
+},{"../environment":64,"../math":132,"../ops/axis_util":134,"../ops/broadcast_util":137,"../ops/concat_util":140,"../ops/ops":150,"../ops/selu_util":156,"../tensor":173,"../types":178,"../util":179,"seedrandom":1036}],98:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -14729,7 +24357,7 @@ function typedArrayToFloat32(a, dtype) {
     }
 }
 
-},{"../environment":28,"../math":96,"../ops/axis_util":98,"../ops/reduce_util":117,"../tensor":137,"../types":142,"../util":143,"./webgl/argminmax_gpu":63,"./webgl/avg_pool_backprop_gpu":64,"./webgl/batchnorm_gpu":65,"./webgl/binaryop_gpu":66,"./webgl/clip_gpu":67,"./webgl/concat_gpu":68,"./webgl/conv_backprop_gpu":69,"./webgl/conv_gpu":70,"./webgl/conv_gpu_depthwise":71,"./webgl/from_pixels_gpu":72,"./webgl/gather_gpu":73,"./webgl/gpgpu_context":74,"./webgl/gpgpu_math":75,"./webgl/logical_gpu":77,"./webgl/lrn_gpu":78,"./webgl/max_pool_backprop_gpu":79,"./webgl/mulmat_gpu":80,"./webgl/multinomial_gpu":81,"./webgl/onehot_gpu":82,"./webgl/pad_gpu":83,"./webgl/pool_gpu":84,"./webgl/reduce_gpu":85,"./webgl/resize_bilinear_gpu":86,"./webgl/reverse_gpu":87,"./webgl/slice_gpu":89,"./webgl/tex_util":90,"./webgl/texture_manager":91,"./webgl/tile_gpu":92,"./webgl/transpose_gpu":93,"./webgl/unaryop_gpu":94,"./webgl/webgl_util":95}],63:[function(require,module,exports){
+},{"../environment":64,"../math":132,"../ops/axis_util":134,"../ops/reduce_util":153,"../tensor":173,"../types":178,"../util":179,"./webgl/argminmax_gpu":99,"./webgl/avg_pool_backprop_gpu":100,"./webgl/batchnorm_gpu":101,"./webgl/binaryop_gpu":102,"./webgl/clip_gpu":103,"./webgl/concat_gpu":104,"./webgl/conv_backprop_gpu":105,"./webgl/conv_gpu":106,"./webgl/conv_gpu_depthwise":107,"./webgl/from_pixels_gpu":108,"./webgl/gather_gpu":109,"./webgl/gpgpu_context":110,"./webgl/gpgpu_math":111,"./webgl/logical_gpu":113,"./webgl/lrn_gpu":114,"./webgl/max_pool_backprop_gpu":115,"./webgl/mulmat_gpu":116,"./webgl/multinomial_gpu":117,"./webgl/onehot_gpu":118,"./webgl/pad_gpu":119,"./webgl/pool_gpu":120,"./webgl/reduce_gpu":121,"./webgl/resize_bilinear_gpu":122,"./webgl/reverse_gpu":123,"./webgl/slice_gpu":125,"./webgl/tex_util":126,"./webgl/texture_manager":127,"./webgl/tile_gpu":128,"./webgl/transpose_gpu":129,"./webgl/unaryop_gpu":130,"./webgl/webgl_util":131}],99:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var ArgMinMaxProgram = (function () {
@@ -14753,7 +24381,7 @@ var ArgMinMaxProgram = (function () {
 }());
 exports.ArgMinMaxProgram = ArgMinMaxProgram;
 
-},{}],64:[function(require,module,exports){
+},{}],100:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var AvgPool2DBackpropProgram = (function () {
@@ -14773,7 +24401,7 @@ var AvgPool2DBackpropProgram = (function () {
 }());
 exports.AvgPool2DBackpropProgram = AvgPool2DBackpropProgram;
 
-},{}],65:[function(require,module,exports){
+},{}],101:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var broadcast_util = require("../../ops/broadcast_util");
@@ -14803,7 +24431,7 @@ var BatchNormProgram = (function () {
 }());
 exports.BatchNormProgram = BatchNormProgram;
 
-},{"../../ops/broadcast_util":101}],66:[function(require,module,exports){
+},{"../../ops/broadcast_util":137}],102:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var broadcast_util = require("../../ops/broadcast_util");
@@ -14838,7 +24466,7 @@ var BinaryOpProgram = (function () {
 }());
 exports.BinaryOpProgram = BinaryOpProgram;
 
-},{"../../ops/broadcast_util":101}],67:[function(require,module,exports){
+},{"../../ops/broadcast_util":137}],103:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var ClipProgram = (function () {
@@ -14853,7 +24481,7 @@ var ClipProgram = (function () {
 }());
 exports.ClipProgram = ClipProgram;
 
-},{}],68:[function(require,module,exports){
+},{}],104:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var concat_util = require("../../ops/concat_util");
@@ -14869,7 +24497,7 @@ var ConcatProgram = (function () {
 }());
 exports.ConcatProgram = ConcatProgram;
 
-},{"../../ops/concat_util":104}],69:[function(require,module,exports){
+},{"../../ops/concat_util":140}],105:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var Conv2DDerFilterProgram = (function () {
@@ -14901,7 +24529,7 @@ var Conv2DDerInputProgram = (function () {
 }());
 exports.Conv2DDerInputProgram = Conv2DDerInputProgram;
 
-},{}],70:[function(require,module,exports){
+},{}],106:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var Conv2DProgram = (function () {
@@ -14922,7 +24550,7 @@ var Conv2DProgram = (function () {
 }());
 exports.Conv2DProgram = Conv2DProgram;
 
-},{}],71:[function(require,module,exports){
+},{}],107:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var DepthwiseConv2DProgram = (function () {
@@ -14944,7 +24572,7 @@ var DepthwiseConv2DProgram = (function () {
 }());
 exports.DepthwiseConv2DProgram = DepthwiseConv2DProgram;
 
-},{}],72:[function(require,module,exports){
+},{}],108:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var FromPixelsProgram = (function () {
@@ -14958,7 +24586,7 @@ var FromPixelsProgram = (function () {
 }());
 exports.FromPixelsProgram = FromPixelsProgram;
 
-},{}],73:[function(require,module,exports){
+},{}],109:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var shader_compiler_1 = require("./shader_compiler");
@@ -14997,7 +24625,7 @@ function getSourceCoords(aShape, axis) {
     return sourceCoords.join();
 }
 
-},{"./shader_compiler":88}],74:[function(require,module,exports){
+},{"./shader_compiler":124}],110:[function(require,module,exports){
 "use strict";
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -15416,7 +25044,7 @@ var GPGPUContext = (function () {
 }());
 exports.GPGPUContext = GPGPUContext;
 
-},{"../../environment":28,"../../util":143,"./gpgpu_util":76,"./tex_util":90,"./webgl_util":95}],75:[function(require,module,exports){
+},{"../../environment":64,"../../util":179,"./gpgpu_util":112,"./tex_util":126,"./webgl_util":131}],111:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var environment_1 = require("../../environment");
@@ -15519,7 +25147,7 @@ function makeShaderKey(program, inputs, output) {
 }
 exports.makeShaderKey = makeShaderKey;
 
-},{"../../environment":28,"../../util":143,"./shader_compiler":88}],76:[function(require,module,exports){
+},{"../../environment":64,"../../util":179,"./shader_compiler":124}],112:[function(require,module,exports){
 "use strict";
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -15801,7 +25429,7 @@ function downloadMatrixFromPackedOutputTexture(gl, rows, columns) {
 }
 exports.downloadMatrixFromPackedOutputTexture = downloadMatrixFromPackedOutputTexture;
 
-},{"../../environment":28,"./tex_util":90,"./webgl_util":95}],77:[function(require,module,exports){
+},{"../../environment":64,"./tex_util":126,"./webgl_util":131}],113:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var shader_compiler_1 = require("./shader_compiler");
@@ -15838,7 +25466,7 @@ var WhereProgram = (function () {
 }());
 exports.WhereProgram = WhereProgram;
 
-},{"./shader_compiler":88}],78:[function(require,module,exports){
+},{"./shader_compiler":124}],114:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var LRNProgram = (function () {
@@ -15872,7 +25500,7 @@ var LRNProgram = (function () {
 }());
 exports.LRNProgram = LRNProgram;
 
-},{}],79:[function(require,module,exports){
+},{}],115:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var MaxPool2DBackpropProgram = (function () {
@@ -15892,7 +25520,7 @@ var MaxPool2DBackpropProgram = (function () {
 }());
 exports.MaxPool2DBackpropProgram = MaxPool2DBackpropProgram;
 
-},{}],80:[function(require,module,exports){
+},{}],116:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var MatMulProgram = (function () {
@@ -15920,7 +25548,7 @@ var MatMulProgram = (function () {
 }());
 exports.MatMulProgram = MatMulProgram;
 
-},{}],81:[function(require,module,exports){
+},{}],117:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var MultinomialProgram = (function () {
@@ -15942,7 +25570,7 @@ var MultinomialProgram = (function () {
 }());
 exports.MultinomialProgram = MultinomialProgram;
 
-},{}],82:[function(require,module,exports){
+},{}],118:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var OneHotProgram = (function () {
@@ -15955,7 +25583,7 @@ var OneHotProgram = (function () {
 }());
 exports.OneHotProgram = OneHotProgram;
 
-},{}],83:[function(require,module,exports){
+},{}],119:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var shader_compiler_1 = require("./shader_compiler");
@@ -15978,7 +25606,7 @@ var PadProgram = (function () {
 }());
 exports.PadProgram = PadProgram;
 
-},{"./shader_compiler":88}],84:[function(require,module,exports){
+},{"./shader_compiler":124}],120:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var Pool2DProgram = (function () {
@@ -16024,7 +25652,7 @@ var Pool2DProgram = (function () {
 }());
 exports.Pool2DProgram = Pool2DProgram;
 
-},{}],85:[function(require,module,exports){
+},{}],121:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var ReduceProgram = (function () {
@@ -16064,7 +25692,7 @@ var ReduceProgram = (function () {
 }());
 exports.ReduceProgram = ReduceProgram;
 
-},{}],86:[function(require,module,exports){
+},{}],122:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var ResizeBilinearProgram = (function () {
@@ -16081,7 +25709,7 @@ var ResizeBilinearProgram = (function () {
 }());
 exports.ResizeBilinearProgram = ResizeBilinearProgram;
 
-},{}],87:[function(require,module,exports){
+},{}],123:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var shader_compiler_1 = require("./shader_compiler");
@@ -16111,7 +25739,7 @@ var ReverseProgram = (function () {
 }());
 exports.ReverseProgram = ReverseProgram;
 
-},{"./shader_compiler":88}],88:[function(require,module,exports){
+},{"./shader_compiler":124}],124:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var environment_1 = require("../../environment");
@@ -16418,7 +26046,7 @@ function getSqueezedParams(params, keptDims) {
     return keptDims.map(function (d) { return params[d]; }).join(', ');
 }
 
-},{"../../environment":28,"../../ops/broadcast_util":101,"../../util":143,"./tex_util":90}],89:[function(require,module,exports){
+},{"../../environment":64,"../../ops/broadcast_util":137,"../../util":179,"./tex_util":126}],125:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var shader_compiler_1 = require("./shader_compiler");
@@ -16482,7 +26110,7 @@ function getCoords(rank) {
     }
 }
 
-},{"./shader_compiler":88}],90:[function(require,module,exports){
+},{"./shader_compiler":124}],126:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var TextureType;
@@ -16721,7 +26349,7 @@ function decodeMatrixFromPackedRGBA(packedRGBA, rows, columns, matrix) {
 }
 exports.decodeMatrixFromPackedRGBA = decodeMatrixFromPackedRGBA;
 
-},{}],91:[function(require,module,exports){
+},{}],127:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var tex_util_1 = require("./tex_util");
@@ -16803,7 +26431,7 @@ function getKeyFromTextureShape(shapeRowsCol, texType) {
     return shapeRowsCol[0] + "_" + shapeRowsCol[1] + "_" + texType;
 }
 
-},{"./tex_util":90}],92:[function(require,module,exports){
+},{"./tex_util":126}],128:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var shader_compiler_1 = require("./shader_compiler");
@@ -16839,7 +26467,7 @@ function getSourceCoords(aShape) {
     return sourceCoords.join();
 }
 
-},{"./shader_compiler":88}],93:[function(require,module,exports){
+},{"./shader_compiler":124}],129:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var shader_compiler_1 = require("./shader_compiler");
@@ -16872,7 +26500,7 @@ function getSwitchedCoords(newDim) {
     return switchedCoords.join();
 }
 
-},{"./shader_compiler":88}],94:[function(require,module,exports){
+},{"./shader_compiler":124}],130:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var selu_util = require("../../ops/selu_util");
@@ -16920,7 +26548,7 @@ exports.SQUARE = "\n  return x * x;\n";
 exports.LOGICAL_NOT = CHECK_NAN_SNIPPET + "\n  return float(!(x >= 1.0));\n";
 exports.TO_INT = "\n  return float(int(x));\n";
 
-},{"../../ops/selu_util":120}],95:[function(require,module,exports){
+},{"../../ops/selu_util":156}],131:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var MAX_TEXTURE_SIZE = null;
@@ -17233,7 +26861,7 @@ function getTextureShapeFromLogicalShape(gl, logShape) {
 }
 exports.getTextureShapeFromLogicalShape = getTextureShapeFromLogicalShape;
 
-},{"../../environment":28,"../../util":143}],96:[function(require,module,exports){
+},{"../../environment":64,"../../util":179}],132:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var environment_1 = require("./environment");
@@ -17491,7 +27119,7 @@ var NDArrayMath = (function () {
 }());
 exports.NDArrayMath = NDArrayMath;
 
-},{"./environment":28,"./ops/array_ops":97,"./ops/batchnorm":99,"./ops/binary_ops":100,"./ops/compare":102,"./ops/conv":105,"./ops/image_ops":107,"./ops/logical_ops":108,"./ops/lrn":109,"./ops/lstm":110,"./ops/matmul":111,"./ops/norm":112,"./ops/ops":114,"./ops/pool":115,"./ops/reduction_ops":118,"./ops/reverse":119,"./ops/slice":121,"./ops/softmax":123,"./ops/transpose":124,"./ops/unary_ops":125,"./tracking":140,"./util":143}],97:[function(require,module,exports){
+},{"./environment":64,"./ops/array_ops":133,"./ops/batchnorm":135,"./ops/binary_ops":136,"./ops/compare":138,"./ops/conv":141,"./ops/image_ops":143,"./ops/logical_ops":144,"./ops/lrn":145,"./ops/lstm":146,"./ops/matmul":147,"./ops/norm":148,"./ops/ops":150,"./ops/pool":151,"./ops/reduction_ops":154,"./ops/reverse":155,"./ops/slice":157,"./ops/softmax":159,"./ops/transpose":160,"./ops/unary_ops":161,"./tracking":176,"./util":179}],133:[function(require,module,exports){
 "use strict";
 var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
     var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
@@ -18010,7 +27638,7 @@ function noConversionNeeded(a, dtype) {
         (a instanceof Uint8Array && dtype === 'bool');
 }
 
-},{"../doc":26,"../environment":28,"../tensor":137,"../tensor_util":138,"../util":143,"./axis_util":98,"./concat":103,"./operation":113,"./rand":116}],98:[function(require,module,exports){
+},{"../doc":62,"../environment":64,"../tensor":173,"../tensor_util":174,"../util":179,"./axis_util":134,"./concat":139,"./operation":149,"./rand":152}],134:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var util = require("../util");
@@ -18100,7 +27728,7 @@ function getInnerMostAxes(numAxes, rank) {
 }
 exports.getInnerMostAxes = getInnerMostAxes;
 
-},{"../util":143}],99:[function(require,module,exports){
+},{"../util":179}],135:[function(require,module,exports){
 "use strict";
 var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
     var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
@@ -18222,7 +27850,7 @@ function batchnormReshape4D(x) {
     return x;
 }
 
-},{"../doc":26,"../environment":28,"../util":143,"./operation":113}],100:[function(require,module,exports){
+},{"../doc":62,"../environment":64,"../util":179,"./operation":149}],136:[function(require,module,exports){
 "use strict";
 var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
     var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
@@ -18453,7 +28081,7 @@ var BinaryOps = (function () {
 }());
 exports.BinaryOps = BinaryOps;
 
-},{"../doc":26,"../environment":28,"../util":143,"./broadcast_util":101,"./operation":113,"./ops":114}],101:[function(require,module,exports){
+},{"../doc":62,"../environment":64,"../util":179,"./broadcast_util":137,"./operation":149,"./ops":150}],137:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 function getBroadcastDims(inShape, outShape) {
@@ -18509,7 +28137,7 @@ function assertAndGetBroadcastShape(shapeA, shapeB) {
 }
 exports.assertAndGetBroadcastShape = assertAndGetBroadcastShape;
 
-},{}],102:[function(require,module,exports){
+},{}],138:[function(require,module,exports){
 "use strict";
 var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
     var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
@@ -18626,7 +28254,7 @@ var CompareOps = (function () {
 }());
 exports.CompareOps = CompareOps;
 
-},{"../doc":26,"../environment":28,"../util":143,"./broadcast_util":101,"./operation":113}],103:[function(require,module,exports){
+},{"../doc":62,"../environment":64,"../util":179,"./broadcast_util":137,"./operation":149}],139:[function(require,module,exports){
 "use strict";
 var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
     var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
@@ -18686,7 +28314,7 @@ function concat2Tensors(a, b, axis) {
     return res.reshape(outShape);
 }
 
-},{"../doc":26,"../environment":28,"../util":143,"./axis_util":98,"./concat_util":104,"./operation":113}],104:[function(require,module,exports){
+},{"../doc":62,"../environment":64,"../util":179,"./axis_util":134,"./concat_util":140,"./operation":149}],140:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var util = require("../util");
@@ -18727,7 +28355,7 @@ function computeGradientSliceShapes(aShape, bShape) {
 }
 exports.computeGradientSliceShapes = computeGradientSliceShapes;
 
-},{"../util":143}],105:[function(require,module,exports){
+},{"../util":179}],141:[function(require,module,exports){
 "use strict";
 var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
     var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
@@ -18927,7 +28555,7 @@ function parseTupleParam(param) {
     return typeof param === 'number' ? [param, param] : param;
 }
 
-},{"../doc":26,"../environment":28,"../util":143,"./conv_util":106,"./operation":113}],106:[function(require,module,exports){
+},{"../doc":62,"../environment":64,"../util":179,"./conv_util":142,"./operation":149}],142:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var util = require("../util");
@@ -19080,7 +28708,7 @@ function conditionalRound(value, roundingMode) {
     }
 }
 
-},{"../util":143}],107:[function(require,module,exports){
+},{"../util":179}],143:[function(require,module,exports){
 "use strict";
 var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
     var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
@@ -19124,7 +28752,7 @@ var ImageOps = (function () {
 }());
 exports.ImageOps = ImageOps;
 
-},{"../doc":26,"../environment":28,"../util":143,"./operation":113}],108:[function(require,module,exports){
+},{"../doc":62,"../environment":64,"../util":179,"./operation":149}],144:[function(require,module,exports){
 "use strict";
 var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
     var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
@@ -19197,7 +28825,7 @@ var LogicalOps = (function () {
 }());
 exports.LogicalOps = LogicalOps;
 
-},{"../doc":26,"../environment":28,"../types":142,"../util":143,"./broadcast_util":101,"./operation":113}],109:[function(require,module,exports){
+},{"../doc":62,"../environment":64,"../types":178,"../util":179,"./broadcast_util":137,"./operation":149}],145:[function(require,module,exports){
 "use strict";
 var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
     var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
@@ -19243,7 +28871,7 @@ var LRNOps = (function () {
 }());
 exports.LRNOps = LRNOps;
 
-},{"../doc":26,"../environment":28,"../util":143,"./operation":113}],110:[function(require,module,exports){
+},{"../doc":62,"../environment":64,"../util":179,"./operation":149}],146:[function(require,module,exports){
 "use strict";
 var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
     var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
@@ -19301,7 +28929,7 @@ var LSTMOps = (function () {
 }());
 exports.LSTMOps = LSTMOps;
 
-},{"../doc":26,"./operation":113}],111:[function(require,module,exports){
+},{"../doc":62,"./operation":149}],147:[function(require,module,exports){
 "use strict";
 var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
     var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
@@ -19407,7 +29035,7 @@ function enumToBool(transpose) {
     return transpose;
 }
 
-},{"../doc":26,"../environment":28,"../util":143,"./operation":113}],112:[function(require,module,exports){
+},{"../doc":62,"../environment":64,"../util":179,"./operation":149}],148:[function(require,module,exports){
 "use strict";
 var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
     var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
@@ -19484,7 +29112,7 @@ function normImpl(x, p, axis) {
     throw new Error("Error in norm: invalid axis: " + axis);
 }
 
-},{"../doc":26,"./axis_util":98,"./operation":113,"./ops":114}],113:[function(require,module,exports){
+},{"../doc":62,"./axis_util":134,"./operation":149,"./ops":150}],149:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var globals_1 = require("../globals");
@@ -19501,7 +29129,7 @@ function operation(target, name, descriptor) {
 }
 exports.operation = operation;
 
-},{"../globals":29}],114:[function(require,module,exports){
+},{"../globals":65}],150:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var array_ops_1 = require("./array_ops");
@@ -19667,7 +29295,7 @@ exports.image = {
     resizeBilinear: image_ops_1.ImageOps.resizeBilinear
 };
 
-},{"../tensor":137,"../types":142,"./array_ops":97,"./batchnorm":99,"./binary_ops":100,"./compare":102,"./concat":103,"./conv":105,"./image_ops":107,"./logical_ops":108,"./lrn":109,"./lstm":110,"./matmul":111,"./norm":112,"./pool":115,"./reduction_ops":118,"./reverse":119,"./slice":121,"./softmax":123,"./transpose":124,"./unary_ops":125}],115:[function(require,module,exports){
+},{"../tensor":173,"../types":178,"./array_ops":133,"./batchnorm":135,"./binary_ops":136,"./compare":138,"./concat":139,"./conv":141,"./image_ops":143,"./logical_ops":144,"./lrn":145,"./lstm":146,"./matmul":147,"./norm":148,"./pool":151,"./reduction_ops":154,"./reverse":155,"./slice":157,"./softmax":159,"./transpose":160,"./unary_ops":161}],151:[function(require,module,exports){
 "use strict";
 var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
     var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
@@ -19819,7 +29447,7 @@ var PoolOps = (function () {
 }());
 exports.PoolOps = PoolOps;
 
-},{"../doc":26,"../environment":28,"../util":143,"./conv_util":106,"./operation":113}],116:[function(require,module,exports){
+},{"../doc":62,"../environment":64,"../util":179,"./conv_util":142,"./operation":149}],152:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var seedrandom = require("seedrandom");
@@ -19877,7 +29505,7 @@ var MPRandGauss = (function () {
 }());
 exports.MPRandGauss = MPRandGauss;
 
-},{"seedrandom":1000}],117:[function(require,module,exports){
+},{"seedrandom":1036}],153:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.PARALLELIZE_THRESHOLD = 30;
@@ -19897,7 +29525,7 @@ function nearestDivisor(size, start) {
     return size;
 }
 
-},{}],118:[function(require,module,exports){
+},{}],154:[function(require,module,exports){
 "use strict";
 var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
     var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
@@ -20092,7 +29720,7 @@ var ReductionOps = (function () {
 }());
 exports.ReductionOps = ReductionOps;
 
-},{"../doc":26,"../environment":28,"../globals":29,"../tensor":137,"../util":143,"./axis_util":98,"./operation":113,"./ops":114}],119:[function(require,module,exports){
+},{"../doc":62,"../environment":64,"../globals":65,"../tensor":173,"../util":179,"./axis_util":134,"./operation":149,"./ops":150}],155:[function(require,module,exports){
 "use strict";
 var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
     var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
@@ -20144,13 +29772,13 @@ var ReverseOps = (function () {
 }());
 exports.ReverseOps = ReverseOps;
 
-},{"../doc":26,"../environment":28,"../util":143,"./axis_util":98,"./operation":113}],120:[function(require,module,exports){
+},{"../doc":62,"../environment":64,"../util":179,"./axis_util":134,"./operation":149}],156:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.SELU_SCALEALPHA = 1.7580993408473768599402175208123;
 exports.SELU_SCALE = 1.0507009873554804934193349852946;
 
-},{}],121:[function(require,module,exports){
+},{}],157:[function(require,module,exports){
 "use strict";
 var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
     var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
@@ -20206,7 +29834,7 @@ var SliceOps = (function () {
 }());
 exports.SliceOps = SliceOps;
 
-},{"../doc":26,"../environment":28,"../util":143,"./operation":113,"./slice_util":122}],122:[function(require,module,exports){
+},{"../doc":62,"../environment":64,"../util":179,"./operation":149,"./slice_util":158}],158:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var util = require("../util");
@@ -20222,7 +29850,7 @@ function assertParamsValid(input, begin, size) {
 }
 exports.assertParamsValid = assertParamsValid;
 
-},{"../util":143}],123:[function(require,module,exports){
+},{"../util":179}],159:[function(require,module,exports){
 "use strict";
 var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
     var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
@@ -20301,7 +29929,7 @@ var SoftmaxOps = (function () {
 }());
 exports.SoftmaxOps = SoftmaxOps;
 
-},{"../doc":26,"../globals":29,"../util":143,"./axis_util":98,"./operation":113,"./ops":114}],124:[function(require,module,exports){
+},{"../doc":62,"../globals":65,"../util":179,"./axis_util":134,"./operation":149,"./ops":150}],160:[function(require,module,exports){
 "use strict";
 var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
     var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
@@ -20338,7 +29966,7 @@ var TransposeOps = (function () {
 }());
 exports.TransposeOps = TransposeOps;
 
-},{"../doc":26,"../environment":28,"../util":143,"./axis_util":98,"./operation":113}],125:[function(require,module,exports){
+},{"../doc":62,"../environment":64,"../util":179,"./axis_util":134,"./operation":149}],161:[function(require,module,exports){
 "use strict";
 var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
     var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
@@ -20646,7 +30274,7 @@ function eluDer(x) {
     return environment_1.ENV.engine.runKernel(function (backend) { return backend.eluDer(x); }, { x: x });
 }
 
-},{"../doc":26,"../environment":28,"../util":143,"./operation":113,"./ops":114,"./selu_util":120}],126:[function(require,module,exports){
+},{"../doc":62,"../environment":64,"../util":179,"./operation":149,"./ops":150,"./selu_util":156}],162:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -20787,7 +30415,7 @@ var AdadeltaOptimizer = (function (_super) {
 }(optimizer_1.Optimizer));
 exports.AdadeltaOptimizer = AdadeltaOptimizer;
 
-},{"../environment":28,"../globals":29,"../graph/tensor_array_map":60,"../ops/ops":114,"../tensor":137,"./optimizer":131}],127:[function(require,module,exports){
+},{"../environment":64,"../globals":65,"../graph/tensor_array_map":96,"../ops/ops":150,"../tensor":173,"./optimizer":167}],163:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -20899,7 +30527,7 @@ var AdagradOptimizer = (function (_super) {
 }(optimizer_1.Optimizer));
 exports.AdagradOptimizer = AdagradOptimizer;
 
-},{"../environment":28,"../globals":29,"../graph/tensor_array_map":60,"../ops/ops":114,"../tensor":137,"./optimizer":131}],128:[function(require,module,exports){
+},{"../environment":64,"../globals":65,"../graph/tensor_array_map":96,"../ops/ops":150,"../tensor":173,"./optimizer":167}],164:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -21052,7 +30680,7 @@ var AdamOptimizer = (function (_super) {
 }(optimizer_1.Optimizer));
 exports.AdamOptimizer = AdamOptimizer;
 
-},{"../environment":28,"../globals":29,"../graph/tensor_array_map":60,"../ops/ops":114,"../tensor":137,"./optimizer":131}],129:[function(require,module,exports){
+},{"../environment":64,"../globals":65,"../graph/tensor_array_map":96,"../ops/ops":150,"../tensor":173,"./optimizer":167}],165:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -21204,7 +30832,7 @@ var AdamaxOptimizer = (function (_super) {
 }(optimizer_1.Optimizer));
 exports.AdamaxOptimizer = AdamaxOptimizer;
 
-},{"../environment":28,"../globals":29,"../graph/tensor_array_map":60,"../ops/ops":114,"../tensor":137,"./optimizer":131}],130:[function(require,module,exports){
+},{"../environment":64,"../globals":65,"../graph/tensor_array_map":96,"../ops/ops":150,"../tensor":173,"./optimizer":167}],166:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -21324,7 +30952,7 @@ var MomentumOptimizer = (function (_super) {
 }(sgd_optimizer_1.SGDOptimizer));
 exports.MomentumOptimizer = MomentumOptimizer;
 
-},{"../environment":28,"../globals":29,"../graph/tensor_array_map":60,"../ops/ops":114,"../tensor":137,"./sgd_optimizer":134}],131:[function(require,module,exports){
+},{"../environment":64,"../globals":65,"../graph/tensor_array_map":96,"../ops/ops":150,"../tensor":173,"./sgd_optimizer":170}],167:[function(require,module,exports){
 "use strict";
 var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
     var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
@@ -21414,7 +31042,7 @@ var Optimizer = (function () {
 }());
 exports.Optimizer = Optimizer;
 
-},{"../doc":26,"../globals":29,"../graph/session_util":59,"../graph/tensor_array_map":60,"../ops/ops":114,"../tensor":137}],132:[function(require,module,exports){
+},{"../doc":62,"../globals":65,"../graph/session_util":95,"../graph/tensor_array_map":96,"../ops/ops":150,"../tensor":173}],168:[function(require,module,exports){
 "use strict";
 var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
     var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
@@ -21497,7 +31125,7 @@ var OptimizerConstructors = (function () {
 }());
 exports.OptimizerConstructors = OptimizerConstructors;
 
-},{"../doc":26,"./adadelta_optimizer":126,"./adagrad_optimizer":127,"./adam_optimizer":128,"./adamax_optimizer":129,"./momentum_optimizer":130,"./rmsprop_optimizer":133,"./sgd_optimizer":134}],133:[function(require,module,exports){
+},{"../doc":62,"./adadelta_optimizer":162,"./adagrad_optimizer":163,"./adam_optimizer":164,"./adamax_optimizer":165,"./momentum_optimizer":166,"./rmsprop_optimizer":169,"./sgd_optimizer":170}],169:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -21643,7 +31271,7 @@ var RMSPropOptimizer = (function (_super) {
 }(optimizer_1.Optimizer));
 exports.RMSPropOptimizer = RMSPropOptimizer;
 
-},{"../environment":28,"../globals":29,"../graph/session_util":59,"../graph/tensor_array_map":60,"../ops/ops":114,"../tensor":137,"./optimizer":131}],134:[function(require,module,exports){
+},{"../environment":64,"../globals":65,"../graph/session_util":95,"../graph/tensor_array_map":96,"../ops/ops":150,"../tensor":173,"./optimizer":167}],170:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -21717,7 +31345,7 @@ var SGDOptimizer = (function (_super) {
 }(optimizer_1.Optimizer));
 exports.SGDOptimizer = SGDOptimizer;
 
-},{"../environment":28,"../globals":29,"../graph/tensor_array_map":60,"../ops/ops":114,"./optimizer":131}],135:[function(require,module,exports){
+},{"../environment":64,"../globals":65,"../graph/tensor_array_map":96,"../ops/ops":150,"./optimizer":167}],171:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var util = require("./util");
@@ -21761,7 +31389,7 @@ var Logger = (function () {
 }());
 exports.Logger = Logger;
 
-},{"./util":143}],136:[function(require,module,exports){
+},{"./util":179}],172:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var util = require("./util");
@@ -21862,7 +31490,7 @@ function backpropagateGradients(tensorAccumulatedGradientMap, filteredTape) {
 }
 exports.backpropagateGradients = backpropagateGradients;
 
-},{"./util":143}],137:[function(require,module,exports){
+},{"./util":179}],173:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -22807,7 +32435,7 @@ function computeStrides(shape) {
     return strides;
 }
 
-},{"./doc":26,"./environment":28,"./ops/ops":114,"./tensor_util":138,"./util":143}],138:[function(require,module,exports){
+},{"./doc":62,"./environment":64,"./ops/ops":150,"./tensor_util":174,"./util":179}],174:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var util = require("./util");
@@ -22912,7 +32540,7 @@ function subTensorToString(vals, shape, strides, padPerCol, isLast) {
     return lines;
 }
 
-},{"./util":143}],139:[function(require,module,exports){
+},{"./util":179}],175:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var environment_1 = require("./environment");
@@ -23045,7 +32673,7 @@ function assertIsNan(val, dtype) {
 }
 exports.assertIsNan = assertIsNan;
 
-},{"./environment":28,"./kernels/backend_cpu":61,"./kernels/backend_webgl":62,"./tensor":137,"./util":143}],140:[function(require,module,exports){
+},{"./environment":64,"./kernels/backend_cpu":97,"./kernels/backend_webgl":98,"./tensor":173,"./util":179}],176:[function(require,module,exports){
 "use strict";
 var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
     var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
@@ -23112,7 +32740,7 @@ var Tracking = (function () {
 }());
 exports.Tracking = Tracking;
 
-},{"./doc":26,"./environment":28,"./util":143}],141:[function(require,module,exports){
+},{"./doc":62,"./environment":64,"./util":179}],177:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var adadelta_optimizer_1 = require("./optimizers/adadelta_optimizer");
@@ -23135,7 +32763,7 @@ exports.train = {
     adam: optimizer_constructors_1.OptimizerConstructors.adam
 };
 
-},{"./optimizers/adadelta_optimizer":126,"./optimizers/adagrad_optimizer":127,"./optimizers/adam_optimizer":128,"./optimizers/adamax_optimizer":129,"./optimizers/momentum_optimizer":130,"./optimizers/optimizer_constructors":132,"./optimizers/rmsprop_optimizer":133,"./optimizers/sgd_optimizer":134}],142:[function(require,module,exports){
+},{"./optimizers/adadelta_optimizer":162,"./optimizers/adagrad_optimizer":163,"./optimizers/adam_optimizer":164,"./optimizers/adamax_optimizer":165,"./optimizers/momentum_optimizer":166,"./optimizers/optimizer_constructors":168,"./optimizers/rmsprop_optimizer":169,"./optimizers/sgd_optimizer":170}],178:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var DType;
@@ -23184,7 +32812,7 @@ function sumOutType(type) {
 }
 exports.sumOutType = sumOutType;
 
-},{}],143:[function(require,module,exports){
+},{}],179:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var tensor_1 = require("./tensor");
@@ -23620,13 +33248,13 @@ function isIterable(obj) {
     return Array.isArray(obj) || typeof obj === 'object';
 }
 
-},{"./tensor":137}],144:[function(require,module,exports){
+},{"./tensor":173}],180:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var version = '0.5.1';
 exports.version = version;
 
-},{}],145:[function(require,module,exports){
+},{}],181:[function(require,module,exports){
 "use strict";
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -23785,7 +33413,7 @@ function loadWeights(manifest, filePathPrefix, weightNames) {
 }
 exports.loadWeights = loadWeights;
 
-},{"./ops/ops":114,"./util":143}],146:[function(require,module,exports){
+},{"./ops/ops":150,"./util":179}],182:[function(require,module,exports){
 "use strict";
 
 // Map the characters to escape to their escaped values. The list is derived
@@ -23864,7 +33492,7 @@ module.exports = function (str) {
   }
   return result;
 };
-},{}],147:[function(require,module,exports){
+},{}],183:[function(require,module,exports){
 /**
  * @license Fraction.js v4.0.4 09/09/2015
  * http://www.xarg.org/2014/03/rational-numbers-in-javascript/
@@ -24650,7 +34278,7 @@ module.exports = function (str) {
 
 })(this);
 
-},{}],148:[function(require,module,exports){
+},{}],184:[function(require,module,exports){
 /*
  * Natural Sort algorithm for Javascript - Version 0.7 - Released under MIT license
  * Author: Jim Palmer (based on chunking idea from Dave Koelle)
@@ -24697,7 +34325,7 @@ module.exports = function naturalSort (a, b) {
 	return 0;
 };
 
-},{}],149:[function(require,module,exports){
+},{}],185:[function(require,module,exports){
 const create = (object, r) => (...args) => ((r = Object.create(object)), r.init(...args), r);
 const defined = (value) => (!(value === undefined));
 
@@ -24799,9 +34427,9 @@ const Sym = {
 
 module.exports = {Obj, Sym, Arr, Fun, create, defined, extend, mixin, curry};
 
-},{}],150:[function(require,module,exports){
+},{}],186:[function(require,module,exports){
 module.exports = require('./lib/core/core');
-},{"./lib/core/core":152}],151:[function(require,module,exports){
+},{"./lib/core/core":188}],187:[function(require,module,exports){
 'use strict';
 
 var object = require('./utils/object');
@@ -24882,7 +34510,7 @@ function setLazyConstant (math, name, resolver) {
 exports.factory = factory;
 exports.lazy = false;  // no lazy loading of constants, the constants themselves are lazy when needed
 exports.math = true;   // request access to the math namespace
-},{"./utils/bignumber/constants":668,"./utils/object":688,"./version":690}],152:[function(require,module,exports){
+},{"./utils/bignumber/constants":704,"./utils/object":724,"./version":726}],188:[function(require,module,exports){
 var isFactory = require('./../utils/object').isFactory;
 var typedFactory = require('./typed');
 var emitter = require('./../utils/emitter');
@@ -25016,7 +34644,7 @@ exports.create = function create (options) {
   return math;
 };
 
-},{"./../utils/emitter":683,"./../utils/object":688,"./function/config":153,"./function/import":154,"./typed":155}],153:[function(require,module,exports){
+},{"./../utils/emitter":719,"./../utils/object":724,"./function/config":189,"./function/import":190,"./typed":191}],189:[function(require,module,exports){
 'use strict';
 
 var object = require('../../utils/object');
@@ -25142,7 +34770,7 @@ exports.name = 'config';
 exports.math = true; // request the math namespace as fifth argument
 exports.factory = factory;
 
-},{"../../utils/object":688}],154:[function(require,module,exports){
+},{"../../utils/object":724}],190:[function(require,module,exports){
 'use strict';
 
 var lazy = require('../../utils/object').lazy;
@@ -25451,7 +35079,7 @@ exports.name = 'import';
 exports.factory = factory;
 exports.lazy = true;
 
-},{"../../error/ArgumentsError":156,"../../utils/object":688}],155:[function(require,module,exports){
+},{"../../error/ArgumentsError":192,"../../utils/object":724}],191:[function(require,module,exports){
 var typedFunction = require('typed-function');
 var digits = require('./../utils/number').digits;
 var isBigNumber = require('./../utils/bignumber/isBigNumber');
@@ -25725,7 +35353,7 @@ exports.create = function create(type) {
   return typed;
 };
 
-},{"./../utils/bignumber/isBigNumber":670,"./../utils/collection/isMatrix":679,"./../utils/number":687,"typed-function":1009}],156:[function(require,module,exports){
+},{"./../utils/bignumber/isBigNumber":706,"./../utils/collection/isMatrix":715,"./../utils/number":723,"typed-function":1045}],192:[function(require,module,exports){
 'use strict';
 
 /**
@@ -25761,7 +35389,7 @@ ArgumentsError.prototype.isArgumentsError = true;
 
 module.exports = ArgumentsError;
 
-},{}],157:[function(require,module,exports){
+},{}],193:[function(require,module,exports){
 'use strict';
 
 /**
@@ -25798,7 +35426,7 @@ DimensionError.prototype.isDimensionError = true;
 
 module.exports = DimensionError;
 
-},{}],158:[function(require,module,exports){
+},{}],194:[function(require,module,exports){
 'use strict';
 
 /**
@@ -25846,7 +35474,7 @@ IndexError.prototype.isIndexError = true;
 
 module.exports = IndexError;
 
-},{}],159:[function(require,module,exports){
+},{}],195:[function(require,module,exports){
 'use strict';
 
 var ArgumentsError = require('./ArgumentsError');
@@ -25878,7 +35506,7 @@ module.exports = [
 
 // TODO: implement an InvalidValueError?
 
-},{"./ArgumentsError":156,"./DimensionError":157,"./IndexError":158}],160:[function(require,module,exports){
+},{"./ArgumentsError":192,"./DimensionError":193,"./IndexError":194}],196:[function(require,module,exports){
 'use strict';
 
 var object = require('../utils/object');
@@ -25998,7 +35626,7 @@ exports.name = 'Help';
 exports.path = 'type';
 exports.factory = factory;
 
-},{"../utils/object":688,"../utils/string":689,"./function/parser":362}],161:[function(require,module,exports){
+},{"../utils/object":724,"../utils/string":725,"./function/parser":398}],197:[function(require,module,exports){
 'use strict';
 
 var extend = require('../utils/object').extend;
@@ -26164,7 +35792,7 @@ exports.path = 'expression';
 exports.factory = factory;
 exports.math = true; // requires the math namespace as 5th argument
 
-},{"../utils/customs":682,"../utils/object":688,"./parse":385}],162:[function(require,module,exports){
+},{"../utils/customs":718,"../utils/object":724,"./parse":421}],198:[function(require,module,exports){
 module.exports = {
   'name': 'Infinity',
   'category': 'Constants',
@@ -26179,7 +35807,7 @@ module.exports = {
   'seealso': []
 };
 
-},{}],163:[function(require,module,exports){
+},{}],199:[function(require,module,exports){
 module.exports = {
   'name': 'LN10',
   'category': 'Constants',
@@ -26194,7 +35822,7 @@ module.exports = {
   'seealso': []
 };
 
-},{}],164:[function(require,module,exports){
+},{}],200:[function(require,module,exports){
 module.exports = {
   'name': 'LN2',
   'category': 'Constants',
@@ -26209,7 +35837,7 @@ module.exports = {
   'seealso': []
 };
 
-},{}],165:[function(require,module,exports){
+},{}],201:[function(require,module,exports){
 module.exports = {
   'name': 'LOG10E',
   'category': 'Constants',
@@ -26224,7 +35852,7 @@ module.exports = {
   'seealso': []
 };
 
-},{}],166:[function(require,module,exports){
+},{}],202:[function(require,module,exports){
 module.exports = {
   'name': 'LOG2E',
   'category': 'Constants',
@@ -26239,7 +35867,7 @@ module.exports = {
   'seealso': []
 };
 
-},{}],167:[function(require,module,exports){
+},{}],203:[function(require,module,exports){
 module.exports = {
   'name': 'NaN',
   'category': 'Constants',
@@ -26254,7 +35882,7 @@ module.exports = {
   'seealso': []
 };
 
-},{}],168:[function(require,module,exports){
+},{}],204:[function(require,module,exports){
 module.exports = {
   'name': 'SQRT1_2',
   'category': 'Constants',
@@ -26269,7 +35897,7 @@ module.exports = {
   'seealso': []
 };
 
-},{}],169:[function(require,module,exports){
+},{}],205:[function(require,module,exports){
 module.exports = {
   'name': 'SQRT2',
   'category': 'Constants',
@@ -26284,7 +35912,7 @@ module.exports = {
   'seealso': []
 };
 
-},{}],170:[function(require,module,exports){
+},{}],206:[function(require,module,exports){
 module.exports = {
   'name': 'e',
   'category': 'Constants',
@@ -26301,7 +35929,7 @@ module.exports = {
   'seealso': ['exp']
 };
 
-},{}],171:[function(require,module,exports){
+},{}],207:[function(require,module,exports){
 module.exports = {
   'name': 'false',
   'category': 'Constants',
@@ -26315,7 +35943,7 @@ module.exports = {
   'seealso': ['true']
 };
 
-},{}],172:[function(require,module,exports){
+},{}],208:[function(require,module,exports){
 module.exports = {
   'name': 'i',
   'category': 'Constants',
@@ -26331,7 +35959,7 @@ module.exports = {
   'seealso': []
 };
 
-},{}],173:[function(require,module,exports){
+},{}],209:[function(require,module,exports){
 module.exports = {
   'name': 'null',
   'category': 'Constants',
@@ -26345,7 +35973,7 @@ module.exports = {
   'seealso': ['true', 'false']
 };
 
-},{}],174:[function(require,module,exports){
+},{}],210:[function(require,module,exports){
 module.exports = {
   'name': 'phi',
   'category': 'Constants',
@@ -26359,7 +35987,7 @@ module.exports = {
   'seealso': []
 };
 
-},{}],175:[function(require,module,exports){
+},{}],211:[function(require,module,exports){
 module.exports = {
   'name': 'pi',
   'category': 'Constants',
@@ -26374,7 +36002,7 @@ module.exports = {
   'seealso': ['tau']
 };
 
-},{}],176:[function(require,module,exports){
+},{}],212:[function(require,module,exports){
 module.exports = {
   'name': 'tau',
   'category': 'Constants',
@@ -26389,7 +36017,7 @@ module.exports = {
   'seealso': ['pi']
 };
 
-},{}],177:[function(require,module,exports){
+},{}],213:[function(require,module,exports){
 module.exports = {
   'name': 'true',
   'category': 'Constants',
@@ -26403,7 +36031,7 @@ module.exports = {
   'seealso': ['false']
 };
 
-},{}],178:[function(require,module,exports){
+},{}],214:[function(require,module,exports){
 module.exports = {
   'name': 'version',
   'category': 'Constants',
@@ -26417,7 +36045,7 @@ module.exports = {
   'seealso': []
 };
 
-},{}],179:[function(require,module,exports){
+},{}],215:[function(require,module,exports){
 module.exports = {
   'name': 'bignumber',
   'category': 'Construction',
@@ -26438,7 +36066,7 @@ module.exports = {
   ]
 };
 
-},{}],180:[function(require,module,exports){
+},{}],216:[function(require,module,exports){
 module.exports = {
   'name': 'boolean',
   'category': 'Construction',
@@ -26461,7 +36089,7 @@ module.exports = {
   ]
 };
 
-},{}],181:[function(require,module,exports){
+},{}],217:[function(require,module,exports){
 module.exports = {
   'name': 'complex',
   'category': 'Construction',
@@ -26482,7 +36110,7 @@ module.exports = {
   ]
 };
 
-},{}],182:[function(require,module,exports){
+},{}],218:[function(require,module,exports){
 module.exports = {
   'name': 'createUnit',
   'category': 'Construction',
@@ -26502,7 +36130,7 @@ module.exports = {
   ]
 };
 
-},{}],183:[function(require,module,exports){
+},{}],219:[function(require,module,exports){
 module.exports = {
   'name': 'fraction',
   'category': 'Construction',
@@ -26521,7 +36149,7 @@ module.exports = {
   ]
 };
 
-},{}],184:[function(require,module,exports){
+},{}],220:[function(require,module,exports){
 module.exports = {
   'name': 'index',
   'category': 'Construction',
@@ -26548,7 +36176,7 @@ module.exports = {
   ]
 };
 
-},{}],185:[function(require,module,exports){
+},{}],221:[function(require,module,exports){
 module.exports = {
   'name': 'matrix',
   'category': 'Construction',
@@ -26575,7 +36203,7 @@ module.exports = {
   ]
 };
 
-},{}],186:[function(require,module,exports){
+},{}],222:[function(require,module,exports){
 module.exports = {
   'name': 'number',
   'category': 'Construction',
@@ -26601,7 +36229,7 @@ module.exports = {
   ]
 };
 
-},{}],187:[function(require,module,exports){
+},{}],223:[function(require,module,exports){
 module.exports = {
   'name': 'sparse',
   'category': 'Construction',
@@ -26622,7 +36250,7 @@ module.exports = {
   ]
 };
 
-},{}],188:[function(require,module,exports){
+},{}],224:[function(require,module,exports){
 module.exports = {
   'name': 'splitUnit',
   'category': 'Construction',
@@ -26639,7 +36267,7 @@ module.exports = {
   ]
 };
 
-},{}],189:[function(require,module,exports){
+},{}],225:[function(require,module,exports){
 module.exports = {
   'name': 'string',
   'category': 'Construction',
@@ -26659,7 +36287,7 @@ module.exports = {
   ]
 };
 
-},{}],190:[function(require,module,exports){
+},{}],226:[function(require,module,exports){
 module.exports = {
   'name': 'unit',
   'category': 'Construction',
@@ -26681,7 +36309,7 @@ module.exports = {
   ]
 };
 
-},{}],191:[function(require,module,exports){
+},{}],227:[function(require,module,exports){
 module.exports = {
   'name': 'config',
   'category': 'Core',
@@ -26699,7 +36327,7 @@ module.exports = {
   'seealso': []
 };
 
-},{}],192:[function(require,module,exports){
+},{}],228:[function(require,module,exports){
 module.exports = {
   'name': 'import',
   'category': 'Core',
@@ -26716,7 +36344,7 @@ module.exports = {
   'seealso': []
 };
 
-},{}],193:[function(require,module,exports){
+},{}],229:[function(require,module,exports){
 module.exports = {
   'name': 'typed',
   'category': 'Core',
@@ -26733,7 +36361,7 @@ module.exports = {
   'seealso': []
 };
 
-},{}],194:[function(require,module,exports){
+},{}],230:[function(require,module,exports){
 module.exports = {
   'name': 'derivative',
   'category': 'Algebra',
@@ -26757,7 +36385,7 @@ module.exports = {
   ]
 };
 
-},{}],195:[function(require,module,exports){
+},{}],231:[function(require,module,exports){
 module.exports = {
   'name': 'lsolve',
   'category': 'Algebra',
@@ -26776,7 +36404,7 @@ module.exports = {
   ]
 };
 
-},{}],196:[function(require,module,exports){
+},{}],232:[function(require,module,exports){
 module.exports = {
   'name': 'lup',
   'category': 'Algebra',
@@ -26795,7 +36423,7 @@ module.exports = {
   ]
 };
 
-},{}],197:[function(require,module,exports){
+},{}],233:[function(require,module,exports){
 module.exports = {
   'name': 'lusolve',
   'category': 'Algebra',
@@ -26814,7 +36442,7 @@ module.exports = {
   ]
 };
 
-},{}],198:[function(require,module,exports){
+},{}],234:[function(require,module,exports){
 module.exports = {
   'name': 'qr',
   'category': 'Algebra',
@@ -26831,7 +36459,7 @@ module.exports = {
   ]
 };
 
-},{}],199:[function(require,module,exports){
+},{}],235:[function(require,module,exports){
 module.exports = {
   'name': 'rationalize',
   'category': 'Algebra',
@@ -26850,7 +36478,7 @@ module.exports = {
   ]
 };
 
-},{}],200:[function(require,module,exports){
+},{}],236:[function(require,module,exports){
 module.exports = {
   'name': 'simplify',
   'category': 'Algebra',
@@ -26871,7 +36499,7 @@ module.exports = {
   ]
 };
 
-},{}],201:[function(require,module,exports){
+},{}],237:[function(require,module,exports){
 module.exports = {
   'name': 'slu',
   'category': 'Algebra',
@@ -26887,7 +36515,7 @@ module.exports = {
   ]
 };
 
-},{}],202:[function(require,module,exports){
+},{}],238:[function(require,module,exports){
 module.exports = {
   'name': 'usolve',
   'category': 'Algebra',
@@ -26904,7 +36532,7 @@ module.exports = {
   ]
 };
 
-},{}],203:[function(require,module,exports){
+},{}],239:[function(require,module,exports){
 module.exports = {
   'name': 'abs',
   'category': 'Arithmetic',
@@ -26919,7 +36547,7 @@ module.exports = {
   'seealso': ['sign']
 };
 
-},{}],204:[function(require,module,exports){
+},{}],240:[function(require,module,exports){
 module.exports = {
   'name': 'add',
   'category': 'Operators',
@@ -26940,7 +36568,7 @@ module.exports = {
   ]
 };
 
-},{}],205:[function(require,module,exports){
+},{}],241:[function(require,module,exports){
 module.exports = {
   'name': 'cbrt',
   'category': 'Arithmetic',
@@ -26967,7 +36595,7 @@ module.exports = {
   ]
 };
 
-},{}],206:[function(require,module,exports){
+},{}],242:[function(require,module,exports){
 module.exports = {
   'name': 'ceil',
   'category': 'Arithmetic',
@@ -26984,7 +36612,7 @@ module.exports = {
   'seealso': ['floor', 'fix', 'round']
 };
 
-},{}],207:[function(require,module,exports){
+},{}],243:[function(require,module,exports){
 module.exports = {
   'name': 'cube',
   'category': 'Arithmetic',
@@ -27004,7 +36632,7 @@ module.exports = {
   ]
 };
 
-},{}],208:[function(require,module,exports){
+},{}],244:[function(require,module,exports){
 module.exports = {
   'name': 'divide',
   'category': 'Operators',
@@ -27026,7 +36654,7 @@ module.exports = {
   ]
 };
 
-},{}],209:[function(require,module,exports){
+},{}],245:[function(require,module,exports){
 module.exports = {
   'name': 'dotDivide',
   'category': 'Operators',
@@ -27047,7 +36675,7 @@ module.exports = {
   ]
 };
 
-},{}],210:[function(require,module,exports){
+},{}],246:[function(require,module,exports){
 module.exports = {
   'name': 'dotMultiply',
   'category': 'Operators',
@@ -27068,7 +36696,7 @@ module.exports = {
   ]
 };
 
-},{}],211:[function(require,module,exports){
+},{}],247:[function(require,module,exports){
 module.exports = {
   'name': 'dotpow',
   'category': 'Operators',
@@ -27087,7 +36715,7 @@ module.exports = {
   ]
 };
 
-},{}],212:[function(require,module,exports){
+},{}],248:[function(require,module,exports){
 module.exports = {
   'name': 'exp',
   'category': 'Arithmetic',
@@ -27108,7 +36736,7 @@ module.exports = {
   ]
 };
 
-},{}],213:[function(require,module,exports){
+},{}],249:[function(require,module,exports){
 module.exports = {
   'name': 'fix',
   'category': 'Arithmetic',
@@ -27126,7 +36754,7 @@ module.exports = {
   'seealso': ['ceil', 'floor', 'round']
 };
 
-},{}],214:[function(require,module,exports){
+},{}],250:[function(require,module,exports){
 module.exports = {
   'name': 'floor',
   'category': 'Arithmetic',
@@ -27143,7 +36771,7 @@ module.exports = {
   'seealso': ['ceil', 'fix', 'round']
 };
 
-},{}],215:[function(require,module,exports){
+},{}],251:[function(require,module,exports){
 module.exports = {
   'name': 'gcd',
   'category': 'Arithmetic',
@@ -27160,7 +36788,7 @@ module.exports = {
   'seealso': [ 'lcm', 'xgcd' ]
 };
 
-},{}],216:[function(require,module,exports){
+},{}],252:[function(require,module,exports){
 module.exports = {
   'name': 'hypot',
   'category': 'Arithmetic',
@@ -27178,7 +36806,7 @@ module.exports = {
   'seealso': [ 'abs', 'norm' ]
 };
 
-},{}],217:[function(require,module,exports){
+},{}],253:[function(require,module,exports){
 module.exports = {
   'name': 'lcm',
   'category': 'Arithmetic',
@@ -27194,7 +36822,7 @@ module.exports = {
   'seealso': [ 'gcd' ]
 };
 
-},{}],218:[function(require,module,exports){
+},{}],254:[function(require,module,exports){
 module.exports = {
   'name': 'log',
   'category': 'Arithmetic',
@@ -27218,7 +36846,7 @@ module.exports = {
     'log10'
   ]
 };
-},{}],219:[function(require,module,exports){
+},{}],255:[function(require,module,exports){
 module.exports = {
   'name': 'log10',
   'category': 'Arithmetic',
@@ -27239,7 +36867,7 @@ module.exports = {
   ]
 };
 
-},{}],220:[function(require,module,exports){
+},{}],256:[function(require,module,exports){
 module.exports = {
   'name': 'mod',
   'category': 'Operators',
@@ -27261,7 +36889,7 @@ module.exports = {
   'seealso': ['divide']
 };
 
-},{}],221:[function(require,module,exports){
+},{}],257:[function(require,module,exports){
 module.exports = {
   'name': 'multiply',
   'category': 'Operators',
@@ -27282,7 +36910,7 @@ module.exports = {
   ]
 };
 
-},{}],222:[function(require,module,exports){
+},{}],258:[function(require,module,exports){
 module.exports = {
   'name': 'norm',
   'category': 'Arithmetic',
@@ -27304,7 +36932,7 @@ module.exports = {
   ]
 };
 
-},{}],223:[function(require,module,exports){
+},{}],259:[function(require,module,exports){
 module.exports = {
   'name': 'nthRoot',
   'category': 'Arithmetic',
@@ -27326,7 +36954,7 @@ module.exports = {
     'pow'
   ]
 };
-},{}],224:[function(require,module,exports){
+},{}],260:[function(require,module,exports){
 module.exports = {
   'name': 'pow',
   'category': 'Operators',
@@ -27344,7 +36972,7 @@ module.exports = {
   'seealso': [ 'multiply' ]
 };
 
-},{}],225:[function(require,module,exports){
+},{}],261:[function(require,module,exports){
 module.exports = {
   'name': 'round',
   'category': 'Arithmetic',
@@ -27365,7 +36993,7 @@ module.exports = {
   'seealso': ['ceil', 'floor', 'fix']
 };
 
-},{}],226:[function(require,module,exports){
+},{}],262:[function(require,module,exports){
 module.exports = {
   'name': 'sign',
   'category': 'Arithmetic',
@@ -27384,7 +37012,7 @@ module.exports = {
   ]
 };
 
-},{}],227:[function(require,module,exports){
+},{}],263:[function(require,module,exports){
 module.exports = {
   'name': 'sqrt',
   'category': 'Arithmetic',
@@ -27404,7 +37032,7 @@ module.exports = {
   ]
 };
 
-},{}],228:[function(require,module,exports){
+},{}],264:[function(require,module,exports){
 module.exports = {
   'name': 'square',
   'category': 'Arithmetic',
@@ -27427,7 +37055,7 @@ module.exports = {
   ]
 };
 
-},{}],229:[function(require,module,exports){
+},{}],265:[function(require,module,exports){
 module.exports = {
   'name': 'subtract',
   'category': 'Operators',
@@ -27448,7 +37076,7 @@ module.exports = {
   ]
 };
 
-},{}],230:[function(require,module,exports){
+},{}],266:[function(require,module,exports){
 module.exports = {
   'name': 'unaryMinus',
   'category': 'Operators',
@@ -27468,7 +37096,7 @@ module.exports = {
   ]
 };
 
-},{}],231:[function(require,module,exports){
+},{}],267:[function(require,module,exports){
 module.exports = {
   'name': 'unaryPlus',
   'category': 'Operators',
@@ -27487,7 +37115,7 @@ module.exports = {
   ]
 };
 
-},{}],232:[function(require,module,exports){
+},{}],268:[function(require,module,exports){
 module.exports = {
   'name': 'xgcd',
   'category': 'Arithmetic',
@@ -27503,7 +37131,7 @@ module.exports = {
   'seealso': [ 'gcd', 'lcm' ]
 };
 
-},{}],233:[function(require,module,exports){
+},{}],269:[function(require,module,exports){
 module.exports = {
   'name': 'bitAnd',
   'category': 'Bitwise',
@@ -27522,7 +37150,7 @@ module.exports = {
   ]
 };
 
-},{}],234:[function(require,module,exports){
+},{}],270:[function(require,module,exports){
 module.exports = {
   'name': 'bitNot',
   'category': 'Bitwise',
@@ -27541,7 +37169,7 @@ module.exports = {
   ]
 };
 
-},{}],235:[function(require,module,exports){
+},{}],271:[function(require,module,exports){
 module.exports = {
   'name': 'bitOr',
   'category': 'Bitwise',
@@ -27559,7 +37187,7 @@ module.exports = {
   ]
 };
 
-},{}],236:[function(require,module,exports){
+},{}],272:[function(require,module,exports){
 module.exports = {
   'name': 'bitXor',
   'category': 'Bitwise',
@@ -27576,7 +37204,7 @@ module.exports = {
   ]
 };
 
-},{}],237:[function(require,module,exports){
+},{}],273:[function(require,module,exports){
 module.exports = {
   'name': 'leftShift',
   'category': 'Bitwise',
@@ -27594,7 +37222,7 @@ module.exports = {
   ]
 };
 
-},{}],238:[function(require,module,exports){
+},{}],274:[function(require,module,exports){
 module.exports = {
   'name': 'rightArithShift',
   'category': 'Bitwise',
@@ -27613,7 +37241,7 @@ module.exports = {
   ]
 };
 
-},{}],239:[function(require,module,exports){
+},{}],275:[function(require,module,exports){
 module.exports = {
   'name': 'rightLogShift',
   'category': 'Bitwise',
@@ -27632,7 +37260,7 @@ module.exports = {
   ]
 };
 
-},{}],240:[function(require,module,exports){
+},{}],276:[function(require,module,exports){
 module.exports = {
   'name': 'bellNumbers',
   'category': 'Combinatorics',
@@ -27646,7 +37274,7 @@ module.exports = {
   ],
   'seealso': ['stirlingS2']
 };
-},{}],241:[function(require,module,exports){
+},{}],277:[function(require,module,exports){
 module.exports = {
   'name': 'catalan',
   'category': 'Combinatorics',
@@ -27660,7 +37288,7 @@ module.exports = {
   ],
   'seealso': ['bellNumbers']
 };
-},{}],242:[function(require,module,exports){
+},{}],278:[function(require,module,exports){
 module.exports = {
   'name': 'composition',
   'category': 'Combinatorics',
@@ -27673,7 +37301,7 @@ module.exports = {
   ],
   'seealso': ['combinations']
 };
-},{}],243:[function(require,module,exports){
+},{}],279:[function(require,module,exports){
 module.exports = {
   'name': 'stirlingS2',
   'category': 'Combinatorics',
@@ -27687,7 +37315,7 @@ module.exports = {
   'seealso': ['bellNumbers']
 };
 
-},{}],244:[function(require,module,exports){
+},{}],280:[function(require,module,exports){
 module.exports = {
   'name': 'arg',
   'category': 'Complex',
@@ -27709,7 +37337,7 @@ module.exports = {
   ]
 };
 
-},{}],245:[function(require,module,exports){
+},{}],281:[function(require,module,exports){
 module.exports = {
   'name': 'conj',
   'category': 'Complex',
@@ -27731,7 +37359,7 @@ module.exports = {
   ]
 };
 
-},{}],246:[function(require,module,exports){
+},{}],282:[function(require,module,exports){
 module.exports = {
   'name': 'im',
   'category': 'Complex',
@@ -27753,7 +37381,7 @@ module.exports = {
   ]
 };
 
-},{}],247:[function(require,module,exports){
+},{}],283:[function(require,module,exports){
 module.exports = {
   'name': 're',
   'category': 'Complex',
@@ -27775,7 +37403,7 @@ module.exports = {
   ]
 };
 
-},{}],248:[function(require,module,exports){
+},{}],284:[function(require,module,exports){
 module.exports = {
   'name': 'eval',
   'category': 'Expression',
@@ -27791,7 +37419,7 @@ module.exports = {
   'seealso': []
 };
 
-},{}],249:[function(require,module,exports){
+},{}],285:[function(require,module,exports){
 module.exports = {
   'name': 'help',
   'category': 'Expression',
@@ -27807,7 +37435,7 @@ module.exports = {
   'seealso': []
 };
 
-},{}],250:[function(require,module,exports){
+},{}],286:[function(require,module,exports){
 module.exports = {
   'name': 'distance',
   'category': 'Geometry',
@@ -27823,7 +37451,7 @@ module.exports = {
   'seealso': []
 };
 
-},{}],251:[function(require,module,exports){
+},{}],287:[function(require,module,exports){
 module.exports = {
   'name': 'intersect',
   'category': 'Geometry',
@@ -27839,7 +37467,7 @@ module.exports = {
   'seealso': []
 };
 
-},{}],252:[function(require,module,exports){
+},{}],288:[function(require,module,exports){
 module.exports = {
   'name': 'and',
   'category': 'Logical',
@@ -27858,7 +37486,7 @@ module.exports = {
   ]
 };
 
-},{}],253:[function(require,module,exports){
+},{}],289:[function(require,module,exports){
 module.exports = {
   'name': 'not',
   'category': 'Logical',
@@ -27878,7 +37506,7 @@ module.exports = {
   ]
 };
 
-},{}],254:[function(require,module,exports){
+},{}],290:[function(require,module,exports){
 module.exports = {
   'name': 'or',
   'category': 'Logical',
@@ -27897,7 +37525,7 @@ module.exports = {
   ]
 };
 
-},{}],255:[function(require,module,exports){
+},{}],291:[function(require,module,exports){
 module.exports = {
   'name': 'xor',
   'category': 'Logical',
@@ -27917,7 +37545,7 @@ module.exports = {
   ]
 };
 
-},{}],256:[function(require,module,exports){
+},{}],292:[function(require,module,exports){
 module.exports = {
   'name': 'concat',
   'category': 'Matrix',
@@ -27938,7 +37566,7 @@ module.exports = {
   ]
 };
 
-},{}],257:[function(require,module,exports){
+},{}],293:[function(require,module,exports){
 module.exports = {
   'name': 'cross',
   'category': 'Matrix',
@@ -27957,7 +37585,7 @@ module.exports = {
   ]
 };
 
-},{}],258:[function(require,module,exports){
+},{}],294:[function(require,module,exports){
 module.exports = {
   'name': 'det',
   'category': 'Matrix',
@@ -27974,7 +37602,7 @@ module.exports = {
   ]
 };
 
-},{}],259:[function(require,module,exports){
+},{}],295:[function(require,module,exports){
 module.exports = {
   'name': 'diag',
   'category': 'Matrix',
@@ -27994,7 +37622,7 @@ module.exports = {
   ]
 };
 
-},{}],260:[function(require,module,exports){
+},{}],296:[function(require,module,exports){
 module.exports = {
   'name': 'dot',
   'category': 'Matrix',
@@ -28015,7 +37643,7 @@ module.exports = {
   ]
 };
 
-},{}],261:[function(require,module,exports){
+},{}],297:[function(require,module,exports){
 module.exports = {
   'name': 'eye',
   'category': 'Matrix',
@@ -28036,7 +37664,7 @@ module.exports = {
   ]
 };
 
-},{}],262:[function(require,module,exports){
+},{}],298:[function(require,module,exports){
 module.exports = {
   'name': 'filter',
   'category': 'Matrix',
@@ -28052,7 +37680,7 @@ module.exports = {
   'seealso': ['sort', 'map', 'forEach']
 };
 
-},{}],263:[function(require,module,exports){
+},{}],299:[function(require,module,exports){
 module.exports = {
   'name': 'flatten',
   'category': 'Matrix',
@@ -28071,7 +37699,7 @@ module.exports = {
   ]
 };
 
-},{}],264:[function(require,module,exports){
+},{}],300:[function(require,module,exports){
 module.exports = {
   'name': 'forEach',
   'category': 'Matrix',
@@ -28085,7 +37713,7 @@ module.exports = {
   'seealso': ['map', 'sort', 'filter']
 };
 
-},{}],265:[function(require,module,exports){
+},{}],301:[function(require,module,exports){
 module.exports = {
   'name': 'inv',
   'category': 'Matrix',
@@ -28103,7 +37731,7 @@ module.exports = {
   ]
 };
 
-},{}],266:[function(require,module,exports){
+},{}],302:[function(require,module,exports){
 module.exports = {
   'name': 'kron',
   'category': 'Matrix',
@@ -28120,7 +37748,7 @@ module.exports = {
   ]
 };
 
-},{}],267:[function(require,module,exports){
+},{}],303:[function(require,module,exports){
 module.exports = {
   'name': 'map',
   'category': 'Matrix',
@@ -28134,7 +37762,7 @@ module.exports = {
   'seealso': ['filter', 'forEach']
 };
 
-},{}],268:[function(require,module,exports){
+},{}],304:[function(require,module,exports){
 module.exports = {
   'name': 'ones',
   'category': 'Matrix',
@@ -28159,7 +37787,7 @@ module.exports = {
   ]
 };
 
-},{}],269:[function(require,module,exports){
+},{}],305:[function(require,module,exports){
 module.exports = {
   'name': 'partitionSelect',
   'category': 'Matrix',
@@ -28175,7 +37803,7 @@ module.exports = {
   'seealso': ['sort']
 };
 
-},{}],270:[function(require,module,exports){
+},{}],306:[function(require,module,exports){
 module.exports = {
   'name': 'range',
   'category': 'Type',
@@ -28202,7 +37830,7 @@ module.exports = {
   ]
 };
 
-},{}],271:[function(require,module,exports){
+},{}],307:[function(require,module,exports){
 module.exports = {
   'name': 'reshape',
   'category': 'Matrix',
@@ -28220,7 +37848,7 @@ module.exports = {
   ]
 };
 
-},{}],272:[function(require,module,exports){
+},{}],308:[function(require,module,exports){
 module.exports = {
   'name': 'resize',
   'category': 'Matrix',
@@ -28241,7 +37869,7 @@ module.exports = {
   ]
 };
 
-},{}],273:[function(require,module,exports){
+},{}],309:[function(require,module,exports){
 module.exports = {
   'name': 'size',
   'category': 'Matrix',
@@ -28261,7 +37889,7 @@ module.exports = {
   ]
 };
 
-},{}],274:[function(require,module,exports){
+},{}],310:[function(require,module,exports){
 module.exports = {
   'name': 'sort',
   'category': 'Matrix',
@@ -28280,7 +37908,7 @@ module.exports = {
   'seealso': ['map', 'filter', 'forEach']
 };
 
-},{}],275:[function(require,module,exports){
+},{}],311:[function(require,module,exports){
 module.exports = {
   'name': 'squeeze',
   'category': 'Matrix',
@@ -28299,7 +37927,7 @@ module.exports = {
   ]
 };
 
-},{}],276:[function(require,module,exports){
+},{}],312:[function(require,module,exports){
 module.exports = {
   'name': 'subset',
   'category': 'Matrix',
@@ -28326,7 +37954,7 @@ module.exports = {
   ]
 };
 
-},{}],277:[function(require,module,exports){
+},{}],313:[function(require,module,exports){
 module.exports = {
   'name': 'trace',
   'category': 'Matrix',
@@ -28343,7 +37971,7 @@ module.exports = {
   ]
 };
 
-},{}],278:[function(require,module,exports){
+},{}],314:[function(require,module,exports){
 module.exports = {
   'name': 'transpose',
   'category': 'Matrix',
@@ -28362,7 +37990,7 @@ module.exports = {
   ]
 };
 
-},{}],279:[function(require,module,exports){
+},{}],315:[function(require,module,exports){
 module.exports = {
   'name': 'zeros',
   'category': 'Matrix',
@@ -28386,7 +38014,7 @@ module.exports = {
   ]
 };
 
-},{}],280:[function(require,module,exports){
+},{}],316:[function(require,module,exports){
 module.exports = {
   'name': 'combinations',
   'category': 'Probability',
@@ -28400,7 +38028,7 @@ module.exports = {
   'seealso': ['permutations', 'factorial']
 };
 
-},{}],281:[function(require,module,exports){
+},{}],317:[function(require,module,exports){
 module.exports = {
   'name': 'factorial',
   'category': 'Probability',
@@ -28417,7 +38045,7 @@ module.exports = {
   'seealso': ['combinations', 'permutations', 'gamma']
 };
 
-},{}],282:[function(require,module,exports){
+},{}],318:[function(require,module,exports){
 module.exports = {
   'name': 'gamma',
   'category': 'Probability',
@@ -28434,7 +38062,7 @@ module.exports = {
   'seealso': ['factorial']
 };
 
-},{}],283:[function(require,module,exports){
+},{}],319:[function(require,module,exports){
 module.exports = {
   'name': 'kldivergence',
   'category': 'Probability',
@@ -28448,7 +38076,7 @@ module.exports = {
   'seealso': []
 };
 
-},{}],284:[function(require,module,exports){
+},{}],320:[function(require,module,exports){
 module.exports = {
   'name': 'multinomial',
   'category': 'Probability',
@@ -28461,7 +38089,7 @@ module.exports = {
   ],
   'seealso': ['combinations', 'factorial']
 };
-},{}],285:[function(require,module,exports){
+},{}],321:[function(require,module,exports){
 module.exports = {
   'name': 'permutations',
   'category': 'Probability',
@@ -28477,7 +38105,7 @@ module.exports = {
   'seealso': ['combinations', 'factorial']
 };
 
-},{}],286:[function(require,module,exports){
+},{}],322:[function(require,module,exports){
 module.exports = {
   'name': 'pickRandom',
   'category': 'Probability',
@@ -28501,7 +38129,7 @@ module.exports = {
   'seealso': ['random', 'randomInt']
 };
 
-},{}],287:[function(require,module,exports){
+},{}],323:[function(require,module,exports){
 module.exports = {
   'name': 'random',
   'category': 'Probability',
@@ -28523,7 +38151,7 @@ module.exports = {
   'seealso': ['pickRandom', 'randomInt']
 };
 
-},{}],288:[function(require,module,exports){
+},{}],324:[function(require,module,exports){
 module.exports = {
   'name': 'randomInt',
   'category': 'Probability',
@@ -28542,7 +38170,7 @@ module.exports = {
   ],
   'seealso': ['pickRandom', 'random']
 };
-},{}],289:[function(require,module,exports){
+},{}],325:[function(require,module,exports){
 module.exports = {
   'name': 'compare',
   'category': 'Relational',
@@ -28563,7 +38191,7 @@ module.exports = {
   ]
 };
 
-},{}],290:[function(require,module,exports){
+},{}],326:[function(require,module,exports){
 module.exports = {
   'name': 'compareNatural',
   'category': 'Relational',
@@ -28588,7 +38216,7 @@ module.exports = {
   ]
 };
 
-},{}],291:[function(require,module,exports){
+},{}],327:[function(require,module,exports){
 module.exports = {
   'name': 'deepEqual',
   'category': 'Relational',
@@ -28606,7 +38234,7 @@ module.exports = {
   ]
 };
 
-},{}],292:[function(require,module,exports){
+},{}],328:[function(require,module,exports){
 module.exports = {
   'name': 'equal',
   'category': 'Relational',
@@ -28629,7 +38257,7 @@ module.exports = {
   ]
 };
 
-},{}],293:[function(require,module,exports){
+},{}],329:[function(require,module,exports){
 module.exports = {
   'name': 'larger',
   'category': 'Relational',
@@ -28653,7 +38281,7 @@ module.exports = {
   ]
 };
 
-},{}],294:[function(require,module,exports){
+},{}],330:[function(require,module,exports){
 module.exports = {
   'name': 'largerEq',
   'category': 'Relational',
@@ -28675,7 +38303,7 @@ module.exports = {
   ]
 };
 
-},{}],295:[function(require,module,exports){
+},{}],331:[function(require,module,exports){
 module.exports = {
   'name': 'smaller',
   'category': 'Relational',
@@ -28698,7 +38326,7 @@ module.exports = {
   ]
 };
 
-},{}],296:[function(require,module,exports){
+},{}],332:[function(require,module,exports){
 module.exports = {
   'name': 'smallerEq',
   'category': 'Relational',
@@ -28720,7 +38348,7 @@ module.exports = {
   ]
 };
 
-},{}],297:[function(require,module,exports){
+},{}],333:[function(require,module,exports){
 module.exports = {
   'name': 'unequal',
   'category': 'Relational',
@@ -28744,7 +38372,7 @@ module.exports = {
   ]
 };
 
-},{}],298:[function(require,module,exports){
+},{}],334:[function(require,module,exports){
 module.exports = {
   'name': 'setCartesian',
   'category': 'Set',
@@ -28761,7 +38389,7 @@ module.exports = {
   ]
 };
 
-},{}],299:[function(require,module,exports){
+},{}],335:[function(require,module,exports){
 module.exports = {
   'name': 'setDifference',
   'category': 'Set',
@@ -28779,7 +38407,7 @@ module.exports = {
   ]
 };
 
-},{}],300:[function(require,module,exports){
+},{}],336:[function(require,module,exports){
 module.exports = {
   'name': 'setDistinct',
   'category': 'Set',
@@ -28796,7 +38424,7 @@ module.exports = {
   ]
 };
 
-},{}],301:[function(require,module,exports){
+},{}],337:[function(require,module,exports){
 module.exports = {
   'name': 'setIntersect',
   'category': 'Set',
@@ -28814,7 +38442,7 @@ module.exports = {
   ]
 };
 
-},{}],302:[function(require,module,exports){
+},{}],338:[function(require,module,exports){
 module.exports = {
   'name': 'setIsSubset',
   'category': 'Set',
@@ -28832,7 +38460,7 @@ module.exports = {
   ]
 };
 
-},{}],303:[function(require,module,exports){
+},{}],339:[function(require,module,exports){
 module.exports = {
   'name': 'setMultiplicity',
   'category': 'Set',
@@ -28850,7 +38478,7 @@ module.exports = {
   ]
 };
 
-},{}],304:[function(require,module,exports){
+},{}],340:[function(require,module,exports){
 module.exports = {
   'name': 'setPowerset',
   'category': 'Set',
@@ -28867,7 +38495,7 @@ module.exports = {
   ]
 };
 
-},{}],305:[function(require,module,exports){
+},{}],341:[function(require,module,exports){
 module.exports = {
   'name': 'setSize',
   'category': 'Set',
@@ -28886,7 +38514,7 @@ module.exports = {
   ]
 };
 
-},{}],306:[function(require,module,exports){
+},{}],342:[function(require,module,exports){
 module.exports = {
   'name': 'setSymDifference',
   'category': 'Set',
@@ -28904,7 +38532,7 @@ module.exports = {
   ]
 };
 
-},{}],307:[function(require,module,exports){
+},{}],343:[function(require,module,exports){
 module.exports = {
   'name': 'setUnion',
   'category': 'Set',
@@ -28922,7 +38550,7 @@ module.exports = {
   ]
 };
 
-},{}],308:[function(require,module,exports){
+},{}],344:[function(require,module,exports){
 module.exports = {
   'name': 'erf',
   'category': 'Special',
@@ -28938,7 +38566,7 @@ module.exports = {
   'seealso': []
 };
 
-},{}],309:[function(require,module,exports){
+},{}],345:[function(require,module,exports){
 module.exports = {
   'name': 'mad',
   'category': 'Statistics',
@@ -28959,7 +38587,7 @@ module.exports = {
   ]
 };
 
-},{}],310:[function(require,module,exports){
+},{}],346:[function(require,module,exports){
 module.exports = {
   'name': 'max',
   'category': 'Statistics',
@@ -28989,7 +38617,7 @@ module.exports = {
   ]
 };
 
-},{}],311:[function(require,module,exports){
+},{}],347:[function(require,module,exports){
 module.exports = {
   'name': 'mean',
   'category': 'Statistics',
@@ -29018,7 +38646,7 @@ module.exports = {
   ]
 };
 
-},{}],312:[function(require,module,exports){
+},{}],348:[function(require,module,exports){
 module.exports = {
   'name': 'median',
   'category': 'Statistics',
@@ -29043,7 +38671,7 @@ module.exports = {
   ]
 };
 
-},{}],313:[function(require,module,exports){
+},{}],349:[function(require,module,exports){
 module.exports = {
   'name': 'min',
   'category': 'Statistics',
@@ -29073,7 +38701,7 @@ module.exports = {
   ]
 };
 
-},{}],314:[function(require,module,exports){
+},{}],350:[function(require,module,exports){
 module.exports = {
   'name': 'mode',
   'category': 'Statistics',
@@ -29100,7 +38728,7 @@ module.exports = {
   ]
 };
 
-},{}],315:[function(require,module,exports){
+},{}],351:[function(require,module,exports){
 module.exports = {
   'name': 'prod',
   'category': 'Statistics',
@@ -29126,7 +38754,7 @@ module.exports = {
   ]
 };
 
-},{}],316:[function(require,module,exports){
+},{}],352:[function(require,module,exports){
 module.exports = {
   'name': 'quantileSeq',
   'category': 'Statistics',
@@ -29153,7 +38781,7 @@ module.exports = {
     'var'
   ]
 };
-},{}],317:[function(require,module,exports){
+},{}],353:[function(require,module,exports){
 module.exports = {
   'name': 'std',
   'category': 'Statistics',
@@ -29182,7 +38810,7 @@ module.exports = {
   ]
 };
 
-},{}],318:[function(require,module,exports){
+},{}],354:[function(require,module,exports){
 module.exports = {
   'name': 'sum',
   'category': 'Statistics',
@@ -29208,7 +38836,7 @@ module.exports = {
   ]
 };
 
-},{}],319:[function(require,module,exports){
+},{}],355:[function(require,module,exports){
 module.exports = {
   'name': 'var',
   'category': 'Statistics',
@@ -29237,7 +38865,7 @@ module.exports = {
   ]
 };
 
-},{}],320:[function(require,module,exports){
+},{}],356:[function(require,module,exports){
 module.exports = {
   'name': 'acos',
   'category': 'Trigonometry',
@@ -29256,7 +38884,7 @@ module.exports = {
   ]
 };
 
-},{}],321:[function(require,module,exports){
+},{}],357:[function(require,module,exports){
 module.exports = {
   'name': 'acosh',
   'category': 'Trigonometry',
@@ -29273,7 +38901,7 @@ module.exports = {
     'atanh'
   ]
 };
-},{}],322:[function(require,module,exports){
+},{}],358:[function(require,module,exports){
 module.exports = {
   'name': 'acot',
   'category': 'Trigonometry',
@@ -29292,7 +38920,7 @@ module.exports = {
   ]
 };
 
-},{}],323:[function(require,module,exports){
+},{}],359:[function(require,module,exports){
 module.exports = {
   'name': 'acoth',
   'category': 'Trigonometry',
@@ -29309,7 +38937,7 @@ module.exports = {
     'asech'
   ]
 };
-},{}],324:[function(require,module,exports){
+},{}],360:[function(require,module,exports){
 module.exports = {
   'name': 'acsc',
   'category': 'Trigonometry',
@@ -29329,7 +38957,7 @@ module.exports = {
   ]
 };
 
-},{}],325:[function(require,module,exports){
+},{}],361:[function(require,module,exports){
 module.exports = {
   'name': 'acsch',
   'category': 'Trigonometry',
@@ -29346,7 +38974,7 @@ module.exports = {
   ]
 };
 
-},{}],326:[function(require,module,exports){
+},{}],362:[function(require,module,exports){
 module.exports = {
   'name': 'asec',
   'category': 'Trigonometry',
@@ -29366,7 +38994,7 @@ module.exports = {
   ]
 };
 
-},{}],327:[function(require,module,exports){
+},{}],363:[function(require,module,exports){
 module.exports = {
   'name': 'asech',
   'category': 'Trigonometry',
@@ -29383,7 +39011,7 @@ module.exports = {
   ]
 };
 
-},{}],328:[function(require,module,exports){
+},{}],364:[function(require,module,exports){
 module.exports = {
   'name': 'asin',
   'category': 'Trigonometry',
@@ -29402,7 +39030,7 @@ module.exports = {
   ]
 };
 
-},{}],329:[function(require,module,exports){
+},{}],365:[function(require,module,exports){
 module.exports = {
   'name': 'asinh',
   'category': 'Trigonometry',
@@ -29419,7 +39047,7 @@ module.exports = {
   ]
 };
 
-},{}],330:[function(require,module,exports){
+},{}],366:[function(require,module,exports){
 module.exports = {
   'name': 'atan',
   'category': 'Trigonometry',
@@ -29438,7 +39066,7 @@ module.exports = {
   ]
 };
 
-},{}],331:[function(require,module,exports){
+},{}],367:[function(require,module,exports){
 module.exports = {
   'name': 'atan2',
   'category': 'Trigonometry',
@@ -29461,7 +39089,7 @@ module.exports = {
   ]
 };
 
-},{}],332:[function(require,module,exports){
+},{}],368:[function(require,module,exports){
 module.exports = {
   'name': 'atanh',
   'category': 'Trigonometry',
@@ -29478,7 +39106,7 @@ module.exports = {
   ]
 };
 
-},{}],333:[function(require,module,exports){
+},{}],369:[function(require,module,exports){
 module.exports = {
   'name': 'cos',
   'category': 'Trigonometry',
@@ -29500,7 +39128,7 @@ module.exports = {
   ]
 };
 
-},{}],334:[function(require,module,exports){
+},{}],370:[function(require,module,exports){
 module.exports = {
   'name': 'cosh',
   'category': 'Trigonometry',
@@ -29518,7 +39146,7 @@ module.exports = {
   ]
 };
 
-},{}],335:[function(require,module,exports){
+},{}],371:[function(require,module,exports){
 module.exports = {
   'name': 'cot',
   'category': 'Trigonometry',
@@ -29537,7 +39165,7 @@ module.exports = {
   ]
 };
 
-},{}],336:[function(require,module,exports){
+},{}],372:[function(require,module,exports){
 module.exports = {
   'name': 'coth',
   'category': 'Trigonometry',
@@ -29556,7 +39184,7 @@ module.exports = {
   ]
 };
 
-},{}],337:[function(require,module,exports){
+},{}],373:[function(require,module,exports){
 module.exports = {
   'name': 'csc',
   'category': 'Trigonometry',
@@ -29575,7 +39203,7 @@ module.exports = {
   ]
 };
 
-},{}],338:[function(require,module,exports){
+},{}],374:[function(require,module,exports){
 module.exports = {
   'name': 'csch',
   'category': 'Trigonometry',
@@ -29594,7 +39222,7 @@ module.exports = {
   ]
 };
 
-},{}],339:[function(require,module,exports){
+},{}],375:[function(require,module,exports){
 module.exports = {
   'name': 'sec',
   'category': 'Trigonometry',
@@ -29613,7 +39241,7 @@ module.exports = {
   ]
 };
 
-},{}],340:[function(require,module,exports){
+},{}],376:[function(require,module,exports){
 module.exports = {
   'name': 'sech',
   'category': 'Trigonometry',
@@ -29632,7 +39260,7 @@ module.exports = {
   ]
 };
 
-},{}],341:[function(require,module,exports){
+},{}],377:[function(require,module,exports){
 module.exports = {
   'name': 'sin',
   'category': 'Trigonometry',
@@ -29654,7 +39282,7 @@ module.exports = {
   ]
 };
 
-},{}],342:[function(require,module,exports){
+},{}],378:[function(require,module,exports){
 module.exports = {
   'name': 'sinh',
   'category': 'Trigonometry',
@@ -29671,7 +39299,7 @@ module.exports = {
   ]
 };
 
-},{}],343:[function(require,module,exports){
+},{}],379:[function(require,module,exports){
 module.exports = {
   'name': 'tan',
   'category': 'Trigonometry',
@@ -29692,7 +39320,7 @@ module.exports = {
   ]
 };
 
-},{}],344:[function(require,module,exports){
+},{}],380:[function(require,module,exports){
 module.exports = {
   'name': 'tanh',
   'category': 'Trigonometry',
@@ -29710,7 +39338,7 @@ module.exports = {
   ]
 };
 
-},{}],345:[function(require,module,exports){
+},{}],381:[function(require,module,exports){
 module.exports = {
   'name': 'to',
   'category': 'Units',
@@ -29727,7 +39355,7 @@ module.exports = {
   'seealso': []
 };
 
-},{}],346:[function(require,module,exports){
+},{}],382:[function(require,module,exports){
 module.exports = {
   'name': 'clone',
   'category': 'Utils',
@@ -29745,7 +39373,7 @@ module.exports = {
   'seealso': []
 };
 
-},{}],347:[function(require,module,exports){
+},{}],383:[function(require,module,exports){
 module.exports = {
   'name': 'format',
   'category': 'Utils',
@@ -29763,7 +39391,7 @@ module.exports = {
   'seealso': ['print']
 };
 
-},{}],348:[function(require,module,exports){
+},{}],384:[function(require,module,exports){
 module.exports = {
   'name': 'isInteger',
   'category': 'Utils',
@@ -29779,7 +39407,7 @@ module.exports = {
   'seealso': ['isNegative', 'isNumeric', 'isPositive', 'isZero']
 };
 
-},{}],349:[function(require,module,exports){
+},{}],385:[function(require,module,exports){
 module.exports = {
   'name': 'isNaN',
   'category': 'Utils',
@@ -29796,7 +39424,7 @@ module.exports = {
   'seealso': ['isNegative', 'isNumeric', 'isPositive', 'isZero']
 };
 
-},{}],350:[function(require,module,exports){
+},{}],386:[function(require,module,exports){
 module.exports = {
   'name': 'isNegative',
   'category': 'Utils',
@@ -29813,7 +39441,7 @@ module.exports = {
   'seealso': ['isInteger', 'isNumeric', 'isPositive', 'isZero']
 };
 
-},{}],351:[function(require,module,exports){
+},{}],387:[function(require,module,exports){
 module.exports = {
   'name': 'isNumeric',
   'category': 'Utils',
@@ -29834,7 +39462,7 @@ module.exports = {
   'seealso': ['isInteger', 'isZero', 'isNegative', 'isPositive', 'isNaN']
 };
 
-},{}],352:[function(require,module,exports){
+},{}],388:[function(require,module,exports){
 module.exports = {
   'name': 'isPositive',
   'category': 'Utils',
@@ -29851,7 +39479,7 @@ module.exports = {
   'seealso': ['isInteger', 'isNumeric', 'isNegative', 'isZero']
 };
 
-},{}],353:[function(require,module,exports){
+},{}],389:[function(require,module,exports){
 module.exports = {
   'name': 'isPrime',
   'category': 'Utils',
@@ -29866,7 +39494,7 @@ module.exports = {
   ],
   'seealso': ['isInteger', 'isNumeric', 'isNegative', 'isZero']
 };
-},{}],354:[function(require,module,exports){
+},{}],390:[function(require,module,exports){
 module.exports = {
   'name': 'isZero',
   'category': 'Utils',
@@ -29883,7 +39511,7 @@ module.exports = {
   'seealso': ['isInteger', 'isNumeric', 'isNegative', 'isPositive']
 };
 
-},{}],355:[function(require,module,exports){
+},{}],391:[function(require,module,exports){
 module.exports = {
   'name': 'typeof',
   'category': 'Utils',
@@ -29900,7 +39528,7 @@ module.exports = {
   'seealso': []
 };
 
-},{}],356:[function(require,module,exports){
+},{}],392:[function(require,module,exports){
 function factory (construction, config, load, typed) {
   var docs = {};
 
@@ -30210,7 +39838,7 @@ exports.name = 'docs';
 exports.path = 'expression';
 exports.factory = factory;
 
-},{"./constants/Infinity":162,"./constants/LN10":163,"./constants/LN2":164,"./constants/LOG10E":165,"./constants/LOG2E":166,"./constants/NaN":167,"./constants/SQRT1_2":168,"./constants/SQRT2":169,"./constants/e":170,"./constants/false":171,"./constants/i":172,"./constants/null":173,"./constants/phi":174,"./constants/pi":175,"./constants/tau":176,"./constants/true":177,"./constants/version":178,"./construction/bignumber":179,"./construction/boolean":180,"./construction/complex":181,"./construction/createUnit":182,"./construction/fraction":183,"./construction/index":184,"./construction/matrix":185,"./construction/number":186,"./construction/sparse":187,"./construction/splitUnit":188,"./construction/string":189,"./construction/unit":190,"./core/config":191,"./core/import":192,"./core/typed":193,"./function/algebra/derivative":194,"./function/algebra/lsolve":195,"./function/algebra/lup":196,"./function/algebra/lusolve":197,"./function/algebra/qr":198,"./function/algebra/rationalize":199,"./function/algebra/simplify":200,"./function/algebra/slu":201,"./function/algebra/usolve":202,"./function/arithmetic/abs":203,"./function/arithmetic/add":204,"./function/arithmetic/cbrt":205,"./function/arithmetic/ceil":206,"./function/arithmetic/cube":207,"./function/arithmetic/divide":208,"./function/arithmetic/dotDivide":209,"./function/arithmetic/dotMultiply":210,"./function/arithmetic/dotPow":211,"./function/arithmetic/exp":212,"./function/arithmetic/fix":213,"./function/arithmetic/floor":214,"./function/arithmetic/gcd":215,"./function/arithmetic/hypot":216,"./function/arithmetic/lcm":217,"./function/arithmetic/log":218,"./function/arithmetic/log10":219,"./function/arithmetic/mod":220,"./function/arithmetic/multiply":221,"./function/arithmetic/norm":222,"./function/arithmetic/nthRoot":223,"./function/arithmetic/pow":224,"./function/arithmetic/round":225,"./function/arithmetic/sign":226,"./function/arithmetic/sqrt":227,"./function/arithmetic/square":228,"./function/arithmetic/subtract":229,"./function/arithmetic/unaryMinus":230,"./function/arithmetic/unaryPlus":231,"./function/arithmetic/xgcd":232,"./function/bitwise/bitAnd":233,"./function/bitwise/bitNot":234,"./function/bitwise/bitOr":235,"./function/bitwise/bitXor":236,"./function/bitwise/leftShift":237,"./function/bitwise/rightArithShift":238,"./function/bitwise/rightLogShift":239,"./function/combinatorics/bellNumbers":240,"./function/combinatorics/catalan":241,"./function/combinatorics/composition":242,"./function/combinatorics/stirlingS2":243,"./function/complex/arg":244,"./function/complex/conj":245,"./function/complex/im":246,"./function/complex/re":247,"./function/expression/eval":248,"./function/expression/help":249,"./function/geometry/distance":250,"./function/geometry/intersect":251,"./function/logical/and":252,"./function/logical/not":253,"./function/logical/or":254,"./function/logical/xor":255,"./function/matrix/concat":256,"./function/matrix/cross":257,"./function/matrix/det":258,"./function/matrix/diag":259,"./function/matrix/dot":260,"./function/matrix/eye":261,"./function/matrix/filter":262,"./function/matrix/flatten":263,"./function/matrix/forEach":264,"./function/matrix/inv":265,"./function/matrix/kron":266,"./function/matrix/map":267,"./function/matrix/ones":268,"./function/matrix/partitionSelect":269,"./function/matrix/range":270,"./function/matrix/reshape":271,"./function/matrix/resize":272,"./function/matrix/size":273,"./function/matrix/sort":274,"./function/matrix/squeeze":275,"./function/matrix/subset":276,"./function/matrix/trace":277,"./function/matrix/transpose":278,"./function/matrix/zeros":279,"./function/probability/combinations":280,"./function/probability/factorial":281,"./function/probability/gamma":282,"./function/probability/kldivergence":283,"./function/probability/multinomial":284,"./function/probability/permutations":285,"./function/probability/pickRandom":286,"./function/probability/random":287,"./function/probability/randomInt":288,"./function/relational/compare":289,"./function/relational/compareNatural":290,"./function/relational/deepEqual":291,"./function/relational/equal":292,"./function/relational/larger":293,"./function/relational/largerEq":294,"./function/relational/smaller":295,"./function/relational/smallerEq":296,"./function/relational/unequal":297,"./function/set/setCartesian":298,"./function/set/setDifference":299,"./function/set/setDistinct":300,"./function/set/setIntersect":301,"./function/set/setIsSubset":302,"./function/set/setMultiplicity":303,"./function/set/setPowerset":304,"./function/set/setSize":305,"./function/set/setSymDifference":306,"./function/set/setUnion":307,"./function/special/erf":308,"./function/statistics/mad":309,"./function/statistics/max":310,"./function/statistics/mean":311,"./function/statistics/median":312,"./function/statistics/min":313,"./function/statistics/mode":314,"./function/statistics/prod":315,"./function/statistics/quantileSeq":316,"./function/statistics/std":317,"./function/statistics/sum":318,"./function/statistics/var":319,"./function/trigonometry/acos":320,"./function/trigonometry/acosh":321,"./function/trigonometry/acot":322,"./function/trigonometry/acoth":323,"./function/trigonometry/acsc":324,"./function/trigonometry/acsch":325,"./function/trigonometry/asec":326,"./function/trigonometry/asech":327,"./function/trigonometry/asin":328,"./function/trigonometry/asinh":329,"./function/trigonometry/atan":330,"./function/trigonometry/atan2":331,"./function/trigonometry/atanh":332,"./function/trigonometry/cos":333,"./function/trigonometry/cosh":334,"./function/trigonometry/cot":335,"./function/trigonometry/coth":336,"./function/trigonometry/csc":337,"./function/trigonometry/csch":338,"./function/trigonometry/sec":339,"./function/trigonometry/sech":340,"./function/trigonometry/sin":341,"./function/trigonometry/sinh":342,"./function/trigonometry/tan":343,"./function/trigonometry/tanh":344,"./function/units/to":345,"./function/utils/clone":346,"./function/utils/format":347,"./function/utils/isInteger":348,"./function/utils/isNaN":349,"./function/utils/isNegative":350,"./function/utils/isNumeric":351,"./function/utils/isPositive":352,"./function/utils/isPrime":353,"./function/utils/isZero":354,"./function/utils/typeof":355}],357:[function(require,module,exports){
+},{"./constants/Infinity":198,"./constants/LN10":199,"./constants/LN2":200,"./constants/LOG10E":201,"./constants/LOG2E":202,"./constants/NaN":203,"./constants/SQRT1_2":204,"./constants/SQRT2":205,"./constants/e":206,"./constants/false":207,"./constants/i":208,"./constants/null":209,"./constants/phi":210,"./constants/pi":211,"./constants/tau":212,"./constants/true":213,"./constants/version":214,"./construction/bignumber":215,"./construction/boolean":216,"./construction/complex":217,"./construction/createUnit":218,"./construction/fraction":219,"./construction/index":220,"./construction/matrix":221,"./construction/number":222,"./construction/sparse":223,"./construction/splitUnit":224,"./construction/string":225,"./construction/unit":226,"./core/config":227,"./core/import":228,"./core/typed":229,"./function/algebra/derivative":230,"./function/algebra/lsolve":231,"./function/algebra/lup":232,"./function/algebra/lusolve":233,"./function/algebra/qr":234,"./function/algebra/rationalize":235,"./function/algebra/simplify":236,"./function/algebra/slu":237,"./function/algebra/usolve":238,"./function/arithmetic/abs":239,"./function/arithmetic/add":240,"./function/arithmetic/cbrt":241,"./function/arithmetic/ceil":242,"./function/arithmetic/cube":243,"./function/arithmetic/divide":244,"./function/arithmetic/dotDivide":245,"./function/arithmetic/dotMultiply":246,"./function/arithmetic/dotPow":247,"./function/arithmetic/exp":248,"./function/arithmetic/fix":249,"./function/arithmetic/floor":250,"./function/arithmetic/gcd":251,"./function/arithmetic/hypot":252,"./function/arithmetic/lcm":253,"./function/arithmetic/log":254,"./function/arithmetic/log10":255,"./function/arithmetic/mod":256,"./function/arithmetic/multiply":257,"./function/arithmetic/norm":258,"./function/arithmetic/nthRoot":259,"./function/arithmetic/pow":260,"./function/arithmetic/round":261,"./function/arithmetic/sign":262,"./function/arithmetic/sqrt":263,"./function/arithmetic/square":264,"./function/arithmetic/subtract":265,"./function/arithmetic/unaryMinus":266,"./function/arithmetic/unaryPlus":267,"./function/arithmetic/xgcd":268,"./function/bitwise/bitAnd":269,"./function/bitwise/bitNot":270,"./function/bitwise/bitOr":271,"./function/bitwise/bitXor":272,"./function/bitwise/leftShift":273,"./function/bitwise/rightArithShift":274,"./function/bitwise/rightLogShift":275,"./function/combinatorics/bellNumbers":276,"./function/combinatorics/catalan":277,"./function/combinatorics/composition":278,"./function/combinatorics/stirlingS2":279,"./function/complex/arg":280,"./function/complex/conj":281,"./function/complex/im":282,"./function/complex/re":283,"./function/expression/eval":284,"./function/expression/help":285,"./function/geometry/distance":286,"./function/geometry/intersect":287,"./function/logical/and":288,"./function/logical/not":289,"./function/logical/or":290,"./function/logical/xor":291,"./function/matrix/concat":292,"./function/matrix/cross":293,"./function/matrix/det":294,"./function/matrix/diag":295,"./function/matrix/dot":296,"./function/matrix/eye":297,"./function/matrix/filter":298,"./function/matrix/flatten":299,"./function/matrix/forEach":300,"./function/matrix/inv":301,"./function/matrix/kron":302,"./function/matrix/map":303,"./function/matrix/ones":304,"./function/matrix/partitionSelect":305,"./function/matrix/range":306,"./function/matrix/reshape":307,"./function/matrix/resize":308,"./function/matrix/size":309,"./function/matrix/sort":310,"./function/matrix/squeeze":311,"./function/matrix/subset":312,"./function/matrix/trace":313,"./function/matrix/transpose":314,"./function/matrix/zeros":315,"./function/probability/combinations":316,"./function/probability/factorial":317,"./function/probability/gamma":318,"./function/probability/kldivergence":319,"./function/probability/multinomial":320,"./function/probability/permutations":321,"./function/probability/pickRandom":322,"./function/probability/random":323,"./function/probability/randomInt":324,"./function/relational/compare":325,"./function/relational/compareNatural":326,"./function/relational/deepEqual":327,"./function/relational/equal":328,"./function/relational/larger":329,"./function/relational/largerEq":330,"./function/relational/smaller":331,"./function/relational/smallerEq":332,"./function/relational/unequal":333,"./function/set/setCartesian":334,"./function/set/setDifference":335,"./function/set/setDistinct":336,"./function/set/setIntersect":337,"./function/set/setIsSubset":338,"./function/set/setMultiplicity":339,"./function/set/setPowerset":340,"./function/set/setSize":341,"./function/set/setSymDifference":342,"./function/set/setUnion":343,"./function/special/erf":344,"./function/statistics/mad":345,"./function/statistics/max":346,"./function/statistics/mean":347,"./function/statistics/median":348,"./function/statistics/min":349,"./function/statistics/mode":350,"./function/statistics/prod":351,"./function/statistics/quantileSeq":352,"./function/statistics/std":353,"./function/statistics/sum":354,"./function/statistics/var":355,"./function/trigonometry/acos":356,"./function/trigonometry/acosh":357,"./function/trigonometry/acot":358,"./function/trigonometry/acoth":359,"./function/trigonometry/acsc":360,"./function/trigonometry/acsch":361,"./function/trigonometry/asec":362,"./function/trigonometry/asech":363,"./function/trigonometry/asin":364,"./function/trigonometry/asinh":365,"./function/trigonometry/atan":366,"./function/trigonometry/atan2":367,"./function/trigonometry/atanh":368,"./function/trigonometry/cos":369,"./function/trigonometry/cosh":370,"./function/trigonometry/cot":371,"./function/trigonometry/coth":372,"./function/trigonometry/csc":373,"./function/trigonometry/csch":374,"./function/trigonometry/sec":375,"./function/trigonometry/sech":376,"./function/trigonometry/sin":377,"./function/trigonometry/sinh":378,"./function/trigonometry/tan":379,"./function/trigonometry/tanh":380,"./function/units/to":381,"./function/utils/clone":382,"./function/utils/format":383,"./function/utils/isInteger":384,"./function/utils/isNaN":385,"./function/utils/isNegative":386,"./function/utils/isNumeric":387,"./function/utils/isPositive":388,"./function/utils/isPrime":389,"./function/utils/isZero":390,"./function/utils/typeof":391}],393:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -30268,7 +39896,7 @@ function factory (type, config, load, typed) {
 exports.name = 'compile';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677,"../parse":385}],358:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713,"../parse":421}],394:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -30335,7 +39963,7 @@ function factory (type, config, load, typed) {
 
 exports.name = 'eval';
 exports.factory = factory;
-},{"../../utils/collection/deepMap":677,"../parse":385}],359:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713,"../parse":421}],395:[function(require,module,exports){
 'use strict';
 
 var getSafeProperty = require('../../utils/customs').getSafeProperty;
@@ -30403,7 +40031,7 @@ exports.math = true; // request access to the math namespace as 5th argument of 
 exports.name = 'help';
 exports.factory = factory;
 
-},{"../../utils/customs":682,"../embeddedDocs":356}],360:[function(require,module,exports){
+},{"../../utils/customs":718,"../embeddedDocs":392}],396:[function(require,module,exports){
 module.exports = [
   require('./compile'),
   require('./eval'),
@@ -30412,7 +40040,7 @@ module.exports = [
   require('./parser')
 ];
 
-},{"./compile":357,"./eval":358,"./help":359,"./parse":361,"./parser":362}],361:[function(require,module,exports){
+},{"./compile":393,"./eval":394,"./help":395,"./parse":397,"./parser":398}],397:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -30466,7 +40094,7 @@ function factory (type, config, load, typed) {
 exports.name = 'parse';
 exports.factory = factory;
 
-},{"../parse":385}],362:[function(require,module,exports){
+},{"../parse":421}],398:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed, math) {
@@ -30526,7 +40154,7 @@ exports.name = 'parser';
 exports.factory = factory;
 exports.math = true; // requires the math namespace as 5th argument
 
-},{"../Parser":161}],363:[function(require,module,exports){
+},{"../Parser":197}],399:[function(require,module,exports){
 module.exports = [
   // Note that the docs folder is called "embeddedDocs" and not "docs" to prevent issues
   // with yarn autoclean. See https://github.com/josdejong/mathjs/issues/969
@@ -30540,7 +40168,7 @@ module.exports = [
   require('./Parser')
 ];
 
-},{"./Help":160,"./Parser":161,"./embeddedDocs":356,"./function":360,"./node":381,"./parse":385,"./transform":390}],364:[function(require,module,exports){
+},{"./Help":196,"./Parser":197,"./embeddedDocs":392,"./function":396,"./node":417,"./parse":421,"./transform":426}],400:[function(require,module,exports){
 'use strict';
 
 // Reserved keywords not allowed to use in the parser
@@ -30548,7 +40176,7 @@ module.exports = {
   end: true
 };
 
-},{}],365:[function(require,module,exports){
+},{}],401:[function(require,module,exports){
 'use strict';
 
 var getSafeProperty = require('../../utils/customs').getSafeProperty;
@@ -30733,7 +40361,7 @@ exports.name = 'AccessorNode';
 exports.path = 'expression.node';
 exports.factory = factory;
 
-},{"../../utils/customs":682,"./IndexNode":373,"./Node":374,"./utils/access":382}],366:[function(require,module,exports){
+},{"../../utils/customs":718,"./IndexNode":409,"./Node":410,"./utils/access":418}],402:[function(require,module,exports){
 'use strict';
 
 var map = require('../../utils/array').map;
@@ -30899,7 +40527,7 @@ exports.name = 'ArrayNode';
 exports.path = 'expression.node';
 exports.factory = factory;
 
-},{"../../utils/array":662,"./Node":374}],367:[function(require,module,exports){
+},{"../../utils/array":698,"./Node":410}],403:[function(require,module,exports){
 'use strict';
 
 var getSafeProperty = require('../../utils/customs').getSafeProperty;
@@ -31182,7 +40810,7 @@ exports.name = 'AssignmentNode';
 exports.path = 'expression.node';
 exports.factory = factory;
 
-},{"../../utils/customs":682,"../operators":384,"./Node":374,"./utils/access":382,"./utils/assign":383}],368:[function(require,module,exports){
+},{"../../utils/customs":718,"../operators":420,"./Node":410,"./utils/access":418,"./utils/assign":419}],404:[function(require,module,exports){
 'use strict';
 
 var forEach = require('../../utils/array').forEach;
@@ -31349,7 +40977,7 @@ exports.name = 'BlockNode';
 exports.path = 'expression.node';
 exports.factory = factory;
 
-},{"../../type/resultset/ResultSet":653,"../../utils/array":662,"./Node":374}],369:[function(require,module,exports){
+},{"../../type/resultset/ResultSet":689,"../../utils/array":698,"./Node":410}],405:[function(require,module,exports){
 'use strict';
 
 var operators = require('../operators');
@@ -31575,7 +41203,7 @@ exports.name = 'ConditionalNode';
 exports.path = 'expression.node';
 exports.factory = factory;
 
-},{"../../function/utils/typeof":607,"../operators":384,"./Node":374}],370:[function(require,module,exports){
+},{"../../function/utils/typeof":643,"../operators":420,"./Node":410}],406:[function(require,module,exports){
 'use strict';
 
 var format = require('../../utils/string').format;
@@ -31735,7 +41363,7 @@ exports.name = 'ConstantNode';
 exports.path = 'expression.node';
 exports.factory = factory;
 
-},{"../../function/utils/typeof":607,"../../utils/latex":686,"../../utils/string":689,"./Node":374}],371:[function(require,module,exports){
+},{"../../function/utils/typeof":643,"../../utils/latex":722,"../../utils/string":725,"./Node":410}],407:[function(require,module,exports){
 'use strict';
 
 var keywords = require('../keywords');
@@ -31930,7 +41558,7 @@ exports.name = 'FunctionAssignmentNode';
 exports.path = 'expression.node';
 exports.factory = factory;
 
-},{"../../utils/array":662,"../../utils/customs":682,"../../utils/latex":686,"../../utils/string":689,"../keywords":364,"../operators":384,"./Node":374}],372:[function(require,module,exports){
+},{"../../utils/array":698,"../../utils/customs":718,"../../utils/latex":722,"../../utils/string":725,"../keywords":400,"../operators":420,"./Node":410}],408:[function(require,module,exports){
 'use strict';
 
 var latex = require('../../utils/latex');
@@ -32352,7 +41980,7 @@ exports.path = 'expression.node';
 exports.math = true; // request access to the math namespace as 5th argument of the factory function
 exports.factory = factory;
 
-},{"../../utils/array":662,"../../utils/customs":682,"../../utils/latex":686,"../../utils/object":688,"../../utils/string":689,"./Node":374,"./SymbolNode":379}],373:[function(require,module,exports){
+},{"../../utils/array":698,"../../utils/customs":718,"../../utils/latex":722,"../../utils/object":724,"../../utils/string":725,"./Node":410,"./SymbolNode":415}],409:[function(require,module,exports){
 'use strict';
 
 var map = require('../../utils/array').map;
@@ -32615,7 +42243,7 @@ exports.name = 'IndexNode';
 exports.path = 'expression.node';
 exports.factory = factory;
 
-},{"../../type/matrix/Range":630,"../../utils/array":662,"../../utils/string":689,"./Node":374}],374:[function(require,module,exports){
+},{"../../type/matrix/Range":666,"../../utils/array":698,"../../utils/string":725,"./Node":410}],410:[function(require,module,exports){
 'use strict';
 
 var keywords = require('../keywords');
@@ -33014,7 +42642,7 @@ exports.path = 'expression.node';
 exports.math = true; // request access to the math namespace as 5th argument of the factory function
 exports.factory = factory;
 
-},{"../../utils/object":688,"../keywords":364}],375:[function(require,module,exports){
+},{"../../utils/object":724,"../keywords":400}],411:[function(require,module,exports){
 'use strict';
 
 var stringify = require('../../utils/string').stringify;
@@ -33194,7 +42822,7 @@ exports.name = 'ObjectNode';
 exports.path = 'expression.node';
 exports.factory = factory;
 
-},{"../../utils/customs":682,"../../utils/object":688,"../../utils/string":689,"./Node":374}],376:[function(require,module,exports){
+},{"../../utils/customs":718,"../../utils/object":724,"../../utils/string":725,"./Node":410}],412:[function(require,module,exports){
 'use strict';
 
 var latex = require('../../utils/latex');
@@ -33800,7 +43428,7 @@ exports.name = 'OperatorNode';
 exports.path = 'expression.node';
 exports.factory = factory;
 
-},{"../../utils/array":662,"../../utils/customs":682,"../../utils/latex":686,"../../utils/string":689,"../operators":384,"./Node":374}],377:[function(require,module,exports){
+},{"../../utils/array":698,"../../utils/customs":718,"../../utils/latex":722,"../../utils/string":725,"../operators":420,"./Node":410}],413:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -33931,7 +43559,7 @@ exports.name = 'ParenthesisNode';
 exports.path = 'expression.node';
 exports.factory = factory;
 
-},{"./Node":374}],378:[function(require,module,exports){
+},{"./Node":410}],414:[function(require,module,exports){
 'use strict';
 
 var operators = require('../operators');
@@ -34192,7 +43820,7 @@ exports.name = 'RangeNode';
 exports.path = 'expression.node';
 exports.factory = factory;
 
-},{"../operators":384,"./Node":374}],379:[function(require,module,exports){
+},{"../operators":420,"./Node":410}],415:[function(require,module,exports){
 'use strict';
 
 var latex = require('../../utils/latex');
@@ -34382,7 +44010,7 @@ exports.path = 'expression.node';
 exports.math = true; // request access to the math namespace as 5th argument of the factory function
 exports.factory = factory;
 
-},{"../../utils/customs":682,"../../utils/latex":686,"../../utils/object":688,"../../utils/string":689,"./Node":374}],380:[function(require,module,exports){
+},{"../../utils/customs":718,"../../utils/latex":722,"../../utils/object":724,"../../utils/string":725,"./Node":410}],416:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -34401,7 +44029,7 @@ exports.name = 'UpdateNode';
 exports.path = 'expression.node';
 exports.factory = factory;
 
-},{}],381:[function(require,module,exports){
+},{}],417:[function(require,module,exports){
 module.exports = [
   require('./AccessorNode'),
   require('./ArrayNode'),
@@ -34421,7 +44049,7 @@ module.exports = [
   require('./UpdateNode')
 ];
 
-},{"./AccessorNode":365,"./ArrayNode":366,"./AssignmentNode":367,"./BlockNode":368,"./ConditionalNode":369,"./ConstantNode":370,"./FunctionAssignmentNode":371,"./FunctionNode":372,"./IndexNode":373,"./Node":374,"./ObjectNode":375,"./OperatorNode":376,"./ParenthesisNode":377,"./RangeNode":378,"./SymbolNode":379,"./UpdateNode":380}],382:[function(require,module,exports){
+},{"./AccessorNode":401,"./ArrayNode":402,"./AssignmentNode":403,"./BlockNode":404,"./ConditionalNode":405,"./ConstantNode":406,"./FunctionAssignmentNode":407,"./FunctionNode":408,"./IndexNode":409,"./Node":410,"./ObjectNode":411,"./OperatorNode":412,"./ParenthesisNode":413,"./RangeNode":414,"./SymbolNode":415,"./UpdateNode":416}],418:[function(require,module,exports){
 'use strict';
 
 var errorTransform = require('../../transform/error.transform').transform;
@@ -34472,7 +44100,7 @@ function factory (type, config, load, typed) {
 
 exports.factory = factory;
 
-},{"../../../function/matrix/subset":514,"../../../utils/customs":682,"../../transform/error.transform":387}],383:[function(require,module,exports){
+},{"../../../function/matrix/subset":550,"../../../utils/customs":718,"../../transform/error.transform":423}],419:[function(require,module,exports){
 'use strict';
 
 var errorTransform = require('../../transform/error.transform').transform;
@@ -34527,7 +44155,7 @@ function factory (type, config, load, typed) {
 
 exports.factory = factory;
 
-},{"../../../function/matrix/subset":514,"../../../type/matrix/function/matrix":634,"../../../utils/customs":682,"../../transform/error.transform":387}],384:[function(require,module,exports){
+},{"../../../function/matrix/subset":550,"../../../type/matrix/function/matrix":670,"../../../utils/customs":718,"../../transform/error.transform":423}],420:[function(require,module,exports){
 'use strict'
 
 //list of identifiers of nodes in order of their precedence
@@ -34845,7 +44473,7 @@ module.exports.getPrecedence = getPrecedence;
 module.exports.getAssociativity = getAssociativity;
 module.exports.isAssociativeWith = isAssociativeWith;
 
-},{}],385:[function(require,module,exports){
+},{}],421:[function(require,module,exports){
 'use strict';
 
 var ArgumentsError = require('../error/ArgumentsError');
@@ -36539,7 +46167,7 @@ exports.name = 'parse';
 exports.path = 'expression';
 exports.factory = factory;
 
-},{"../error/ArgumentsError":156,"../type/numeric":652,"../utils/collection/deepMap":677,"./node/AccessorNode":365,"./node/ArrayNode":366,"./node/AssignmentNode":367,"./node/BlockNode":368,"./node/ConditionalNode":369,"./node/ConstantNode":370,"./node/FunctionAssignmentNode":371,"./node/FunctionNode":372,"./node/IndexNode":373,"./node/ObjectNode":375,"./node/OperatorNode":376,"./node/ParenthesisNode":377,"./node/RangeNode":378,"./node/SymbolNode":379}],386:[function(require,module,exports){
+},{"../error/ArgumentsError":192,"../type/numeric":688,"../utils/collection/deepMap":713,"./node/AccessorNode":401,"./node/ArrayNode":402,"./node/AssignmentNode":403,"./node/BlockNode":404,"./node/ConditionalNode":405,"./node/ConstantNode":406,"./node/FunctionAssignmentNode":407,"./node/FunctionNode":408,"./node/IndexNode":409,"./node/ObjectNode":411,"./node/OperatorNode":412,"./node/ParenthesisNode":413,"./node/RangeNode":414,"./node/SymbolNode":415}],422:[function(require,module,exports){
 'use strict';
 
 var errorTransform = require('./error.transform').transform;
@@ -36581,7 +46209,7 @@ exports.name = 'concat';
 exports.path = 'expression.transform';
 exports.factory = factory;
 
-},{"../../function/matrix/concat":493,"./error.transform":387}],387:[function(require,module,exports){
+},{"../../function/matrix/concat":529,"./error.transform":423}],423:[function(require,module,exports){
 var IndexError = require('../../error/IndexError');
 
 /**
@@ -36600,7 +46228,7 @@ exports.transform = function (err) {
   return err;
 };
 
-},{"../../error/IndexError":158}],388:[function(require,module,exports){
+},{"../../error/IndexError":194}],424:[function(require,module,exports){
 'use strict';
 
 var filter = require('../../utils/array').filter;
@@ -36692,7 +46320,7 @@ exports.name = 'filter';
 exports.path = 'expression.transform';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../utils/array":662,"../../utils/function":684,"./utils/compileInlineExpression":398}],389:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../utils/array":698,"../../utils/function":720,"./utils/compileInlineExpression":434}],425:[function(require,module,exports){
 'use strict';
 
 var maxArgumentCount = require('../../utils/function').maxArgumentCount;
@@ -36766,7 +46394,7 @@ exports.name = 'forEach';
 exports.path = 'expression.transform';
 exports.factory = factory;
 
-},{"../../utils/array":662,"../../utils/function":684,"./utils/compileInlineExpression":398}],390:[function(require,module,exports){
+},{"../../utils/array":698,"../../utils/function":720,"./utils/compileInlineExpression":434}],426:[function(require,module,exports){
 module.exports = [
   require('./concat.transform'),
   require('./filter.transform'),
@@ -36780,7 +46408,7 @@ module.exports = [
   require('./subset.transform')
 ];
 
-},{"./concat.transform":386,"./filter.transform":388,"./forEach.transform":389,"./index.transform":391,"./map.transform":392,"./max.transform":393,"./mean.transform":394,"./min.transform":395,"./range.transform":396,"./subset.transform":397}],391:[function(require,module,exports){
+},{"./concat.transform":422,"./filter.transform":424,"./forEach.transform":425,"./index.transform":427,"./map.transform":428,"./max.transform":429,"./mean.transform":430,"./min.transform":431,"./range.transform":432,"./subset.transform":433}],427:[function(require,module,exports){
 'use strict';
 
 /**
@@ -36833,7 +46461,7 @@ exports.name = 'index';
 exports.path = 'expression.transform';
 exports.factory = factory;
 
-},{}],392:[function(require,module,exports){
+},{}],428:[function(require,module,exports){
 'use strict';
 
 var maxArgumentCount = require('../../utils/function').maxArgumentCount;
@@ -36925,7 +46553,7 @@ exports.name = 'map';
 exports.path = 'expression.transform';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../utils/array":662,"../../utils/function":684,"./utils/compileInlineExpression":398}],393:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../utils/array":698,"../../utils/function":720,"./utils/compileInlineExpression":434}],429:[function(require,module,exports){
 'use strict';
 
 var errorTransform = require('./error.transform').transform;
@@ -36968,7 +46596,7 @@ exports.name = 'max';
 exports.path = 'expression.transform';
 exports.factory = factory;
 
-},{"../../function/statistics/max":556,"../../utils/collection/isCollection":678,"./error.transform":387}],394:[function(require,module,exports){
+},{"../../function/statistics/max":592,"../../utils/collection/isCollection":714,"./error.transform":423}],430:[function(require,module,exports){
 'use strict';
 
 var errorTransform = require('./error.transform').transform;
@@ -37011,7 +46639,7 @@ exports.name = 'mean';
 exports.path = 'expression.transform';
 exports.factory = factory;
 
-},{"../../function/statistics/mean":557,"../../utils/collection/isCollection":678,"./error.transform":387}],395:[function(require,module,exports){
+},{"../../function/statistics/mean":593,"../../utils/collection/isCollection":714,"./error.transform":423}],431:[function(require,module,exports){
 'use strict';
 
 var errorTransform = require('./error.transform').transform;
@@ -37054,7 +46682,7 @@ exports.name = 'min';
 exports.path = 'expression.transform';
 exports.factory = factory;
 
-},{"../../function/statistics/min":559,"../../utils/collection/isCollection":678,"./error.transform":387}],396:[function(require,module,exports){
+},{"../../function/statistics/min":595,"../../utils/collection/isCollection":714,"./error.transform":423}],432:[function(require,module,exports){
 'use strict';
 
 /**
@@ -37084,7 +46712,7 @@ exports.name = 'range';
 exports.path = 'expression.transform';
 exports.factory = factory;
 
-},{"../../function/matrix/range":508}],397:[function(require,module,exports){
+},{"../../function/matrix/range":544}],433:[function(require,module,exports){
 'use strict';
 
 var errorTransform = require('./error.transform').transform;
@@ -37114,7 +46742,7 @@ exports.name = 'subset';
 exports.path = 'expression.transform';
 exports.factory = factory;
 
-},{"../../function/matrix/subset":514,"./error.transform":387}],398:[function(require,module,exports){
+},{"../../function/matrix/subset":550,"./error.transform":423}],434:[function(require,module,exports){
 function factory (type, config, load, typed) {
   /**
    * Compile an inline expression like "x > 0"
@@ -37149,7 +46777,7 @@ function factory (type, config, load, typed) {
 
 exports.factory = factory;
 
-},{}],399:[function(require,module,exports){
+},{}],435:[function(require,module,exports){
 'use strict';
 
 var util = require('../../../utils/index');
@@ -37538,7 +47166,7 @@ function factory (type, config, load, typed) {
 exports.name = 'lup';
 exports.factory = factory;
 
-},{"../../../type/matrix/function/matrix":634,"../../../utils/index":685,"../../arithmetic/abs":432,"../../arithmetic/addScalar":434,"../../arithmetic/divideScalar":439,"../../arithmetic/multiplyScalar":454,"../../arithmetic/subtract":462,"../../arithmetic/unaryMinus":463,"../../relational/equalScalar":534,"../../relational/larger":536}],400:[function(require,module,exports){
+},{"../../../type/matrix/function/matrix":670,"../../../utils/index":721,"../../arithmetic/abs":468,"../../arithmetic/addScalar":470,"../../arithmetic/divideScalar":475,"../../arithmetic/multiplyScalar":490,"../../arithmetic/subtract":498,"../../arithmetic/unaryMinus":499,"../../relational/equalScalar":570,"../../relational/larger":572}],436:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -37799,7 +47427,7 @@ function factory (type, config, load, typed) {
 exports.name = 'qr';
 exports.factory = factory;
 
-},{"../../../type/matrix/function/matrix":634,"../../arithmetic/abs":432,"../../arithmetic/addScalar":434,"../../arithmetic/divideScalar":439,"../../arithmetic/multiplyScalar":454,"../../arithmetic/sign":459,"../../arithmetic/sqrt":460,"../../arithmetic/subtract":462,"../../arithmetic/unaryMinus":463,"../../complex/conj":480,"../../matrix/eye":498,"../../matrix/zeros":517,"../../relational/unequal":540,"../../utils/clone":598,"../../utils/isPositive":604,"../../utils/isZero":606}],401:[function(require,module,exports){
+},{"../../../type/matrix/function/matrix":670,"../../arithmetic/abs":468,"../../arithmetic/addScalar":470,"../../arithmetic/divideScalar":475,"../../arithmetic/multiplyScalar":490,"../../arithmetic/sign":495,"../../arithmetic/sqrt":496,"../../arithmetic/subtract":498,"../../arithmetic/unaryMinus":499,"../../complex/conj":516,"../../matrix/eye":534,"../../matrix/zeros":553,"../../relational/unequal":576,"../../utils/clone":634,"../../utils/isPositive":640,"../../utils/isZero":642}],437:[function(require,module,exports){
 'use strict';
 
 var util = require('../../../utils/index');
@@ -37873,7 +47501,7 @@ function factory (type, config, load, typed) {
 exports.name = 'slu';
 exports.factory = factory;
 
-},{"../../../utils/index":685,"../../algebra/sparse/cs_lu":422,"../../algebra/sparse/cs_sqr":429}],402:[function(require,module,exports){
+},{"../../../utils/index":721,"../../algebra/sparse/cs_lu":458,"../../algebra/sparse/cs_sqr":465}],438:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -38638,7 +48266,7 @@ function factory (type, config, load, typed) {
 exports.name = 'derivative';
 exports.factory = factory;
 
-},{"../../expression/node/ConstantNode":370,"../../expression/node/FunctionNode":372,"../../expression/node/OperatorNode":376,"../../expression/node/ParenthesisNode":377,"../../expression/node/SymbolNode":379,"../../expression/parse":385,"../../type/numeric":652,"../relational/equal":533,"../utils/isZero":606,"./simplify":405}],403:[function(require,module,exports){
+},{"../../expression/node/ConstantNode":406,"../../expression/node/FunctionNode":408,"../../expression/node/OperatorNode":412,"../../expression/node/ParenthesisNode":413,"../../expression/node/SymbolNode":415,"../../expression/parse":421,"../../type/numeric":688,"../relational/equal":569,"../utils/isZero":642,"./simplify":441}],439:[function(require,module,exports){
 module.exports = [
   require('./derivative'),
 
@@ -38660,7 +48288,7 @@ module.exports = [
   require('./solver/usolve')
 ];
 
-},{"./decomposition/lup":399,"./decomposition/qr":400,"./decomposition/slu":401,"./derivative":402,"./rationalize":404,"./simplify":405,"./solver/lsolve":410,"./solver/lusolve":411,"./solver/usolve":412}],404:[function(require,module,exports){
+},{"./decomposition/lup":435,"./decomposition/qr":436,"./decomposition/slu":437,"./derivative":438,"./rationalize":440,"./simplify":441,"./solver/lsolve":446,"./solver/lusolve":447,"./solver/usolve":448}],440:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -39268,7 +48896,7 @@ function factory (type, config, load, typed) {
 
 exports.name = 'rationalize';
 exports.factory = factory;
-},{"../../error/ArgumentsError":156,"../../expression/function/parse":361,"../../expression/node/ConstantNode":370,"../../expression/node/OperatorNode":376,"../../expression/node/SymbolNode":379,"../../utils/number":687,"./simplify":405,"./simplify/simplifyConstant":407,"./simplify/simplifyCore":408}],405:[function(require,module,exports){
+},{"../../error/ArgumentsError":192,"../../expression/function/parse":397,"../../expression/node/ConstantNode":406,"../../expression/node/OperatorNode":412,"../../expression/node/SymbolNode":415,"../../utils/number":723,"./simplify":441,"./simplify/simplifyConstant":443,"./simplify/simplifyCore":444}],441:[function(require,module,exports){
 'use strict';
 
 
@@ -39942,7 +49570,7 @@ exports.math = true;
 exports.name = 'simplify';
 exports.factory = factory;
 
-},{"../../expression/node/ConstantNode":370,"../../expression/node/FunctionNode":372,"../../expression/node/Node":374,"../../expression/node/OperatorNode":376,"../../expression/node/ParenthesisNode":377,"../../expression/node/SymbolNode":379,"../../expression/parse":385,"../relational/equal":533,"./simplify/resolve":406,"./simplify/simplifyConstant":407,"./simplify/simplifyCore":408,"./simplify/util":409}],406:[function(require,module,exports){
+},{"../../expression/node/ConstantNode":406,"../../expression/node/FunctionNode":408,"../../expression/node/Node":410,"../../expression/node/OperatorNode":412,"../../expression/node/ParenthesisNode":413,"../../expression/node/SymbolNode":415,"../../expression/parse":421,"../relational/equal":569,"./simplify/resolve":442,"./simplify/simplifyConstant":443,"./simplify/simplifyCore":444,"./simplify/util":445}],442:[function(require,module,exports){
 'use strict';
 
 function factory(type, config, load, typed, math) {
@@ -40003,7 +49631,7 @@ exports.name = 'resolve';
 exports.path = 'algebra.simplify';
 exports.factory = factory;
 
-},{}],407:[function(require,module,exports){
+},{}],443:[function(require,module,exports){
 'use strict';
 
 var digits = require('./../../../utils/number').digits;
@@ -40278,7 +49906,7 @@ exports.name = 'simplifyConstant';
 exports.path = 'algebra.simplify';
 exports.factory = factory;
 
-},{"../../utils/isNumeric":603,"./../../../utils/number":687,"./util":409}],408:[function(require,module,exports){
+},{"../../utils/isNumeric":639,"./../../../utils/number":723,"./util":445}],444:[function(require,module,exports){
 'use strict';
 
 function factory(type, config, load, typed, math) {
@@ -40463,7 +50091,7 @@ exports.name = 'simplifyCore';
 exports.path = 'algebra.simplify';
 exports.factory = factory;
 
-},{"../../arithmetic/add":433,"../../arithmetic/divide":438,"../../arithmetic/multiply":453,"../../arithmetic/pow":457,"../../arithmetic/subtract":462,"../../relational/equal":533,"../../utils/isNumeric":603,"../../utils/isZero":606}],409:[function(require,module,exports){
+},{"../../arithmetic/add":469,"../../arithmetic/divide":474,"../../arithmetic/multiply":489,"../../arithmetic/pow":493,"../../arithmetic/subtract":498,"../../relational/equal":569,"../../utils/isNumeric":639,"../../utils/isZero":642}],445:[function(require,module,exports){
 'use strict';
 
 function factory(type, config, load, typed, math) {
@@ -40622,7 +50250,7 @@ function factory(type, config, load, typed, math) {
 
 exports.factory = factory;
 exports.math = true;
-},{}],410:[function(require,module,exports){
+},{}],446:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -40811,7 +50439,7 @@ function factory (type, config, load, typed) {
 exports.name = 'lsolve';
 exports.factory = factory;
 
-},{"../../../type/matrix/function/matrix":634,"../../arithmetic/divideScalar":439,"../../arithmetic/multiplyScalar":454,"../../arithmetic/subtract":462,"../../relational/equalScalar":534,"./utils/solveValidation":413}],411:[function(require,module,exports){
+},{"../../../type/matrix/function/matrix":670,"../../arithmetic/divideScalar":475,"../../arithmetic/multiplyScalar":490,"../../arithmetic/subtract":498,"../../relational/equalScalar":570,"./utils/solveValidation":449}],447:[function(require,module,exports){
 'use strict';
 
 var isArray = Array.isArray;
@@ -40938,7 +50566,7 @@ function factory (type, config, load, typed) {
 exports.name = 'lusolve';
 exports.factory = factory;
 
-},{"../../../type/matrix/function/matrix":634,"../decomposition/lup":399,"../decomposition/slu":401,"../sparse/cs_ipvec":420,"./lsolve":410,"./usolve":412,"./utils/solveValidation":413}],412:[function(require,module,exports){
+},{"../../../type/matrix/function/matrix":670,"../decomposition/lup":435,"../decomposition/slu":437,"../sparse/cs_ipvec":456,"./lsolve":446,"./usolve":448,"./utils/solveValidation":449}],448:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -41128,7 +50756,7 @@ function factory (type, config, load, typed) {
 exports.name = 'usolve';
 exports.factory = factory;
 
-},{"../../../type/matrix/function/matrix":634,"../../arithmetic/divideScalar":439,"../../arithmetic/multiplyScalar":454,"../../arithmetic/subtract":462,"../../relational/equalScalar":534,"./utils/solveValidation":413}],413:[function(require,module,exports){
+},{"../../../type/matrix/function/matrix":670,"../../arithmetic/divideScalar":475,"../../arithmetic/multiplyScalar":490,"../../arithmetic/subtract":498,"../../relational/equalScalar":570,"./utils/solveValidation":449}],449:[function(require,module,exports){
 'use strict';
 
 var util = require('../../../../utils/index');
@@ -41291,7 +50919,7 @@ function factory (type) {
 }
 
 exports.factory = factory;
-},{"../../../../utils/index":685}],414:[function(require,module,exports){
+},{"../../../../utils/index":721}],450:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load) {
@@ -41866,7 +51494,7 @@ exports.name = 'cs_amd';
 exports.path = 'sparse';
 exports.factory = factory;
 
-},{"../../arithmetic/add":433,"../../arithmetic/multiply":453,"../../matrix/transpose":516,"./cs_fkeep":418,"./cs_flip":419,"./cs_tdfs":430}],415:[function(require,module,exports){
+},{"../../arithmetic/add":469,"../../arithmetic/multiply":489,"../../matrix/transpose":552,"./cs_fkeep":454,"./cs_flip":455,"./cs_tdfs":466}],451:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load) {
@@ -41989,7 +51617,7 @@ exports.name = 'cs_counts';
 exports.path = 'sparse';
 exports.factory = factory;
 
-},{"../../matrix/transpose":516,"./cs_leaf":421}],416:[function(require,module,exports){
+},{"../../matrix/transpose":552,"./cs_leaf":457}],452:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load) {
@@ -42076,7 +51704,7 @@ exports.name = 'cs_dfs';
 exports.path = 'sparse';
 exports.factory = factory;
 
-},{"./cs_mark":423,"./cs_marked":424,"./cs_unflip":431}],417:[function(require,module,exports){
+},{"./cs_mark":459,"./cs_marked":460,"./cs_unflip":467}],453:[function(require,module,exports){
 'use strict';
 
 function factory () {
@@ -42154,7 +51782,7 @@ exports.name = 'cs_etree';
 exports.path = 'sparse';
 exports.factory = factory;
 
-},{}],418:[function(require,module,exports){
+},{}],454:[function(require,module,exports){
 'use strict';
 
 function factory () {
@@ -42221,7 +51849,7 @@ exports.name = 'cs_fkeep';
 exports.path = 'sparse';
 exports.factory = factory;
 
-},{}],419:[function(require,module,exports){
+},{}],455:[function(require,module,exports){
 'use strict';
 
 function factory () {
@@ -42245,7 +51873,7 @@ exports.name = 'cs_flip';
 exports.path = 'sparse';
 exports.factory = factory;
 
-},{}],420:[function(require,module,exports){
+},{}],456:[function(require,module,exports){
 'use strict';
 
 function factory () {
@@ -42288,7 +51916,7 @@ exports.name = 'cs_ipvec';
 exports.path = 'sparse';
 exports.factory = factory;
 
-},{}],421:[function(require,module,exports){
+},{}],457:[function(require,module,exports){
 'use strict';
 
 function factory () {
@@ -42356,7 +51984,7 @@ exports.name = 'cs_leaf';
 exports.path = 'sparse';
 exports.factory = factory;
 
-},{}],422:[function(require,module,exports){
+},{}],458:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load) {
@@ -42536,7 +52164,7 @@ exports.name = 'cs_lu';
 exports.path = 'sparse';
 exports.factory = factory;
 
-},{"../../arithmetic/abs":432,"../../arithmetic/divideScalar":439,"../../arithmetic/multiply":453,"../../relational/larger":536,"../../relational/largerEq":537,"./cs_spsolve":428}],423:[function(require,module,exports){
+},{"../../arithmetic/abs":468,"../../arithmetic/divideScalar":475,"../../arithmetic/multiply":489,"../../relational/larger":572,"../../relational/largerEq":573,"./cs_spsolve":464}],459:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load) {
@@ -42563,7 +52191,7 @@ exports.name = 'cs_mark';
 exports.path = 'sparse';
 exports.factory = factory;
 
-},{"./cs_flip":419}],424:[function(require,module,exports){
+},{"./cs_flip":455}],460:[function(require,module,exports){
 'use strict';
 
 function factory () {
@@ -42588,7 +52216,7 @@ exports.name = 'cs_marked';
 exports.path = 'sparse';
 exports.factory = factory;
 
-},{}],425:[function(require,module,exports){
+},{}],461:[function(require,module,exports){
 'use strict';
 
 function factory (type) {
@@ -42661,7 +52289,7 @@ exports.name = 'cs_permute';
 exports.path = 'sparse';
 exports.factory = factory;
 
-},{}],426:[function(require,module,exports){
+},{}],462:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load) {
@@ -42722,7 +52350,7 @@ exports.name = 'cs_post';
 exports.path = 'sparse';
 exports.factory = factory;
 
-},{"./cs_tdfs":430}],427:[function(require,module,exports){
+},{"./cs_tdfs":466}],463:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load) {
@@ -42785,7 +52413,7 @@ exports.name = 'cs_reach';
 exports.path = 'sparse';
 exports.factory = factory;
 
-},{"./cs_dfs":416,"./cs_mark":423,"./cs_marked":424}],428:[function(require,module,exports){
+},{"./cs_dfs":452,"./cs_mark":459,"./cs_marked":460}],464:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load) {
@@ -42873,7 +52501,7 @@ exports.name = 'cs_spsolve';
 exports.path = 'sparse';
 exports.factory = factory;
 
-},{"../../arithmetic/divideScalar":439,"../../arithmetic/multiply":453,"../../arithmetic/subtract":462,"./cs_reach":427}],429:[function(require,module,exports){
+},{"../../arithmetic/divideScalar":475,"../../arithmetic/multiply":489,"../../arithmetic/subtract":498,"./cs_reach":463}],465:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load) {
@@ -43038,7 +52666,7 @@ exports.name = 'cs_sqr';
 exports.path = 'sparse';
 exports.factory = factory;
 
-},{"./cs_amd":414,"./cs_counts":415,"./cs_etree":417,"./cs_permute":425,"./cs_post":426}],430:[function(require,module,exports){
+},{"./cs_amd":450,"./cs_counts":451,"./cs_etree":453,"./cs_permute":461,"./cs_post":462}],466:[function(require,module,exports){
 'use strict';
 
 function factory () {
@@ -43092,7 +52720,7 @@ exports.name = 'cs_tdfs';
 exports.path = 'sparse';
 exports.factory = factory;
 
-},{}],431:[function(require,module,exports){
+},{}],467:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load) {
@@ -43118,7 +52746,7 @@ exports.name = 'cs_unflip';
 exports.path = 'sparse';
 exports.factory = factory;
 
-},{"./cs_flip":419}],432:[function(require,module,exports){
+},{"./cs_flip":455}],468:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -43181,7 +52809,7 @@ function factory (type, config, load, typed) {
 exports.name = 'abs';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677}],433:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713}],469:[function(require,module,exports){
 'use strict';
 
 var extend = require('../../utils/object').extend;
@@ -43315,7 +52943,7 @@ function factory (type, config, load, typed) {
 exports.name = 'add';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../type/matrix/utils/algorithm01":637,"../../type/matrix/utils/algorithm04":640,"../../type/matrix/utils/algorithm10":646,"../../type/matrix/utils/algorithm13":649,"../../type/matrix/utils/algorithm14":650,"../../utils/latex.js":686,"../../utils/object":688,"./addScalar":434}],434:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../type/matrix/utils/algorithm01":673,"../../type/matrix/utils/algorithm04":676,"../../type/matrix/utils/algorithm10":682,"../../type/matrix/utils/algorithm13":685,"../../type/matrix/utils/algorithm14":686,"../../utils/latex.js":722,"../../utils/object":724,"./addScalar":470}],470:[function(require,module,exports){
 'use strict';
 
 function factory(type, config, load, typed) {
@@ -43368,7 +52996,7 @@ function factory(type, config, load, typed) {
 
 exports.factory = factory;
 
-},{}],435:[function(require,module,exports){
+},{}],471:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -43555,7 +53183,7 @@ var _cbrtNumber = Math.cbrt || function (x) {
 exports.name = 'cbrt';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../utils/collection/deepMap":677,"../utils/isNegative":602,"./unaryMinus":463}],436:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../utils/collection/deepMap":713,"../utils/isNegative":638,"./unaryMinus":499}],472:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -43618,7 +53246,7 @@ function factory (type, config, load, typed) {
 exports.name = 'ceil';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677}],437:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713}],473:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -43684,7 +53312,7 @@ function factory (type, config, load, typed) {
 exports.name = 'cube';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677}],438:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713}],474:[function(require,module,exports){
 'use strict';
 
 var extend = require('../../utils/object').extend;
@@ -43767,7 +53395,7 @@ function factory (type, config, load, typed) {
 exports.name = 'divide';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../type/matrix/utils/algorithm11":647,"../../type/matrix/utils/algorithm14":650,"../../utils/object":688,"../matrix/inv":503,"./divideScalar":439,"./multiply":453}],439:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../type/matrix/utils/algorithm11":683,"../../type/matrix/utils/algorithm14":686,"../../utils/object":724,"../matrix/inv":539,"./divideScalar":475,"./multiply":489}],475:[function(require,module,exports){
 'use strict';
 
 function factory(type, config, load, typed) {
@@ -43828,7 +53456,7 @@ function factory(type, config, load, typed) {
 
 exports.factory = factory;
 
-},{"./multiplyScalar":454}],440:[function(require,module,exports){
+},{"./multiplyScalar":490}],476:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -43943,7 +53571,7 @@ function factory (type, config, load, typed) {
 exports.name = 'dotDivide';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../type/matrix/utils/algorithm02":638,"../../type/matrix/utils/algorithm03":639,"../../type/matrix/utils/algorithm07":643,"../../type/matrix/utils/algorithm11":647,"../../type/matrix/utils/algorithm12":648,"../../type/matrix/utils/algorithm13":649,"../../type/matrix/utils/algorithm14":650,"../../utils/latex":686,"./divideScalar":439}],441:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../type/matrix/utils/algorithm02":674,"../../type/matrix/utils/algorithm03":675,"../../type/matrix/utils/algorithm07":679,"../../type/matrix/utils/algorithm11":683,"../../type/matrix/utils/algorithm12":684,"../../type/matrix/utils/algorithm13":685,"../../type/matrix/utils/algorithm14":686,"../../utils/latex":722,"./divideScalar":475}],477:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -44056,7 +53684,7 @@ function factory (type, config, load, typed) {
 exports.name = 'dotMultiply';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../type/matrix/utils/algorithm02":638,"../../type/matrix/utils/algorithm09":645,"../../type/matrix/utils/algorithm11":647,"../../type/matrix/utils/algorithm13":649,"../../type/matrix/utils/algorithm14":650,"../../utils/latex":686,"./multiplyScalar":454}],442:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../type/matrix/utils/algorithm02":674,"../../type/matrix/utils/algorithm09":681,"../../type/matrix/utils/algorithm11":683,"../../type/matrix/utils/algorithm13":685,"../../type/matrix/utils/algorithm14":686,"../../utils/latex":722,"./multiplyScalar":490}],478:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -44167,7 +53795,7 @@ function factory (type, config, load, typed) {
 exports.name = 'dotPow';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../type/matrix/utils/algorithm03":639,"../../type/matrix/utils/algorithm07":643,"../../type/matrix/utils/algorithm11":647,"../../type/matrix/utils/algorithm12":648,"../../type/matrix/utils/algorithm13":649,"../../type/matrix/utils/algorithm14":650,"../../utils/latex":686,"./pow":457}],443:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../type/matrix/utils/algorithm03":675,"../../type/matrix/utils/algorithm07":679,"../../type/matrix/utils/algorithm11":683,"../../type/matrix/utils/algorithm12":684,"../../type/matrix/utils/algorithm13":685,"../../type/matrix/utils/algorithm14":686,"../../utils/latex":722,"./pow":493}],479:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -44226,7 +53854,7 @@ function factory (type, config, load, typed) {
 exports.name = 'exp';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677}],444:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713}],480:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -44293,7 +53921,7 @@ function factory (type, config, load, typed) {
 exports.name = 'fix';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677}],445:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713}],481:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -44355,7 +53983,7 @@ function factory (type, config, load, typed) {
 exports.name = 'floor';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677}],446:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713}],482:[function(require,module,exports){
 'use strict';
 
 var isInteger = require('../../utils/number').isInteger;
@@ -44524,7 +54152,7 @@ function _gcd(a, b) {
 exports.name = 'gcd';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../type/matrix/utils/algorithm01":637,"../../type/matrix/utils/algorithm04":640,"../../type/matrix/utils/algorithm10":646,"../../type/matrix/utils/algorithm13":649,"../../type/matrix/utils/algorithm14":650,"../../utils/number":687}],447:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../type/matrix/utils/algorithm01":673,"../../type/matrix/utils/algorithm04":676,"../../type/matrix/utils/algorithm10":682,"../../type/matrix/utils/algorithm13":685,"../../type/matrix/utils/algorithm14":686,"../../utils/number":723}],483:[function(require,module,exports){
 'use strict';
 
 var flatten = require('../../utils/array').flatten;
@@ -44610,7 +54238,7 @@ function factory (type, config, load, typed) {
 exports.name = 'hypot';
 exports.factory = factory;
 
-},{"../../utils/array":662,"../relational/smaller":538,"../utils/isPositive":604,"./abs":432,"./addScalar":434,"./divideScalar":439,"./multiplyScalar":454,"./sqrt":460}],448:[function(require,module,exports){
+},{"../../utils/array":698,"../relational/smaller":574,"../utils/isPositive":640,"./abs":468,"./addScalar":470,"./divideScalar":475,"./multiplyScalar":490,"./sqrt":496}],484:[function(require,module,exports){
 module.exports = [
   require('./abs'),
   require('./add'),
@@ -44645,7 +54273,7 @@ module.exports = [
   require('./xgcd')
 ];
 
-},{"./abs":432,"./add":433,"./addScalar":434,"./cbrt":435,"./ceil":436,"./cube":437,"./divide":438,"./dotDivide":440,"./dotMultiply":441,"./dotPow":442,"./exp":443,"./fix":444,"./floor":445,"./gcd":446,"./hypot":447,"./lcm":449,"./log":450,"./log10":451,"./mod":452,"./multiply":453,"./norm":455,"./nthRoot":456,"./pow":457,"./round":458,"./sign":459,"./sqrt":460,"./square":461,"./subtract":462,"./unaryMinus":463,"./unaryPlus":464,"./xgcd":465}],449:[function(require,module,exports){
+},{"./abs":468,"./add":469,"./addScalar":470,"./cbrt":471,"./ceil":472,"./cube":473,"./divide":474,"./dotDivide":476,"./dotMultiply":477,"./dotPow":478,"./exp":479,"./fix":480,"./floor":481,"./gcd":482,"./hypot":483,"./lcm":485,"./log":486,"./log10":487,"./mod":488,"./multiply":489,"./norm":491,"./nthRoot":492,"./pow":493,"./round":494,"./sign":495,"./sqrt":496,"./square":497,"./subtract":498,"./unaryMinus":499,"./unaryPlus":500,"./xgcd":501}],485:[function(require,module,exports){
 'use strict';
 
 var isInteger = require('../../utils/number').isInteger;
@@ -44829,7 +54457,7 @@ function _lcm (a, b) {
 exports.name = 'lcm';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../type/matrix/utils/algorithm02":638,"../../type/matrix/utils/algorithm06":642,"../../type/matrix/utils/algorithm11":647,"../../type/matrix/utils/algorithm13":649,"../../type/matrix/utils/algorithm14":650,"../../utils/number":687}],450:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../type/matrix/utils/algorithm02":674,"../../type/matrix/utils/algorithm06":678,"../../type/matrix/utils/algorithm11":683,"../../type/matrix/utils/algorithm13":685,"../../type/matrix/utils/algorithm14":686,"../../utils/number":723}],486:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -44917,7 +54545,7 @@ function factory (type, config, load, typed) {
 exports.name = 'log';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677,"./divideScalar":439}],451:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713,"./divideScalar":475}],487:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -44997,7 +54625,7 @@ exports.name = 'log10';
 exports.factory = factory;
 
 
-},{"../../utils/collection/deepMap":677}],452:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713}],488:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -45151,7 +54779,7 @@ function factory (type, config, load, typed) {
 exports.name = 'mod';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../type/matrix/utils/algorithm02":638,"../../type/matrix/utils/algorithm03":639,"../../type/matrix/utils/algorithm05":641,"../../type/matrix/utils/algorithm11":647,"../../type/matrix/utils/algorithm12":648,"../../type/matrix/utils/algorithm13":649,"../../type/matrix/utils/algorithm14":650,"../../utils/latex":686}],453:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../type/matrix/utils/algorithm02":674,"../../type/matrix/utils/algorithm03":675,"../../type/matrix/utils/algorithm05":677,"../../type/matrix/utils/algorithm11":683,"../../type/matrix/utils/algorithm12":684,"../../type/matrix/utils/algorithm13":685,"../../type/matrix/utils/algorithm14":686,"../../utils/latex":722}],489:[function(require,module,exports){
 'use strict';
 
 var extend = require('../../utils/object').extend;
@@ -46085,7 +55713,7 @@ function factory (type, config, load, typed) {
 exports.name = 'multiply';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../type/matrix/utils/algorithm11":647,"../../type/matrix/utils/algorithm14":650,"../../utils/array":662,"../../utils/latex":686,"../../utils/object":688,"../relational/equalScalar":534,"./addScalar":434,"./multiplyScalar":454}],454:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../type/matrix/utils/algorithm11":683,"../../type/matrix/utils/algorithm14":686,"../../utils/array":698,"../../utils/latex":722,"../../utils/object":724,"../relational/equalScalar":570,"./addScalar":470,"./multiplyScalar":490}],490:[function(require,module,exports){
 'use strict';
 
 function factory(type, config, load, typed) {
@@ -46144,7 +55772,7 @@ function factory(type, config, load, typed) {
 
 exports.factory = factory;
 
-},{}],455:[function(require,module,exports){
+},{}],491:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -46361,7 +55989,7 @@ function factory (type, config, load, typed) {
 exports.name = 'norm';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../arithmetic/abs":432,"../arithmetic/add":433,"../arithmetic/multiply":453,"../arithmetic/pow":457,"../arithmetic/sqrt":460,"../matrix/trace":515,"../matrix/transpose":516,"../relational/equalScalar":534,"../relational/larger":536,"../relational/smaller":538}],456:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../arithmetic/abs":468,"../arithmetic/add":469,"../arithmetic/multiply":489,"../arithmetic/pow":493,"../arithmetic/sqrt":496,"../matrix/trace":551,"../matrix/transpose":552,"../relational/equalScalar":570,"../relational/larger":572,"../relational/smaller":574}],492:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -46632,7 +56260,7 @@ function _nthComplexRoot(a, root) {
 exports.name = 'nthRoot';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../type/matrix/utils/algorithm01":637,"../../type/matrix/utils/algorithm02":638,"../../type/matrix/utils/algorithm06":642,"../../type/matrix/utils/algorithm11":647,"../../type/matrix/utils/algorithm13":649,"../../type/matrix/utils/algorithm14":650}],457:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../type/matrix/utils/algorithm01":673,"../../type/matrix/utils/algorithm02":674,"../../type/matrix/utils/algorithm06":678,"../../type/matrix/utils/algorithm11":683,"../../type/matrix/utils/algorithm13":685,"../../type/matrix/utils/algorithm14":686}],493:[function(require,module,exports){
 'use strict';
 
 var isInteger = require('../../utils/number').isInteger;
@@ -46835,7 +56463,7 @@ function factory (type, config, load, typed) {
 exports.name = 'pow';
 exports.factory = factory;
 
-},{"../../type/fraction/function/fraction":622,"../../type/matrix/function/matrix":634,"../../type/number":651,"../../utils/array":662,"../../utils/latex":686,"../../utils/number":687,"../matrix/eye":498,"./multiply":453}],458:[function(require,module,exports){
+},{"../../type/fraction/function/fraction":658,"../../type/matrix/function/matrix":670,"../../type/number":687,"../../utils/array":698,"../../utils/latex":722,"../../utils/number":723,"../matrix/eye":534,"./multiply":489}],494:[function(require,module,exports){
 'use strict';
 
 var isInteger = require('../../utils/number').isInteger;
@@ -47002,7 +56630,7 @@ function _round (value, decimals) {
 exports.name = 'round';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../type/matrix/utils/algorithm11":647,"../../type/matrix/utils/algorithm12":648,"../../type/matrix/utils/algorithm14":650,"../../utils/collection/deepMap":677,"../../utils/number":687,"../matrix/zeros":517,"../relational/equalScalar":534}],459:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../type/matrix/utils/algorithm11":683,"../../type/matrix/utils/algorithm12":684,"../../type/matrix/utils/algorithm14":686,"../../utils/collection/deepMap":713,"../../utils/number":723,"../matrix/zeros":553,"../relational/equalScalar":570}],495:[function(require,module,exports){
 'use strict';
 
 var number = require('../../utils/number');
@@ -47073,7 +56701,7 @@ exports.name = 'sign';
 exports.factory = factory;
 
 
-},{"../../utils/collection/deepMap":677,"../../utils/number":687}],460:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713,"../../utils/number":723}],496:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -47155,7 +56783,7 @@ function factory (type, config, load, typed) {
 exports.name = 'sqrt';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677}],461:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713}],497:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -47222,7 +56850,7 @@ function factory (type, config, load, typed) {
 exports.name = 'square';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677}],462:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713}],498:[function(require,module,exports){
 'use strict';
 
 var DimensionError = require('../../error/DimensionError');
@@ -47401,7 +57029,7 @@ function checkEqualDimensions(x, y) {
 exports.name = 'subtract';
 exports.factory = factory;
 
-},{"../../error/DimensionError":157,"../../type/matrix/function/matrix":634,"../../type/matrix/utils/algorithm01":637,"../../type/matrix/utils/algorithm03":639,"../../type/matrix/utils/algorithm05":641,"../../type/matrix/utils/algorithm10":646,"../../type/matrix/utils/algorithm13":649,"../../type/matrix/utils/algorithm14":650,"../../utils/latex":686,"./addScalar":434,"./unaryMinus":463}],463:[function(require,module,exports){
+},{"../../error/DimensionError":193,"../../type/matrix/function/matrix":670,"../../type/matrix/utils/algorithm01":673,"../../type/matrix/utils/algorithm03":675,"../../type/matrix/utils/algorithm05":677,"../../type/matrix/utils/algorithm10":682,"../../type/matrix/utils/algorithm13":685,"../../type/matrix/utils/algorithm14":686,"../../utils/latex":722,"./addScalar":470,"./unaryMinus":499}],499:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -47473,7 +57101,7 @@ function factory (type, config, load, typed) {
 exports.name = 'unaryMinus';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677,"../../utils/latex":686}],464:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713,"../../utils/latex":722}],500:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -47547,7 +57175,7 @@ function factory (type, config, load, typed) {
 exports.name = 'unaryPlus';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677,"../../utils/latex":686}],465:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713,"../../utils/latex":722}],501:[function(require,module,exports){
 'use strict';
 
 var isInteger = require('../../utils/number').isInteger;
@@ -47686,7 +57314,7 @@ function factory (type, config, load, typed) {
 exports.name = 'xgcd';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../utils/number":687}],466:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../utils/number":723}],502:[function(require,module,exports){
 'use strict';
 
 var isInteger = require('../../utils/number').isInteger;
@@ -47805,7 +57433,7 @@ function factory (type, config, load, typed) {
 exports.name = 'bitAnd';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../type/matrix/utils/algorithm02":638,"../../type/matrix/utils/algorithm06":642,"../../type/matrix/utils/algorithm11":647,"../../type/matrix/utils/algorithm13":649,"../../type/matrix/utils/algorithm14":650,"../../utils/bignumber/bitAnd":663,"../../utils/latex":686,"../../utils/number":687}],467:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../type/matrix/utils/algorithm02":674,"../../type/matrix/utils/algorithm06":678,"../../type/matrix/utils/algorithm11":683,"../../type/matrix/utils/algorithm13":685,"../../type/matrix/utils/algorithm14":686,"../../utils/bignumber/bitAnd":699,"../../utils/latex":722,"../../utils/number":723}],503:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -47863,7 +57491,7 @@ function factory (type, config, load, typed) {
 exports.name = 'bitNot';
 exports.factory = factory;
 
-},{"../../utils/bignumber/bitNot":664,"../../utils/collection/deepMap":677,"../../utils/latex":686,"../../utils/number":687}],468:[function(require,module,exports){
+},{"../../utils/bignumber/bitNot":700,"../../utils/collection/deepMap":713,"../../utils/latex":722,"../../utils/number":723}],504:[function(require,module,exports){
 'use strict';
 
 var isInteger = require('../../utils/number').isInteger;
@@ -47983,7 +57611,7 @@ function factory (type, config, load, typed) {
 exports.name = 'bitOr';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../type/matrix/utils/algorithm01":637,"../../type/matrix/utils/algorithm04":640,"../../type/matrix/utils/algorithm10":646,"../../type/matrix/utils/algorithm13":649,"../../type/matrix/utils/algorithm14":650,"../../utils/bignumber/bitOr":665,"../../utils/latex":686,"../../utils/number":687}],469:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../type/matrix/utils/algorithm01":673,"../../type/matrix/utils/algorithm04":676,"../../type/matrix/utils/algorithm10":682,"../../type/matrix/utils/algorithm13":685,"../../type/matrix/utils/algorithm14":686,"../../utils/bignumber/bitOr":701,"../../utils/latex":722,"../../utils/number":723}],505:[function(require,module,exports){
 'use strict';
 
 var isInteger = require('../../utils/number').isInteger;
@@ -48102,7 +57730,7 @@ function factory (type, config, load, typed) {
 exports.name = 'bitXor';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../type/matrix/utils/algorithm03":639,"../../type/matrix/utils/algorithm07":643,"../../type/matrix/utils/algorithm12":648,"../../type/matrix/utils/algorithm13":649,"../../type/matrix/utils/algorithm14":650,"../../utils/bignumber/bitXor":666,"../../utils/latex":686,"../../utils/number":687}],470:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../type/matrix/utils/algorithm03":675,"../../type/matrix/utils/algorithm07":679,"../../type/matrix/utils/algorithm12":684,"../../type/matrix/utils/algorithm13":685,"../../type/matrix/utils/algorithm14":686,"../../utils/bignumber/bitXor":702,"../../utils/latex":722,"../../utils/number":723}],506:[function(require,module,exports){
 module.exports = [
   require('./bitAnd'),
   require('./bitNot'),
@@ -48113,7 +57741,7 @@ module.exports = [
   require('./rightLogShift')
 ];
 
-},{"./bitAnd":466,"./bitNot":467,"./bitOr":468,"./bitXor":469,"./leftShift":471,"./rightArithShift":472,"./rightLogShift":473}],471:[function(require,module,exports){
+},{"./bitAnd":502,"./bitNot":503,"./bitOr":504,"./bitXor":505,"./leftShift":507,"./rightArithShift":508,"./rightLogShift":509}],507:[function(require,module,exports){
 'use strict';
 
 var isInteger = require('../../utils/number').isInteger;
@@ -48253,7 +57881,7 @@ function factory (type, config, load, typed) {
 exports.name = 'leftShift';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../type/matrix/utils/algorithm01":637,"../../type/matrix/utils/algorithm02":638,"../../type/matrix/utils/algorithm08":644,"../../type/matrix/utils/algorithm10":646,"../../type/matrix/utils/algorithm11":647,"../../type/matrix/utils/algorithm13":649,"../../type/matrix/utils/algorithm14":650,"../../utils/bignumber/leftShift":671,"../../utils/latex":686,"../../utils/number":687,"../matrix/zeros":517,"../relational/equalScalar":534}],472:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../type/matrix/utils/algorithm01":673,"../../type/matrix/utils/algorithm02":674,"../../type/matrix/utils/algorithm08":680,"../../type/matrix/utils/algorithm10":682,"../../type/matrix/utils/algorithm11":683,"../../type/matrix/utils/algorithm13":685,"../../type/matrix/utils/algorithm14":686,"../../utils/bignumber/leftShift":707,"../../utils/latex":722,"../../utils/number":723,"../matrix/zeros":553,"../relational/equalScalar":570}],508:[function(require,module,exports){
 'use strict';
 
 var isInteger = require('../../utils/number').isInteger;
@@ -48393,7 +58021,7 @@ function factory (type, config, load, typed) {
 exports.name = 'rightArithShift';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../type/matrix/utils/algorithm01":637,"../../type/matrix/utils/algorithm02":638,"../../type/matrix/utils/algorithm08":644,"../../type/matrix/utils/algorithm10":646,"../../type/matrix/utils/algorithm11":647,"../../type/matrix/utils/algorithm13":649,"../../type/matrix/utils/algorithm14":650,"../../utils/bignumber/rightArithShift":673,"../../utils/latex":686,"../../utils/number":687,"../matrix/zeros":517,"../relational/equalScalar":534}],473:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../type/matrix/utils/algorithm01":673,"../../type/matrix/utils/algorithm02":674,"../../type/matrix/utils/algorithm08":680,"../../type/matrix/utils/algorithm10":682,"../../type/matrix/utils/algorithm11":683,"../../type/matrix/utils/algorithm13":685,"../../type/matrix/utils/algorithm14":686,"../../utils/bignumber/rightArithShift":709,"../../utils/latex":722,"../../utils/number":723,"../matrix/zeros":553,"../relational/equalScalar":570}],509:[function(require,module,exports){
 'use strict';
 
 var isInteger = require('../../utils/number').isInteger;
@@ -48533,7 +58161,7 @@ function factory (type, config, load, typed) {
 exports.name = 'rightLogShift';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../type/matrix/utils/algorithm01":637,"../../type/matrix/utils/algorithm02":638,"../../type/matrix/utils/algorithm08":644,"../../type/matrix/utils/algorithm10":646,"../../type/matrix/utils/algorithm11":647,"../../type/matrix/utils/algorithm13":649,"../../type/matrix/utils/algorithm14":650,"../../utils/latex":686,"../../utils/number":687,"../matrix/zeros":517,"../relational/equalScalar":534}],474:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../type/matrix/utils/algorithm01":673,"../../type/matrix/utils/algorithm02":674,"../../type/matrix/utils/algorithm08":680,"../../type/matrix/utils/algorithm10":682,"../../type/matrix/utils/algorithm11":683,"../../type/matrix/utils/algorithm13":685,"../../type/matrix/utils/algorithm14":686,"../../utils/latex":722,"../../utils/number":723,"../matrix/zeros":553,"../relational/equalScalar":570}],510:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -48588,7 +58216,7 @@ function factory (type, config, load, typed) {
 exports.name = 'bellNumbers';
 exports.factory = factory;
 
-},{"../arithmetic/add":433,"../utils/isInteger":600,"../utils/isNegative":602,"./stirlingS2":478}],475:[function(require,module,exports){
+},{"../arithmetic/add":469,"../utils/isInteger":636,"../utils/isNegative":638,"./stirlingS2":514}],511:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -48641,7 +58269,7 @@ function factory (type, config, load, typed) {
 exports.name = 'catalan';
 exports.factory = factory;
 
-},{"../arithmetic/add":433,"../arithmetic/divide":438,"../arithmetic/multiply":453,"../probability/combinations":518,"../utils/isInteger":600,"../utils/isNegative":602}],476:[function(require,module,exports){
+},{"../arithmetic/add":469,"../arithmetic/divide":474,"../arithmetic/multiply":489,"../probability/combinations":554,"../utils/isInteger":636,"../utils/isNegative":638}],512:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -48694,7 +58322,7 @@ function factory (type, config, load, typed) {
 exports.name = 'composition';
 exports.factory = factory;
 
-},{"../arithmetic/addScalar":434,"../probability/combinations":518,"../relational/larger":536,"../utils/isInteger":600,"../utils/isPositive":604}],477:[function(require,module,exports){
+},{"../arithmetic/addScalar":470,"../probability/combinations":554,"../relational/larger":572,"../utils/isInteger":636,"../utils/isPositive":640}],513:[function(require,module,exports){
 module.exports = [
   require('./bellNumbers'),
   require('./composition'),
@@ -48702,7 +58330,7 @@ module.exports = [
   require('./catalan')
 ];
 
-},{"./bellNumbers":474,"./catalan":475,"./composition":476,"./stirlingS2":478}],478:[function(require,module,exports){
+},{"./bellNumbers":510,"./catalan":511,"./composition":512,"./stirlingS2":514}],514:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -48773,7 +58401,7 @@ function factory (type, config, load, typed) {
 exports.name = 'stirlingS2';
 exports.factory = factory;
 
-},{"../arithmetic/add":433,"../arithmetic/divide":438,"../arithmetic/multiply":453,"../arithmetic/pow":457,"../arithmetic/subtract":462,"../probability/combinations":518,"../probability/factorial":520,"../relational/larger":536,"../utils/isInteger":600,"../utils/isNegative":602}],479:[function(require,module,exports){
+},{"../arithmetic/add":469,"../arithmetic/divide":474,"../arithmetic/multiply":489,"../arithmetic/pow":493,"../arithmetic/subtract":498,"../probability/combinations":554,"../probability/factorial":556,"../relational/larger":572,"../utils/isInteger":636,"../utils/isNegative":638}],515:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -48834,7 +58462,7 @@ function factory (type, config, load, typed) {
 exports.name = 'arg';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677}],480:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713}],516:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -48891,7 +58519,7 @@ function factory (type, config, load, typed) {
 exports.name = 'conj';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677}],481:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713}],517:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -48950,7 +58578,7 @@ function factory (type, config, load, typed) {
 exports.name = 'im';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677}],482:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713}],518:[function(require,module,exports){
 module.exports = [
   require('./arg'),
   require('./conj'),
@@ -48958,7 +58586,7 @@ module.exports = [
   require('./re')
 ];
 
-},{"./arg":479,"./conj":480,"./im":481,"./re":483}],483:[function(require,module,exports){
+},{"./arg":515,"./conj":516,"./im":517,"./re":519}],519:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -49017,7 +58645,7 @@ function factory (type, config, load, typed) {
 exports.name = 're';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677}],484:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713}],520:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -49334,13 +58962,13 @@ function factory (type, config, load, typed) {
 exports.name = 'distance';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../arithmetic/abs":432,"../arithmetic/addScalar":434,"../arithmetic/divideScalar":439,"../arithmetic/multiplyScalar":454,"../arithmetic/sqrt":460,"../arithmetic/subtract":462,"../arithmetic/unaryMinus":463}],485:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../arithmetic/abs":468,"../arithmetic/addScalar":470,"../arithmetic/divideScalar":475,"../arithmetic/multiplyScalar":490,"../arithmetic/sqrt":496,"../arithmetic/subtract":498,"../arithmetic/unaryMinus":499}],521:[function(require,module,exports){
 module.exports = [
   require('./intersect'),
   require('./distance')
 ];
 
-},{"./distance":484,"./intersect":486}],486:[function(require,module,exports){
+},{"./distance":520,"./intersect":522}],522:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -49516,7 +59144,7 @@ function factory (type, config, load, typed) {
 exports.name = 'intersect';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../arithmetic/abs":432,"../arithmetic/add":433,"../arithmetic/addScalar":434,"../arithmetic/divideScalar":439,"../arithmetic/multiply":453,"../arithmetic/multiplyScalar":454,"../arithmetic/subtract":462,"../relational/equalScalar":534,"../relational/smaller":538}],487:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../arithmetic/abs":468,"../arithmetic/add":469,"../arithmetic/addScalar":470,"../arithmetic/divideScalar":475,"../arithmetic/multiply":489,"../arithmetic/multiplyScalar":490,"../arithmetic/subtract":498,"../relational/equalScalar":570,"../relational/smaller":574}],523:[function(require,module,exports){
 module.exports = [
   require('./algebra'),
   require('./arithmetic'),
@@ -49537,7 +59165,7 @@ module.exports = [
   require('./utils')
 ];
 
-},{"./algebra":403,"./arithmetic":448,"./bitwise":470,"./combinatorics":477,"./complex":482,"./geometry":485,"./logical":489,"./matrix":502,"./probability":522,"./relational":535,"./set":541,"./special":553,"./statistics":554,"./string":568,"./trigonometry":589,"./unit":596,"./utils":599}],488:[function(require,module,exports){
+},{"./algebra":439,"./arithmetic":484,"./bitwise":506,"./combinatorics":513,"./complex":518,"./geometry":521,"./logical":525,"./matrix":538,"./probability":558,"./relational":571,"./set":577,"./special":589,"./statistics":590,"./string":604,"./trigonometry":625,"./unit":632,"./utils":635}],524:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -49688,7 +59316,7 @@ function factory (type, config, load, typed) {
 exports.name = 'and';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../type/matrix/utils/algorithm02":638,"../../type/matrix/utils/algorithm06":642,"../../type/matrix/utils/algorithm11":647,"../../type/matrix/utils/algorithm13":649,"../../type/matrix/utils/algorithm14":650,"../../utils/latex":686,"../matrix/zeros":517,"../utils/isZero":606,"./not":490}],489:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../type/matrix/utils/algorithm02":674,"../../type/matrix/utils/algorithm06":678,"../../type/matrix/utils/algorithm11":683,"../../type/matrix/utils/algorithm13":685,"../../type/matrix/utils/algorithm14":686,"../../utils/latex":722,"../matrix/zeros":553,"../utils/isZero":642,"./not":526}],525:[function(require,module,exports){
 module.exports = [
   require('./and'),
   require('./not'),
@@ -49696,7 +59324,7 @@ module.exports = [
   require('./xor')
 ];
 
-},{"./and":488,"./not":490,"./or":491,"./xor":492}],490:[function(require,module,exports){
+},{"./and":524,"./not":526,"./or":527,"./xor":528}],526:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -49761,7 +59389,7 @@ function factory (type, config, load, typed) {
 exports.name = 'not';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677,"../../utils/latex":686}],491:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713,"../../utils/latex":722}],527:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -49889,7 +59517,7 @@ function factory (type, config, load, typed) {
 exports.name = 'or';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../type/matrix/utils/algorithm03":639,"../../type/matrix/utils/algorithm05":641,"../../type/matrix/utils/algorithm12":648,"../../type/matrix/utils/algorithm13":649,"../../type/matrix/utils/algorithm14":650,"../../utils/latex":686}],492:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../type/matrix/utils/algorithm03":675,"../../type/matrix/utils/algorithm05":677,"../../type/matrix/utils/algorithm12":684,"../../type/matrix/utils/algorithm13":685,"../../type/matrix/utils/algorithm14":686,"../../utils/latex":722}],528:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -50017,7 +59645,7 @@ function factory (type, config, load, typed) {
 exports.name = 'xor';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../type/matrix/utils/algorithm03":639,"../../type/matrix/utils/algorithm07":643,"../../type/matrix/utils/algorithm12":648,"../../type/matrix/utils/algorithm13":649,"../../type/matrix/utils/algorithm14":650,"../../utils/latex":686}],493:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../type/matrix/utils/algorithm03":675,"../../type/matrix/utils/algorithm07":679,"../../type/matrix/utils/algorithm12":684,"../../type/matrix/utils/algorithm13":685,"../../type/matrix/utils/algorithm14":686,"../../utils/latex":722}],529:[function(require,module,exports){
 'use strict';
 
 var clone = require('../../utils/object').clone;
@@ -50163,7 +59791,7 @@ function _concat(a, b, concatDim, dim) {
 exports.name = 'concat';
 exports.factory = factory;
 
-},{"../../error/DimensionError":157,"../../error/IndexError":158,"../../type/matrix/function/matrix":634,"../../utils/array":662,"../../utils/number":687,"../../utils/object":688}],494:[function(require,module,exports){
+},{"../../error/DimensionError":193,"../../error/IndexError":194,"../../type/matrix/function/matrix":670,"../../utils/array":698,"../../utils/number":723,"../../utils/object":724}],530:[function(require,module,exports){
 'use strict';
 
 var array = require('../../utils/array');
@@ -50266,7 +59894,7 @@ function factory (type, config, load, typed) {
 exports.name = 'cross';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../utils/array":662,"../arithmetic/multiply":453,"../arithmetic/subtract":462}],495:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../utils/array":698,"../arithmetic/multiply":489,"../arithmetic/subtract":498}],531:[function(require,module,exports){
 'use strict';
 
 var util = require('../../utils/index');
@@ -50436,7 +60064,7 @@ exports.name = 'det';
 exports.factory = factory;
 
 
-},{"../../type/matrix/function/matrix":634,"../../utils/index":685,"../arithmetic/add":433,"../arithmetic/multiply":453,"../arithmetic/subtract":462,"../arithmetic/unaryMinus":463}],496:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../utils/index":721,"../arithmetic/add":469,"../arithmetic/multiply":489,"../arithmetic/subtract":498,"../arithmetic/unaryMinus":499}],532:[function(require,module,exports){
 'use strict';
 
 var array     = require('../../utils/array');
@@ -50608,7 +60236,7 @@ function factory (type, config, load, typed) {
 exports.name = 'diag';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../utils/array":662,"../../utils/number":687,"../../utils/object":688}],497:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../utils/array":698,"../../utils/number":723,"../../utils/object":724}],533:[function(require,module,exports){
 'use strict';
 
 var size = require('../../utils/array').size;
@@ -50689,7 +60317,7 @@ function factory (type, config, load, typed) {
 exports.name = 'dot';
 exports.factory = factory;
 
-},{"../../utils/array":662,"../arithmetic/add":433,"../arithmetic/multiply":453}],498:[function(require,module,exports){
+},{"../../utils/array":698,"../arithmetic/add":469,"../arithmetic/multiply":489}],534:[function(require,module,exports){
 'use strict';
 
 var array = require('../../utils/array');
@@ -50835,7 +60463,7 @@ function factory (type, config, load, typed) {
 exports.name = 'eye';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../utils/array":662,"../../utils/number":687}],499:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../utils/array":698,"../../utils/number":723}],535:[function(require,module,exports){
 'use strict';
 
 var filter = require('../../utils/array').filter;
@@ -50921,7 +60549,7 @@ function _filterCallback (x, callback) {
 exports.name = 'filter';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../utils/array":662,"../../utils/function":684}],500:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../utils/array":698,"../../utils/function":720}],536:[function(require,module,exports){
 'use strict';
 
 var clone = require('../../utils/object').clone;
@@ -50968,7 +60596,7 @@ function factory (type, config, load, typed) {
 exports.name = 'flatten';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../utils/array":662,"../../utils/object":688}],501:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../utils/array":698,"../../utils/object":724}],537:[function(require,module,exports){
 'use strict';
 
 var maxArgumentCount = require('../../utils/function').maxArgumentCount;
@@ -51047,7 +60675,7 @@ function _forEach (array, callback) {
 exports.name = 'forEach';
 exports.factory = factory;
 
-},{"../../utils/array":662,"../../utils/function":684}],502:[function(require,module,exports){
+},{"../../utils/array":698,"../../utils/function":720}],538:[function(require,module,exports){
 module.exports = [
   require('./concat'),
   require('./cross'),
@@ -51075,7 +60703,7 @@ module.exports = [
   require('./zeros')
 ];
 
-},{"./concat":493,"./cross":494,"./det":495,"./diag":496,"./dot":497,"./eye":498,"./filter":499,"./flatten":500,"./forEach":501,"./inv":503,"./kron":504,"./map":505,"./ones":506,"./partitionSelect":507,"./range":508,"./reshape":509,"./resize":510,"./size":511,"./sort":512,"./squeeze":513,"./subset":514,"./trace":515,"./transpose":516,"./zeros":517}],503:[function(require,module,exports){
+},{"./concat":529,"./cross":530,"./det":531,"./diag":532,"./dot":533,"./eye":534,"./filter":535,"./flatten":536,"./forEach":537,"./inv":539,"./kron":540,"./map":541,"./ones":542,"./partitionSelect":543,"./range":544,"./reshape":545,"./resize":546,"./size":547,"./sort":548,"./squeeze":549,"./subset":550,"./trace":551,"./transpose":552,"./zeros":553}],539:[function(require,module,exports){
 'use strict';
 
 var util = require('../../utils/index');
@@ -51284,7 +60912,7 @@ function factory (type, config, load, typed) {
 exports.name = 'inv';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../utils/index":685,"../arithmetic/addScalar":434,"../arithmetic/divideScalar":439,"../arithmetic/multiply":453,"../arithmetic/unaryMinus":463,"../matrix/det":495,"./eye":498}],504:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../utils/index":721,"../arithmetic/addScalar":470,"../arithmetic/divideScalar":475,"../arithmetic/multiply":489,"../arithmetic/unaryMinus":499,"../matrix/det":531,"./eye":534}],540:[function(require,module,exports){
 'use strict';
 
 var size = require('../../utils/array').size;
@@ -51376,7 +61004,7 @@ function factory(type, config, load, typed) {
 exports.name = 'kron';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../utils/array":662,"../arithmetic/multiplyScalar":454}],505:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../utils/array":698,"../arithmetic/multiplyScalar":490}],541:[function(require,module,exports){
 'use strict';
 
 var maxArgumentCount = require('../../utils/function').maxArgumentCount;
@@ -51457,7 +61085,7 @@ function _map (array, callback) {
 exports.name = 'map';
 exports.factory = factory;
 
-},{"../../utils/function":684}],506:[function(require,module,exports){
+},{"../../utils/function":720}],542:[function(require,module,exports){
 'use strict';
 
 var isInteger = require('../../utils/number').isInteger;
@@ -51593,7 +61221,7 @@ function factory (type, config, load, typed) {
 exports.name = 'ones';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../utils/array":662,"../../utils/number":687}],507:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../utils/array":698,"../../utils/number":723}],543:[function(require,module,exports){
 'use strict';
 
 var isInteger = require('../../utils/number').isInteger;
@@ -51731,7 +61359,7 @@ function factory (type, config, load, typed) {
 exports.name = 'partitionSelect';
 exports.factory = factory;
 
-},{"../../utils/number":687,"../relational/compare":530}],508:[function(require,module,exports){
+},{"../../utils/number":723,"../relational/compare":566}],544:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -52012,7 +61640,7 @@ function factory (type, config, load, typed) {
 exports.name = 'range';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634}],509:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670}],545:[function(require,module,exports){
 'use strict';
 
 var DimensionError = require('../../error/DimensionError');
@@ -52088,7 +61716,7 @@ function factory (type, config, load, typed) {
 exports.name = 'reshape';
 exports.factory = factory;
 
-},{"../../error/DimensionError":157,"../../type/matrix/function/matrix":634,"../../utils/array":662,"../../utils/number":687}],510:[function(require,module,exports){
+},{"../../error/DimensionError":193,"../../type/matrix/function/matrix":670,"../../utils/array":698,"../../utils/number":723}],546:[function(require,module,exports){
 'use strict';
 
 var DimensionError = require('../../error/DimensionError');
@@ -52228,7 +61856,7 @@ function factory (type, config, load, typed) {
 exports.name = 'resize';
 exports.factory = factory;
 
-},{"../../error/ArgumentsError":156,"../../error/DimensionError":157,"../../type/matrix/function/matrix":634,"../../utils/array":662,"../../utils/number":687,"../../utils/object":688,"../../utils/string":689}],511:[function(require,module,exports){
+},{"../../error/ArgumentsError":192,"../../error/DimensionError":193,"../../type/matrix/function/matrix":670,"../../utils/array":698,"../../utils/number":723,"../../utils/object":724,"../../utils/string":725}],547:[function(require,module,exports){
 'use strict';
 
 var array = require('../../utils/array');
@@ -52285,7 +61913,7 @@ function factory (type, config, load, typed) {
 exports.name = 'size';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../utils/array":662}],512:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../utils/array":698}],548:[function(require,module,exports){
 'use strict';
 
 var size = require('../../utils/array').size;
@@ -52413,7 +62041,7 @@ function factory (type, config, load, typed) {
 exports.name = 'sort';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../utils/array":662,"../relational/compare":530,"../relational/compareNatural":531}],513:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../utils/array":698,"../relational/compare":566,"../relational/compareNatural":567}],549:[function(require,module,exports){
 'use strict';
 
 var object = require('../../utils/object');
@@ -52476,7 +62104,7 @@ function factory (type, config, load, typed) {
 exports.name = 'squeeze';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../utils/array":662,"../../utils/object":688}],514:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../utils/array":698,"../../utils/object":724}],550:[function(require,module,exports){
 'use strict';
 
 var clone = require('../../utils/object').clone;
@@ -52711,7 +62339,7 @@ function _setObjectProperty (object, index, replacement) {
 exports.name = 'subset';
 exports.factory = factory;
 
-},{"../../error/DimensionError":157,"../../type/matrix/function/matrix":634,"../../utils/array":662,"../../utils/customs":682,"../../utils/object":688}],515:[function(require,module,exports){
+},{"../../error/DimensionError":193,"../../type/matrix/function/matrix":670,"../../utils/array":698,"../../utils/customs":718,"../../utils/object":724}],551:[function(require,module,exports){
 'use strict';
 
 var clone = require('../../utils/object').clone;
@@ -52849,7 +62477,7 @@ function factory (type, config, load, typed) {
 exports.name = 'trace';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../utils/object":688,"../../utils/string":689,"../arithmetic/add":433}],516:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../utils/object":724,"../../utils/string":725,"../arithmetic/add":469}],552:[function(require,module,exports){
 'use strict';
 
 var clone = require('../../utils/object').clone;
@@ -53029,7 +62657,7 @@ function factory (type, config, load, typed) {
 exports.name = 'transpose';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../utils/latex":686,"../../utils/object":688,"../../utils/string":689}],517:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../utils/latex":722,"../../utils/object":724,"../../utils/string":725}],553:[function(require,module,exports){
 'use strict';
 
 var isInteger = require('../../utils/number').isInteger;
@@ -53165,7 +62793,7 @@ function factory (type, config, load, typed) {
 exports.name = 'zeros';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../utils/array":662,"../../utils/number":687}],518:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../utils/array":698,"../../utils/number":723}],554:[function(require,module,exports){
 'use strict';
 
 var isInteger = require('../../utils/number').isInteger;
@@ -53258,7 +62886,7 @@ function isPositiveInteger(n) {
 exports.name = 'combinations';
 exports.factory = factory;
 
-},{"../../utils/number":687}],519:[function(require,module,exports){
+},{"../../utils/number":723}],555:[function(require,module,exports){
 'use strict';
 
 var ArgumentsError = require('../../error/ArgumentsError');
@@ -53559,7 +63187,7 @@ function factory (type, config, load, typed, math) {
 exports.name = 'distribution';
 exports.factory = factory;
 
-},{"../../error/ArgumentsError":156,"../../type/matrix/function/matrix":634,"../../utils/array":662,"../../utils/collection/isCollection":678,"../../utils/number":687,"./seededRNG":529}],520:[function(require,module,exports){
+},{"../../error/ArgumentsError":192,"../../type/matrix/function/matrix":670,"../../utils/array":698,"../../utils/collection/isCollection":714,"../../utils/number":723,"./seededRNG":565}],556:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -53622,7 +63250,7 @@ function factory (type, config, load, typed) {
 exports.name = 'factorial';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677,"../../utils/latex":686,"./gamma":521}],521:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713,"../../utils/latex":722,"./gamma":557}],557:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -53826,7 +63454,7 @@ var p = [
 exports.name = 'gamma';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677,"../../utils/number":687,"../arithmetic/multiply":453,"../arithmetic/pow":457}],522:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713,"../../utils/number":723,"../arithmetic/multiply":489,"../arithmetic/pow":493}],558:[function(require,module,exports){
 module.exports = [
   //require('./distribution'), // TODO: rethink math.distribution
   require('./combinations'),
@@ -53840,7 +63468,7 @@ module.exports = [
   require('./randomInt')
 ];
 
-},{"./combinations":518,"./factorial":520,"./gamma":521,"./kldivergence":523,"./multinomial":524,"./permutations":525,"./pickRandom":526,"./random":527,"./randomInt":528}],523:[function(require,module,exports){
+},{"./combinations":554,"./factorial":556,"./gamma":557,"./kldivergence":559,"./multinomial":560,"./permutations":561,"./pickRandom":562,"./random":563,"./randomInt":564}],559:[function(require,module,exports){
 'use strict';
 
 
@@ -53933,7 +63561,7 @@ exports.name = 'kldivergence';
 exports.factory = factory;
  
 
-},{"../../type/matrix/function/matrix":634,"../arithmetic/divide":438,"../arithmetic/dotDivide":440,"../arithmetic/log":450,"../arithmetic/multiply":453,"../statistics/sum":564,"../utils/isNumeric":603}],524:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../arithmetic/divide":474,"../arithmetic/dotDivide":476,"../arithmetic/log":486,"../arithmetic/multiply":489,"../statistics/sum":600,"../utils/isNumeric":639}],560:[function(require,module,exports){
 'use strict';
 
 var deepForEach = require('../../utils/collection/deepForEach');
@@ -53988,7 +63616,7 @@ function factory (type, config, load, typed) {
 exports.name = 'multinomial';
 exports.factory = factory;
 
-},{"../../utils/collection/deepForEach":676,"../arithmetic/add":433,"../arithmetic/divide":438,"../arithmetic/multiply":453,"../probability/factorial":520,"../utils/isInteger":600,"../utils/isPositive":604}],525:[function(require,module,exports){
+},{"../../utils/collection/deepForEach":712,"../arithmetic/add":469,"../arithmetic/divide":474,"../arithmetic/multiply":489,"../probability/factorial":556,"../utils/isInteger":636,"../utils/isPositive":640}],561:[function(require,module,exports){
 'use strict';
 
 var isInteger = require('../../utils/number').isInteger;
@@ -54084,7 +63712,7 @@ function isPositiveInteger(n) {
 exports.name = 'permutations';
 exports.factory = factory;
 
-},{"../../utils/number":687,"./factorial":520}],526:[function(require,module,exports){
+},{"../../utils/number":723,"./factorial":556}],562:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -54131,7 +63759,7 @@ function factory (type, config, load, typed) {
 exports.name = 'pickRandom';
 exports.factory = factory;
 
-},{"./distribution":519}],527:[function(require,module,exports){
+},{"./distribution":555}],563:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -54178,7 +63806,7 @@ function factory (type, config, load, typed) {
 exports.name = 'random';
 exports.factory = factory;
 
-},{"./distribution":519}],528:[function(require,module,exports){
+},{"./distribution":555}],564:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -54223,7 +63851,7 @@ function factory (type, config, load, typed) {
 exports.name = 'randomInt';
 exports.factory = factory;
 
-},{"./distribution":519}],529:[function(require,module,exports){
+},{"./distribution":555}],565:[function(require,module,exports){
 'use strict';
 
 var seedrandom = require('seed-random');
@@ -54267,7 +63895,7 @@ function factory (type, config, load, typed, math) {
 exports.factory = factory;
 exports.math = true;
 
-},{"seed-random":999}],530:[function(require,module,exports){
+},{"seed-random":1035}],566:[function(require,module,exports){
 'use strict';
 
 var nearlyEqual = require('../../utils/number').nearlyEqual;
@@ -54417,7 +64045,7 @@ function factory (type, config, load, typed) {
 exports.name = 'compare';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../type/matrix/utils/algorithm03":639,"../../type/matrix/utils/algorithm05":641,"../../type/matrix/utils/algorithm12":648,"../../type/matrix/utils/algorithm13":649,"../../type/matrix/utils/algorithm14":650,"../../utils/bignumber/nearlyEqual":672,"../../utils/number":687}],531:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../type/matrix/utils/algorithm03":675,"../../type/matrix/utils/algorithm05":677,"../../type/matrix/utils/algorithm12":684,"../../type/matrix/utils/algorithm13":685,"../../type/matrix/utils/algorithm14":686,"../../utils/bignumber/nearlyEqual":708,"../../utils/number":723}],567:[function(require,module,exports){
 'use strict';
 
 var naturalSort = require('javascript-natural-sort');
@@ -54686,7 +64314,7 @@ function compareComplexNumbers (x, y) {
 exports.name = 'compareNatural';
 exports.factory = factory;
 
-},{"../utils/typeof":607,"./compare":530,"javascript-natural-sort":148}],532:[function(require,module,exports){
+},{"../utils/typeof":643,"./compare":566,"javascript-natural-sort":184}],568:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -54771,7 +64399,7 @@ function factory (type, config, load, typed) {
 exports.name = 'deepEqual';
 exports.factory = factory;
 
-},{"./equal":533}],533:[function(require,module,exports){
+},{"./equal":569}],569:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -54911,7 +64539,7 @@ function factory (type, config, load, typed) {
 exports.name = 'equal';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../type/matrix/utils/algorithm03":639,"../../type/matrix/utils/algorithm07":643,"../../type/matrix/utils/algorithm12":648,"../../type/matrix/utils/algorithm13":649,"../../type/matrix/utils/algorithm14":650,"../../utils/latex":686,"./equalScalar":534}],534:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../type/matrix/utils/algorithm03":675,"../../type/matrix/utils/algorithm07":679,"../../type/matrix/utils/algorithm12":684,"../../type/matrix/utils/algorithm13":685,"../../type/matrix/utils/algorithm14":686,"../../utils/latex":722,"./equalScalar":570}],570:[function(require,module,exports){
 'use strict';
 
 var nearlyEqual = require('../../utils/number').nearlyEqual;
@@ -54962,7 +64590,7 @@ function factory (type, config, load, typed) {
 
 exports.factory = factory;
 
-},{"../../utils/bignumber/nearlyEqual":672,"../../utils/number":687}],535:[function(require,module,exports){
+},{"../../utils/bignumber/nearlyEqual":708,"../../utils/number":723}],571:[function(require,module,exports){
 module.exports = [
   require('./compare'),
   require('./compareNatural'),
@@ -54975,7 +64603,7 @@ module.exports = [
   require('./unequal')
 ];
 
-},{"./compare":530,"./compareNatural":531,"./deepEqual":532,"./equal":533,"./larger":536,"./largerEq":537,"./smaller":538,"./smallerEq":539,"./unequal":540}],536:[function(require,module,exports){
+},{"./compare":566,"./compareNatural":567,"./deepEqual":568,"./equal":569,"./larger":572,"./largerEq":573,"./smaller":574,"./smallerEq":575,"./unequal":576}],572:[function(require,module,exports){
 'use strict';
 
 var nearlyEqual = require('../../utils/number').nearlyEqual;
@@ -55121,7 +64749,7 @@ function factory (type, config, load, typed) {
 exports.name = 'larger';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../type/matrix/utils/algorithm03":639,"../../type/matrix/utils/algorithm07":643,"../../type/matrix/utils/algorithm12":648,"../../type/matrix/utils/algorithm13":649,"../../type/matrix/utils/algorithm14":650,"../../utils/bignumber/nearlyEqual":672,"../../utils/latex":686,"../../utils/number":687}],537:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../type/matrix/utils/algorithm03":675,"../../type/matrix/utils/algorithm07":679,"../../type/matrix/utils/algorithm12":684,"../../type/matrix/utils/algorithm13":685,"../../type/matrix/utils/algorithm14":686,"../../utils/bignumber/nearlyEqual":708,"../../utils/latex":722,"../../utils/number":723}],573:[function(require,module,exports){
 'use strict';
 
 var nearlyEqual = require('../../utils/number').nearlyEqual;
@@ -55263,7 +64891,7 @@ function factory (type, config, load, typed) {
 exports.name = 'largerEq';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../type/matrix/utils/algorithm03":639,"../../type/matrix/utils/algorithm07":643,"../../type/matrix/utils/algorithm12":648,"../../type/matrix/utils/algorithm13":649,"../../type/matrix/utils/algorithm14":650,"../../utils/bignumber/nearlyEqual":672,"../../utils/latex":686,"../../utils/number":687}],538:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../type/matrix/utils/algorithm03":675,"../../type/matrix/utils/algorithm07":679,"../../type/matrix/utils/algorithm12":684,"../../type/matrix/utils/algorithm13":685,"../../type/matrix/utils/algorithm14":686,"../../utils/bignumber/nearlyEqual":708,"../../utils/latex":722,"../../utils/number":723}],574:[function(require,module,exports){
 'use strict';
 
 var nearlyEqual = require('../../utils/number').nearlyEqual;
@@ -55409,7 +65037,7 @@ function factory (type, config, load, typed) {
 exports.name = 'smaller';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../type/matrix/utils/algorithm03":639,"../../type/matrix/utils/algorithm07":643,"../../type/matrix/utils/algorithm12":648,"../../type/matrix/utils/algorithm13":649,"../../type/matrix/utils/algorithm14":650,"../../utils/bignumber/nearlyEqual":672,"../../utils/latex":686,"../../utils/number":687}],539:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../type/matrix/utils/algorithm03":675,"../../type/matrix/utils/algorithm07":679,"../../type/matrix/utils/algorithm12":684,"../../type/matrix/utils/algorithm13":685,"../../type/matrix/utils/algorithm14":686,"../../utils/bignumber/nearlyEqual":708,"../../utils/latex":722,"../../utils/number":723}],575:[function(require,module,exports){
 'use strict';
 
 var nearlyEqual = require('../../utils/number').nearlyEqual;
@@ -55551,7 +65179,7 @@ function factory (type, config, load, typed) {
 exports.name = 'smallerEq';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../type/matrix/utils/algorithm03":639,"../../type/matrix/utils/algorithm07":643,"../../type/matrix/utils/algorithm12":648,"../../type/matrix/utils/algorithm13":649,"../../type/matrix/utils/algorithm14":650,"../../utils/bignumber/nearlyEqual":672,"../../utils/latex":686,"../../utils/number":687}],540:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../type/matrix/utils/algorithm03":675,"../../type/matrix/utils/algorithm07":679,"../../type/matrix/utils/algorithm12":684,"../../type/matrix/utils/algorithm13":685,"../../type/matrix/utils/algorithm14":686,"../../utils/bignumber/nearlyEqual":708,"../../utils/latex":722,"../../utils/number":723}],576:[function(require,module,exports){
 'use strict';
 
 var nearlyEqual = require('../../utils/number').nearlyEqual;
@@ -55722,7 +65350,7 @@ function factory (type, config, load, typed) {
 exports.name = 'unequal';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../type/matrix/utils/algorithm03":639,"../../type/matrix/utils/algorithm07":643,"../../type/matrix/utils/algorithm12":648,"../../type/matrix/utils/algorithm13":649,"../../type/matrix/utils/algorithm14":650,"../../utils/bignumber/nearlyEqual":672,"../../utils/latex":686,"../../utils/number":687}],541:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../type/matrix/utils/algorithm03":675,"../../type/matrix/utils/algorithm07":679,"../../type/matrix/utils/algorithm12":684,"../../type/matrix/utils/algorithm13":685,"../../type/matrix/utils/algorithm14":686,"../../utils/bignumber/nearlyEqual":708,"../../utils/latex":722,"../../utils/number":723}],577:[function(require,module,exports){
 module.exports = [
   require('./setCartesian'),
   require('./setDifference'),
@@ -55736,7 +65364,7 @@ module.exports = [
   require('./setUnion')
 ];
 
-},{"./setCartesian":542,"./setDifference":543,"./setDistinct":544,"./setIntersect":545,"./setIsSubset":546,"./setMultiplicity":547,"./setPowerset":548,"./setSize":549,"./setSymDifference":550,"./setUnion":551}],542:[function(require,module,exports){
+},{"./setCartesian":578,"./setDifference":579,"./setDistinct":580,"./setIntersect":581,"./setIsSubset":582,"./setMultiplicity":583,"./setPowerset":584,"./setSize":585,"./setSymDifference":586,"./setUnion":587}],578:[function(require,module,exports){
 'use strict';
 
 var flatten = require('../../utils/array').flatten;
@@ -55798,7 +65426,7 @@ function factory (type, config, load, typed) {
 exports.name = 'setCartesian';
 exports.factory = factory;
 
-},{"../../type/matrix/DenseMatrix":625,"../../type/matrix/MatrixIndex":629,"../../utils/array":662,"../matrix/size":511,"../matrix/subset":514,"../relational/compareNatural":531}],543:[function(require,module,exports){
+},{"../../type/matrix/DenseMatrix":661,"../../type/matrix/MatrixIndex":665,"../../utils/array":698,"../matrix/size":547,"../matrix/subset":550,"../relational/compareNatural":567}],579:[function(require,module,exports){
 'use strict';
 
 var flatten = require('../../utils/array').flatten;
@@ -55874,7 +65502,7 @@ function factory (type, config, load, typed) {
 exports.name = 'setDifference';
 exports.factory = factory;
 
-},{"../../type/matrix/DenseMatrix":625,"../../type/matrix/MatrixIndex":629,"../../utils/array":662,"../matrix/size":511,"../matrix/subset":514,"../relational/compareNatural":531}],544:[function(require,module,exports){
+},{"../../type/matrix/DenseMatrix":661,"../../type/matrix/MatrixIndex":665,"../../utils/array":698,"../matrix/size":547,"../matrix/subset":550,"../relational/compareNatural":567}],580:[function(require,module,exports){
 'use strict';
 
 var flatten = require('../../utils/array').flatten;
@@ -55935,7 +65563,7 @@ function factory (type, config, load, typed) {
 exports.name = 'setDistinct';
 exports.factory = factory;
 
-},{"../../type/matrix/DenseMatrix":625,"../../type/matrix/MatrixIndex":629,"../../utils/array":662,"../matrix/size":511,"../matrix/subset":514,"../relational/compareNatural":531}],545:[function(require,module,exports){
+},{"../../type/matrix/DenseMatrix":661,"../../type/matrix/MatrixIndex":665,"../../utils/array":698,"../matrix/size":547,"../matrix/subset":550,"../relational/compareNatural":567}],581:[function(require,module,exports){
 'use strict';
 
 var flatten = require('../../utils/array').flatten;
@@ -56003,7 +65631,7 @@ function factory (type, config, load, typed) {
 exports.name = 'setIntersect';
 exports.factory = factory;
 
-},{"../../type/matrix/DenseMatrix":625,"../../type/matrix/MatrixIndex":629,"../../utils/array":662,"../matrix/size":511,"../matrix/subset":514,"../relational/compareNatural":531}],546:[function(require,module,exports){
+},{"../../type/matrix/DenseMatrix":661,"../../type/matrix/MatrixIndex":665,"../../utils/array":698,"../matrix/size":547,"../matrix/subset":550,"../relational/compareNatural":567}],582:[function(require,module,exports){
 'use strict';
 
 var flatten = require('../../utils/array').flatten;
@@ -56069,7 +65697,7 @@ function factory (type, config, load, typed) {
 exports.name = 'setIsSubset';
 exports.factory = factory;
 
-},{"../../type/matrix/MatrixIndex":629,"../../utils/array":662,"../matrix/size":511,"../matrix/subset":514,"../relational/compareNatural":531}],547:[function(require,module,exports){
+},{"../../type/matrix/MatrixIndex":665,"../../utils/array":698,"../matrix/size":547,"../matrix/subset":550,"../relational/compareNatural":567}],583:[function(require,module,exports){
 'use strict';
 
 var flatten = require('../../utils/array').flatten;
@@ -56123,7 +65751,7 @@ function factory (type, config, load, typed) {
 exports.name = 'setMultiplicity';
 exports.factory = factory;
 
-},{"../../type/matrix/MatrixIndex":629,"../../utils/array":662,"../matrix/size":511,"../matrix/subset":514,"../relational/compareNatural":531}],548:[function(require,module,exports){
+},{"../../type/matrix/MatrixIndex":665,"../../utils/array":698,"../matrix/size":547,"../matrix/subset":550,"../relational/compareNatural":567}],584:[function(require,module,exports){
 'use strict';
 
 var flatten = require('../../utils/array').flatten;
@@ -56202,7 +65830,7 @@ function factory (type, config, load, typed) {
 exports.name = 'setPowerset';
 exports.factory = factory;
 
-},{"../../type/matrix/MatrixIndex":629,"../../utils/array":662,"../matrix/size":511,"../matrix/subset":514,"../relational/compareNatural":531}],549:[function(require,module,exports){
+},{"../../type/matrix/MatrixIndex":665,"../../utils/array":698,"../matrix/size":547,"../matrix/subset":550,"../relational/compareNatural":567}],585:[function(require,module,exports){
 'use strict';
 
 var flatten = require('../../utils/array').flatten;
@@ -56258,7 +65886,7 @@ function factory (type, config, load, typed) {
 exports.name = 'setSize';
 exports.factory = factory;
 
-},{"../../utils/array":662,"../relational/compareNatural":531}],550:[function(require,module,exports){
+},{"../../utils/array":698,"../relational/compareNatural":567}],586:[function(require,module,exports){
 'use strict';
 
 var flatten = require('../../utils/array').flatten;
@@ -56311,7 +65939,7 @@ function factory (type, config, load, typed) {
 exports.name = 'setSymDifference';
 exports.factory = factory;
 
-},{"../../type/matrix/MatrixIndex":629,"../../utils/array":662,"../matrix/concat":493,"../matrix/size":511,"../matrix/subset":514,"../set/setDifference":543}],551:[function(require,module,exports){
+},{"../../type/matrix/MatrixIndex":665,"../../utils/array":698,"../matrix/concat":529,"../matrix/size":547,"../matrix/subset":550,"../set/setDifference":579}],587:[function(require,module,exports){
 'use strict';
 
 var flatten = require('../../utils/array').flatten;
@@ -56365,7 +65993,7 @@ function factory (type, config, load, typed) {
 exports.name = 'setUnion';
 exports.factory = factory;
 
-},{"../../type/matrix/MatrixIndex":629,"../../utils/array":662,"../matrix/concat":493,"../matrix/size":511,"../matrix/subset":514,"../set/setIntersect":545,"../set/setSymDifference":550}],552:[function(require,module,exports){
+},{"../../type/matrix/MatrixIndex":665,"../../utils/array":698,"../matrix/concat":529,"../matrix/size":547,"../matrix/subset":550,"../set/setIntersect":581,"../set/setSymDifference":586}],588:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -56564,12 +66192,12 @@ var MAX_NUM = Math.pow(2, 53);
 exports.name = 'erf';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677,"../../utils/number":687}],553:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713,"../../utils/number":723}],589:[function(require,module,exports){
 module.exports = [
   require('./erf')
 ];
 
-},{"./erf":552}],554:[function(require,module,exports){
+},{"./erf":588}],590:[function(require,module,exports){
 module.exports = [
   require('./mad'),
   require('./max'),
@@ -56584,7 +66212,7 @@ module.exports = [
   require('./var')
 ];
 
-},{"./mad":555,"./max":556,"./mean":557,"./median":558,"./min":559,"./mode":560,"./prod":561,"./quantileSeq":562,"./std":563,"./sum":564,"./var":566}],555:[function(require,module,exports){
+},{"./mad":591,"./max":592,"./mean":593,"./median":594,"./min":595,"./mode":596,"./prod":597,"./quantileSeq":598,"./std":599,"./sum":600,"./var":602}],591:[function(require,module,exports){
 'use strict';
 
 var flatten = require('../../utils/array').flatten;
@@ -56661,7 +66289,7 @@ function factory (type, config, load, typed) {
 exports.name = 'mad';
 exports.factory = factory;
 
-},{"../../utils/array":662,"../arithmetic/abs":432,"../arithmetic/subtract":462,"../matrix/map":505,"../statistics/median":558,"./utils/improveErrorMessage":565}],556:[function(require,module,exports){
+},{"../../utils/array":698,"../arithmetic/abs":468,"../arithmetic/subtract":498,"../matrix/map":541,"../statistics/median":594,"./utils/improveErrorMessage":601}],592:[function(require,module,exports){
 'use strict';
 
 var deepForEach = require('../../utils/collection/deepForEach');
@@ -56774,7 +66402,7 @@ function factory (type, config, load, typed) {
 exports.name = 'max';
 exports.factory = factory;
 
-},{"../../utils/collection/containsCollections":675,"../../utils/collection/deepForEach":676,"../../utils/collection/reduce":680,"../relational/larger":536,"./utils/improveErrorMessage":565}],557:[function(require,module,exports){
+},{"../../utils/collection/containsCollections":711,"../../utils/collection/deepForEach":712,"../../utils/collection/reduce":716,"../relational/larger":572,"./utils/improveErrorMessage":601}],593:[function(require,module,exports){
 'use strict';
 
 var size = require('../../utils/array').size;
@@ -56885,7 +66513,7 @@ function factory (type, config, load, typed) {
 exports.name = 'mean';
 exports.factory = factory;
 
-},{"../../utils/array":662,"../../utils/collection/containsCollections":675,"../../utils/collection/deepForEach":676,"../../utils/collection/reduce":680,"../arithmetic/add":433,"../arithmetic/divide":438,"./utils/improveErrorMessage":565}],558:[function(require,module,exports){
+},{"../../utils/array":698,"../../utils/collection/containsCollections":711,"../../utils/collection/deepForEach":712,"../../utils/collection/reduce":716,"../arithmetic/add":469,"../arithmetic/divide":474,"./utils/improveErrorMessage":601}],594:[function(require,module,exports){
 'use strict';
 
 var flatten = require('../../utils/array').flatten;
@@ -57010,7 +66638,7 @@ function factory (type, config, load, typed) {
 exports.name = 'median';
 exports.factory = factory;
 
-},{"../../utils/array":662,"../../utils/collection/containsCollections":675,"../arithmetic/addScalar":434,"../arithmetic/divideScalar":439,"../matrix/partitionSelect":507,"../relational/compare":530,"./utils/improveErrorMessage":565}],559:[function(require,module,exports){
+},{"../../utils/array":698,"../../utils/collection/containsCollections":711,"../arithmetic/addScalar":470,"../arithmetic/divideScalar":475,"../matrix/partitionSelect":543,"../relational/compare":566,"./utils/improveErrorMessage":601}],595:[function(require,module,exports){
 'use strict';
 
 var deepForEach = require('../../utils/collection/deepForEach');
@@ -57122,7 +66750,7 @@ function factory (type, config, load, typed) {
 exports.name = 'min';
 exports.factory = factory;
 
-},{"../../utils/collection/containsCollections":675,"../../utils/collection/deepForEach":676,"../../utils/collection/reduce":680,"../relational/smaller":538,"./utils/improveErrorMessage":565}],560:[function(require,module,exports){
+},{"../../utils/collection/containsCollections":711,"../../utils/collection/deepForEach":712,"../../utils/collection/reduce":716,"../relational/smaller":574,"./utils/improveErrorMessage":601}],596:[function(require,module,exports){
 'use strict';
 
 var flatten = require('../../utils/array').flatten;
@@ -57200,7 +66828,7 @@ function factory (type, config, load, typed) {
 
 exports.name = 'mode';
 exports.factory = factory;
-},{"../../utils/array":662}],561:[function(require,module,exports){
+},{"../../utils/array":698}],597:[function(require,module,exports){
 'use strict';
 
 var deepForEach = require('../../utils/collection/deepForEach');
@@ -57284,7 +66912,7 @@ function factory (type, config, load, typed) {
 exports.name = 'prod';
 exports.factory = factory;
 
-},{"../../utils/collection/deepForEach":676,"../arithmetic/multiplyScalar":454,"./utils/improveErrorMessage":565}],562:[function(require,module,exports){
+},{"../../utils/collection/deepForEach":712,"../arithmetic/multiplyScalar":490,"./utils/improveErrorMessage":601}],598:[function(require,module,exports){
 'use strict';
 
 var isInteger = require('../../utils/number').isInteger;
@@ -57543,7 +67171,7 @@ function factory (type, config, load, typed) {
 exports.name = 'quantileSeq';
 exports.factory = factory;
 
-},{"../../utils/array":662,"../../utils/collection/isCollection":678,"../../utils/number":687,"../arithmetic/add":433,"../arithmetic/multiply":453,"../matrix/partitionSelect":507,"../relational/compare":530}],563:[function(require,module,exports){
+},{"../../utils/array":698,"../../utils/collection/isCollection":714,"../../utils/number":723,"../arithmetic/add":469,"../arithmetic/multiply":489,"../matrix/partitionSelect":543,"../relational/compare":566}],599:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -57629,7 +67257,7 @@ function factory (type, config, load, typed) {
 exports.name = 'std';
 exports.factory = factory;
 
-},{"../arithmetic/sqrt":460,"../statistics/var":566}],564:[function(require,module,exports){
+},{"../arithmetic/sqrt":496,"../statistics/var":602}],600:[function(require,module,exports){
 'use strict';
 
 var deepForEach = require('../../utils/collection/deepForEach');
@@ -57721,7 +67349,7 @@ function factory (type, config, load, typed) {
 exports.name = 'sum';
 exports.factory = factory;
 
-},{"../../utils/collection/deepForEach":676,"../arithmetic/addScalar":434,"./utils/improveErrorMessage":565}],565:[function(require,module,exports){
+},{"../../utils/collection/deepForEach":712,"../arithmetic/addScalar":470,"./utils/improveErrorMessage":601}],601:[function(require,module,exports){
 
 
 function factory (type, config, load, typed) {
@@ -57763,7 +67391,7 @@ function factory (type, config, load, typed) {
 
 exports.factory = factory;
 
-},{"../../utils/typeof":607}],566:[function(require,module,exports){
+},{"../../utils/typeof":643}],602:[function(require,module,exports){
 'use strict';
 
 var DEFAULT_NORMALIZATION = 'unbiased';
@@ -57899,7 +67527,7 @@ function factory (type, config, load, typed) {
 exports.name = 'var';
 exports.factory = factory;
 
-},{"../../utils/collection/deepForEach":676,"../arithmetic/addScalar":434,"../arithmetic/divideScalar":439,"../arithmetic/multiplyScalar":454,"../arithmetic/subtract":462,"./utils/improveErrorMessage":565}],567:[function(require,module,exports){
+},{"../../utils/collection/deepForEach":712,"../arithmetic/addScalar":470,"../arithmetic/divideScalar":475,"../arithmetic/multiplyScalar":490,"../arithmetic/subtract":498,"./utils/improveErrorMessage":601}],603:[function(require,module,exports){
 'use strict';
 
 var string = require('../../utils/string');
@@ -58018,13 +67646,13 @@ function factory (type, config, load, typed) {
 exports.name = 'format';
 exports.factory = factory;
 
-},{"../../utils/string":689}],568:[function(require,module,exports){
+},{"../../utils/string":725}],604:[function(require,module,exports){
 module.exports = [
   require('./format'),
   require('./print')
 ];
 
-},{"./format":567,"./print":569}],569:[function(require,module,exports){
+},{"./format":603,"./print":605}],605:[function(require,module,exports){
 'use strict';
 
 var isString = require('../../utils/string').isString;
@@ -58113,7 +67741,7 @@ function _print(template, values, options) {
 exports.name = 'print';
 exports.factory = factory;
 
-},{"../../utils/string":689}],570:[function(require,module,exports){
+},{"../../utils/string":725}],606:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -58174,7 +67802,7 @@ function factory (type, config, load, typed) {
 exports.name = 'acos';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677}],571:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713}],607:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -58244,7 +67872,7 @@ var _acosh = Math.acosh || function (x) {
 exports.name = 'acosh';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677}],572:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713}],608:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -58300,7 +67928,7 @@ function factory (type, config, load, typed) {
 exports.name = 'acot';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677}],573:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713}],609:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -58357,7 +67985,7 @@ function factory (type, config, load, typed) {
 exports.name = 'acoth';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677}],574:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713}],610:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -58417,7 +68045,7 @@ function factory (type, config, load, typed) {
 exports.name = 'acsc';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677}],575:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713}],611:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -58472,7 +68100,7 @@ function factory (type, config, load, typed) {
 exports.name = 'acsch';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677}],576:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713}],612:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -58531,7 +68159,7 @@ function factory (type, config, load, typed) {
 exports.name = 'asec';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677}],577:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713}],613:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -58597,7 +68225,7 @@ function factory (type, config, load, typed) {
 exports.name = 'asech';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677,"./acosh":571}],578:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713,"./acosh":607}],614:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -58659,7 +68287,7 @@ function factory (type, config, load, typed) {
 exports.name = 'asin';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677}],579:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713}],615:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -58714,7 +68342,7 @@ function factory (type, config, load, typed) {
 exports.name = 'asinh';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677}],580:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713}],616:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -58771,7 +68399,7 @@ function factory (type, config, load, typed) {
 exports.name = 'atan';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677}],581:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713}],617:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -58891,7 +68519,7 @@ function factory (type, config, load, typed) {
 exports.name = 'atan2';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../type/matrix/utils/algorithm02":638,"../../type/matrix/utils/algorithm03":639,"../../type/matrix/utils/algorithm09":645,"../../type/matrix/utils/algorithm11":647,"../../type/matrix/utils/algorithm12":648,"../../type/matrix/utils/algorithm13":649,"../../type/matrix/utils/algorithm14":650}],582:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../type/matrix/utils/algorithm02":674,"../../type/matrix/utils/algorithm03":675,"../../type/matrix/utils/algorithm09":681,"../../type/matrix/utils/algorithm11":683,"../../type/matrix/utils/algorithm12":684,"../../type/matrix/utils/algorithm13":685,"../../type/matrix/utils/algorithm14":686}],618:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -58958,7 +68586,7 @@ var _atanh = Math.atanh || function (x) {
 exports.name = 'atanh';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677}],583:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713}],619:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -59022,7 +68650,7 @@ function factory (type, config, load, typed) {
 exports.name = 'cos';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677}],584:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713}],620:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -59090,7 +68718,7 @@ var _cosh = Math.cosh || function (x) {
 exports.name = 'cosh';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677}],585:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713}],621:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -59150,7 +68778,7 @@ function factory (type, config, load, typed) {
 exports.name = 'cot';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677}],586:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713}],622:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -59221,7 +68849,7 @@ function _coth(x) {
 exports.name = 'coth';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677}],587:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713}],623:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -59281,7 +68909,7 @@ function factory (type, config, load, typed) {
 exports.name = 'csc';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677}],588:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713}],624:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -59358,7 +68986,7 @@ function _csch(x) {
 exports.name = 'csch';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677,"../../utils/number":687}],589:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713,"../../utils/number":723}],625:[function(require,module,exports){
 module.exports = [
   require('./acos'),
   require('./acosh'),
@@ -59387,7 +69015,7 @@ module.exports = [
   require('./tanh')
 ];
 
-},{"./acos":570,"./acosh":571,"./acot":572,"./acoth":573,"./acsc":574,"./acsch":575,"./asec":576,"./asech":577,"./asin":578,"./asinh":579,"./atan":580,"./atan2":581,"./atanh":582,"./cos":583,"./cosh":584,"./cot":585,"./coth":586,"./csc":587,"./csch":588,"./sec":590,"./sech":591,"./sin":592,"./sinh":593,"./tan":594,"./tanh":595}],590:[function(require,module,exports){
+},{"./acos":606,"./acosh":607,"./acot":608,"./acoth":609,"./acsc":610,"./acsch":611,"./asec":612,"./asech":613,"./asin":614,"./asinh":615,"./atan":616,"./atan2":617,"./atanh":618,"./cos":619,"./cosh":620,"./cot":621,"./coth":622,"./csc":623,"./csch":624,"./sec":626,"./sech":627,"./sin":628,"./sinh":629,"./tan":630,"./tanh":631}],626:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -59447,7 +69075,7 @@ function factory (type, config, load, typed) {
 exports.name = 'sec';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677}],591:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713}],627:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -59517,7 +69145,7 @@ function _sech(x) {
 exports.name = 'sech';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677}],592:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713}],628:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -59582,7 +69210,7 @@ function factory (type, config, load, typed) {
 exports.name = 'sin';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677}],593:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713}],629:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -59651,7 +69279,7 @@ var _sinh = Math.sinh || function (x) {
 exports.name = 'sinh';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677}],594:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713}],630:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -59712,7 +69340,7 @@ function factory (type, config, load, typed) {
 exports.name = 'tan';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677}],595:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713}],631:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -59785,11 +69413,11 @@ var _tanh = Math.tanh || function (x) {
 exports.name = 'tanh';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677}],596:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713}],632:[function(require,module,exports){
 module.exports = [
   require('./to')
 ];
-},{"./to":597}],597:[function(require,module,exports){
+},{"./to":633}],633:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -59881,7 +69509,7 @@ function factory (type, config, load, typed) {
 exports.name = 'to';
 exports.factory = factory;
 
-},{"../../type/matrix/function/matrix":634,"../../type/matrix/utils/algorithm13":649,"../../type/matrix/utils/algorithm14":650,"../../utils/latex":686}],598:[function(require,module,exports){
+},{"../../type/matrix/function/matrix":670,"../../type/matrix/utils/algorithm13":685,"../../type/matrix/utils/algorithm14":686,"../../utils/latex":722}],634:[function(require,module,exports){
 'use strict';
 
 var object= require('../../utils/object');
@@ -59917,7 +69545,7 @@ function factory (type, config, load, typed) {
 exports.name = 'clone';
 exports.factory = factory;
 
-},{"../../utils/object":688}],599:[function(require,module,exports){
+},{"../../utils/object":724}],635:[function(require,module,exports){
 module.exports = [
   require('./clone'),
   require('./isInteger'),
@@ -59930,7 +69558,7 @@ module.exports = [
   require('./typeof')
 ];
 
-},{"./clone":598,"./isInteger":600,"./isNaN":601,"./isNegative":602,"./isNumeric":603,"./isPositive":604,"./isPrime":605,"./isZero":606,"./typeof":607}],600:[function(require,module,exports){
+},{"./clone":634,"./isInteger":636,"./isNaN":637,"./isNegative":638,"./isNumeric":639,"./isPositive":640,"./isPrime":641,"./isZero":642,"./typeof":643}],636:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -59988,7 +69616,7 @@ function factory (type, config, load, typed) {
 exports.name = 'isInteger';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677,"../../utils/number":687}],601:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713,"../../utils/number":723}],637:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -60056,7 +69684,7 @@ function factory (type, config, load, typed) {
 exports.name = 'isNaN';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677,"../../utils/number":687}],602:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713,"../../utils/number":723}],638:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -60120,7 +69748,7 @@ function factory (type, config, load, typed) {
 exports.name = 'isNegative';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677,"../../utils/number":687}],603:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713,"../../utils/number":723}],639:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -60175,7 +69803,7 @@ function factory (type, config, load, typed) {
 exports.name = 'isNumeric';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677,"../../utils/number":687}],604:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713,"../../utils/number":723}],640:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -60241,7 +69869,7 @@ function factory (type, config, load, typed) {
 exports.name = 'isPositive';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677,"../../utils/number":687}],605:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713,"../../utils/number":723}],641:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -60266,7 +69894,7 @@ function factory (type, config, load, typed) {
    *    math.isPrime(-0);                    // returns false
    *    math.isPrime(0.5);                   // returns false
    *    math.isPrime('2');                   // returns true
-   *    math.isPrime([2, 17, 100]');           // returns [true, true, false]
+   *    math.isPrime([2, 17, 100]);           // returns [true, true, false]
    *
    * See also:
    *
@@ -60324,7 +69952,7 @@ function factory (type, config, load, typed) {
 exports.name = 'isPrime';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677}],606:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713}],642:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../utils/collection/deepMap');
@@ -60396,7 +70024,7 @@ function factory (type, config, load, typed) {
 exports.name = 'isZero';
 exports.factory = factory;
 
-},{"../../utils/collection/deepMap":677,"../../utils/number":687}],607:[function(require,module,exports){
+},{"../../utils/collection/deepMap":713,"../../utils/number":723}],643:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -60485,7 +70113,7 @@ function factory (type, config, load, typed) {
 exports.name = 'typeof';
 exports.factory = factory;
 
-},{}],608:[function(require,module,exports){
+},{}],644:[function(require,module,exports){
 module.exports = [
   require('./type'),        // data types (Matrix, Complex, Unit, ...)
   require('./constants'),   // constants
@@ -60495,12 +70123,12 @@ module.exports = [
   require('./error')        // errors
 ];
 
-},{"./constants":151,"./error":159,"./expression":363,"./function":487,"./json":609,"./type":624}],609:[function(require,module,exports){
+},{"./constants":187,"./error":195,"./expression":399,"./function":523,"./json":645,"./type":660}],645:[function(require,module,exports){
 module.exports = [
   require('./reviver')
 ];
 
-},{"./reviver":610}],610:[function(require,module,exports){
+},{"./reviver":646}],646:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -60524,7 +70152,7 @@ exports.name = 'reviver';
 exports.path = 'json';
 exports.factory = factory;
 
-},{}],611:[function(require,module,exports){
+},{}],647:[function(require,module,exports){
 var Decimal = require('decimal.js/decimal.js'); // make sure to pick the es5 version
 
 function factory (type, config, load, typed, math) {
@@ -60573,7 +70201,7 @@ exports.name = 'BigNumber';
 exports.path = 'type';
 exports.factory = factory;
 exports.math = true; // request access to the math namespace
-},{"decimal.js/decimal.js":3}],612:[function(require,module,exports){
+},{"decimal.js/decimal.js":39}],648:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../../utils/collection/deepMap');
@@ -60647,7 +70275,7 @@ function factory (type, config, load, typed) {
 exports.name = 'bignumber';
 exports.factory = factory;
 
-},{"../../../utils/collection/deepMap":677}],613:[function(require,module,exports){
+},{"../../../utils/collection/deepMap":713}],649:[function(require,module,exports){
 module.exports = [
   // type
   require('./BigNumber'),
@@ -60656,7 +70284,7 @@ module.exports = [
   require('./function/bignumber')
 ];
 
-},{"./BigNumber":611,"./function/bignumber":612}],614:[function(require,module,exports){
+},{"./BigNumber":647,"./function/bignumber":648}],650:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('./../utils/collection/deepMap');
@@ -60740,7 +70368,7 @@ function factory (type, config, load, typed) {
 exports.name = 'boolean';
 exports.factory = factory;
 
-},{"./../utils/collection/deepMap":677}],615:[function(require,module,exports){
+},{"./../utils/collection/deepMap":713}],651:[function(require,module,exports){
 'use strict';
 
 var format = require('../../utils/string').format;
@@ -60907,7 +70535,7 @@ exports.factory = factory;
 exports.math = true;  // require providing the math namespace as 5th argument
 exports.lazy = false; // we need to register a listener on the import events, so no lazy loading
 
-},{"../../utils/object":688,"../../utils/string":689}],616:[function(require,module,exports){
+},{"../../utils/object":724,"../../utils/string":725}],652:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -60960,7 +70588,7 @@ function factory (type, config, load, typed) {
 exports.name = 'chain';
 exports.factory = factory;
 
-},{}],617:[function(require,module,exports){
+},{}],653:[function(require,module,exports){
 module.exports = [
   // type
   require('./Chain'),
@@ -60969,7 +70597,7 @@ module.exports = [
   require('./function/chain')
 ];
 
-},{"./Chain":615,"./function/chain":616}],618:[function(require,module,exports){
+},{"./Chain":651,"./function/chain":652}],654:[function(require,module,exports){
 var Complex = require('complex.js');
 var format = require('../../utils/number').format;
 var isNumber = require('../../utils/number').isNumber;
@@ -61168,7 +70796,7 @@ exports.path = 'type';
 exports.factory = factory;
 exports.math = true; // request access to the math namespace
 
-},{"../../utils/number":687,"complex.js":2}],619:[function(require,module,exports){
+},{"../../utils/number":723,"complex.js":38}],655:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../../utils/collection/deepMap');
@@ -61274,7 +70902,7 @@ function factory (type, config, load, typed) {
 exports.name = 'complex';
 exports.factory = factory;
 
-},{"../../../utils/collection/deepMap":677,"../../../utils/latex":686}],620:[function(require,module,exports){
+},{"../../../utils/collection/deepMap":713,"../../../utils/latex":722}],656:[function(require,module,exports){
 module.exports = [
   // type
   require('./Complex'),
@@ -61283,7 +70911,7 @@ module.exports = [
   require('./function/complex')
 ];
 
-},{"./Complex":618,"./function/complex":619}],621:[function(require,module,exports){
+},{"./Complex":654,"./function/complex":655}],657:[function(require,module,exports){
 var Fraction = require('fraction.js');
 
 /**
@@ -61324,7 +70952,7 @@ exports.name = 'Fraction';
 exports.path = 'type';
 exports.factory = factory;
 
-},{"fraction.js":147}],622:[function(require,module,exports){
+},{"fraction.js":183}],658:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../../utils/collection/deepMap');
@@ -61399,7 +71027,7 @@ function factory (type, config, load, typed) {
 exports.name = 'fraction';
 exports.factory = factory;
 
-},{"../../../utils/collection/deepMap":677}],623:[function(require,module,exports){
+},{"../../../utils/collection/deepMap":713}],659:[function(require,module,exports){
 module.exports = [
   // type
   require('./Fraction'),
@@ -61408,7 +71036,7 @@ module.exports = [
   require('./function/fraction')
 ];
 
-},{"./Fraction":621,"./function/fraction":622}],624:[function(require,module,exports){
+},{"./Fraction":657,"./function/fraction":658}],660:[function(require,module,exports){
 module.exports = [
   require('./bignumber'),
   require('./boolean'),
@@ -61422,7 +71050,7 @@ module.exports = [
   require('./unit')
 ];
 
-},{"./bignumber":613,"./boolean":614,"./chain":617,"./complex":620,"./fraction":623,"./matrix":636,"./number":651,"./resultset":654,"./string":655,"./unit":660}],625:[function(require,module,exports){
+},{"./bignumber":649,"./boolean":650,"./chain":653,"./complex":656,"./fraction":659,"./matrix":672,"./number":687,"./resultset":690,"./string":691,"./unit":696}],661:[function(require,module,exports){
 'use strict';
 
 var util = require('../../utils/index');
@@ -62306,7 +71934,7 @@ exports.path = 'type';
 exports.factory = factory;
 exports.lazy = false;  // no lazy loading, as we alter type.Matrix._storage
 
-},{"../../error/DimensionError":157,"../../utils/index":685,"./Matrix":628}],626:[function(require,module,exports){
+},{"../../error/DimensionError":193,"../../utils/index":721,"./Matrix":664}],662:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -62657,7 +72285,7 @@ exports.name = 'FibonacciHeap';
 exports.path = 'type';
 exports.factory = factory;
 
-},{"../../function/relational/larger":536,"../../function/relational/smaller":538}],627:[function(require,module,exports){
+},{"../../function/relational/larger":572,"../../function/relational/smaller":574}],663:[function(require,module,exports){
 'use strict';
 
 var util = require('../../utils/index');
@@ -62892,7 +72520,7 @@ exports.name = 'ImmutableDenseMatrix';
 exports.path = 'type';
 exports.factory = factory;
 
-},{"../../function/relational/smaller":538,"../../utils/index":685,"./DenseMatrix":625}],628:[function(require,module,exports){
+},{"../../function/relational/smaller":574,"../../utils/index":721,"./DenseMatrix":661}],664:[function(require,module,exports){
 'use strict';
 
 var util = require('../../utils/index');
@@ -63160,7 +72788,7 @@ exports.name = 'Matrix';
 exports.path = 'type';
 exports.factory = factory;
 
-},{"../../utils/index":685}],629:[function(require,module,exports){
+},{"../../utils/index":721}],665:[function(require,module,exports){
 'use strict';
 
 var clone = require('../../utils/object').clone;
@@ -63445,7 +73073,7 @@ exports.name = 'Index';
 exports.path = 'type';
 exports.factory = factory;
 
-},{"../../utils/number":687,"../../utils/object":688}],630:[function(require,module,exports){
+},{"../../utils/number":723,"../../utils/object":724}],666:[function(require,module,exports){
 'use strict';
 
 var number = require('../../utils/number');
@@ -63763,7 +73391,7 @@ exports.name = 'Range';
 exports.path = 'type';
 exports.factory = factory;
 
-},{"../../utils/number":687}],631:[function(require,module,exports){
+},{"../../utils/number":723}],667:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load) {
@@ -63906,7 +73534,7 @@ exports.name = 'Spa';
 exports.path = 'type';
 exports.factory = factory;
 
-},{"../../function/arithmetic/add":433,"../../function/relational/equalScalar":534}],632:[function(require,module,exports){
+},{"../../function/arithmetic/add":469,"../../function/relational/equalScalar":570}],668:[function(require,module,exports){
 'use strict';
 
 var util = require('../../utils/index');
@@ -65342,7 +74970,7 @@ exports.path = 'type';
 exports.factory = factory;
 exports.lazy = false;  // no lazy loading, as we alter type.Matrix._storage
 
-},{"../../error/DimensionError":157,"../../function/relational/equalScalar":534,"../../utils/index":685,"./Matrix":628}],633:[function(require,module,exports){
+},{"../../error/DimensionError":193,"../../function/relational/equalScalar":570,"../../utils/index":721,"./Matrix":664}],669:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -65408,7 +75036,7 @@ function factory (type, config, load, typed) {
 exports.name = 'index';
 exports.factory = factory;
 
-},{}],634:[function(require,module,exports){
+},{}],670:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -65498,7 +75126,7 @@ function factory (type, config, load, typed) {
 exports.name = 'matrix';
 exports.factory = factory;
 
-},{}],635:[function(require,module,exports){
+},{}],671:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -65561,7 +75189,7 @@ function factory (type, config, load, typed) {
 exports.name = 'sparse';
 exports.factory = factory;
 
-},{}],636:[function(require,module,exports){
+},{}],672:[function(require,module,exports){
 module.exports = [
   // types
   require('./Matrix'),
@@ -65579,7 +75207,7 @@ module.exports = [
   require('./function/sparse')
 ];
 
-},{"./DenseMatrix":625,"./FibonacciHeap":626,"./ImmutableDenseMatrix":627,"./Matrix":628,"./MatrixIndex":629,"./Range":630,"./Spa":631,"./SparseMatrix":632,"./function/index":633,"./function/matrix":634,"./function/sparse":635}],637:[function(require,module,exports){
+},{"./DenseMatrix":661,"./FibonacciHeap":662,"./ImmutableDenseMatrix":663,"./Matrix":664,"./MatrixIndex":665,"./Range":666,"./Spa":667,"./SparseMatrix":668,"./function/index":669,"./function/matrix":670,"./function/sparse":671}],673:[function(require,module,exports){
 'use strict';
 
 var DimensionError = require('../../../error/DimensionError');
@@ -65695,7 +75323,7 @@ function factory (type, config, load, typed) {
 exports.name = 'algorithm01';
 exports.factory = factory;
 
-},{"../../../error/DimensionError":157}],638:[function(require,module,exports){
+},{"../../../error/DimensionError":193}],674:[function(require,module,exports){
 'use strict';
 
 var DimensionError = require('../../../error/DimensionError');
@@ -65816,7 +75444,7 @@ function factory (type, config, load, typed) {
 exports.name = 'algorithm02';
 exports.factory = factory;
 
-},{"../../../error/DimensionError":157,"../../../function/relational/equalScalar":534}],639:[function(require,module,exports){
+},{"../../../error/DimensionError":193,"../../../function/relational/equalScalar":570}],675:[function(require,module,exports){
 'use strict';
 
 var DimensionError = require('../../../error/DimensionError');
@@ -65943,7 +75571,7 @@ function factory (type, config, load, typed) {
 exports.name = 'algorithm03';
 exports.factory = factory;
 
-},{"../../../error/DimensionError":157}],640:[function(require,module,exports){
+},{"../../../error/DimensionError":193}],676:[function(require,module,exports){
 'use strict';
 
 var DimensionError = require('../../../error/DimensionError');
@@ -66132,7 +75760,7 @@ function factory (type, config, load, typed) {
 exports.name = 'algorithm04';
 exports.factory = factory;
 
-},{"../../../error/DimensionError":157,"../../../function/relational/equalScalar":534}],641:[function(require,module,exports){
+},{"../../../error/DimensionError":193,"../../../function/relational/equalScalar":570}],677:[function(require,module,exports){
 'use strict';
 
 var DimensionError = require('../../../error/DimensionError');
@@ -66310,7 +75938,7 @@ function factory (type, config, load, typed) {
 exports.name = 'algorithm05';
 exports.factory = factory;
 
-},{"../../../error/DimensionError":157,"../../../function/relational/equalScalar":534}],642:[function(require,module,exports){
+},{"../../../error/DimensionError":193,"../../../function/relational/equalScalar":570}],678:[function(require,module,exports){
 'use strict';
 
 var scatter = require('./../../../utils/collection/scatter');
@@ -66475,7 +76103,7 @@ function factory (type, config, load, typed) {
 exports.name = 'algorithm06';
 exports.factory = factory;
 
-},{"../../../error/DimensionError":157,"../../../function/relational/equalScalar":534,"./../../../utils/collection/scatter":681}],643:[function(require,module,exports){
+},{"../../../error/DimensionError":193,"../../../function/relational/equalScalar":570,"./../../../utils/collection/scatter":717}],679:[function(require,module,exports){
 'use strict';
 
 var DimensionError = require('../../../error/DimensionError');
@@ -66601,7 +76229,7 @@ function factory (type, config, load, typed) {
 exports.name = 'algorithm07';
 exports.factory = factory;
 
-},{"../../../error/DimensionError":157}],644:[function(require,module,exports){
+},{"../../../error/DimensionError":193}],680:[function(require,module,exports){
 'use strict';
 
 var DimensionError = require('../../../error/DimensionError');
@@ -66763,7 +76391,7 @@ function factory (type, config, load, typed) {
 exports.name = 'algorithm08';
 exports.factory = factory;
 
-},{"../../../error/DimensionError":157,"../../../function/relational/equalScalar":534}],645:[function(require,module,exports){
+},{"../../../error/DimensionError":193,"../../../function/relational/equalScalar":570}],681:[function(require,module,exports){
 'use strict';
 
 var DimensionError = require('../../../error/DimensionError');
@@ -66914,7 +76542,7 @@ function factory (type, config, load, typed) {
 exports.name = 'algorithm09';
 exports.factory = factory;
 
-},{"../../../error/DimensionError":157,"../../../function/relational/equalScalar":534}],646:[function(require,module,exports){
+},{"../../../error/DimensionError":193,"../../../function/relational/equalScalar":570}],682:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -67026,7 +76654,7 @@ function factory (type, config, load, typed) {
 exports.name = 'algorithm10';
 exports.factory = factory;
 
-},{}],647:[function(require,module,exports){
+},{}],683:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -67137,7 +76765,7 @@ function factory (type, config, load, typed) {
 exports.name = 'algorithm11';
 exports.factory = factory;
 
-},{"../../../function/relational/equalScalar":534}],648:[function(require,module,exports){
+},{"../../../function/relational/equalScalar":570}],684:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -67249,7 +76877,7 @@ function factory (type, config, load, typed) {
 exports.name = 'algorithm12';
 exports.factory = factory;
 
-},{}],649:[function(require,module,exports){
+},{}],685:[function(require,module,exports){
 'use strict';
 
 var util = require('../../../utils/index');
@@ -67355,7 +76983,7 @@ function factory (type, config, load, typed) {
 exports.name = 'algorithm13';
 exports.factory = factory;
 
-},{"../../../error/DimensionError":157,"../../../utils/index":685}],650:[function(require,module,exports){
+},{"../../../error/DimensionError":193,"../../../utils/index":721}],686:[function(require,module,exports){
 'use strict';
 
 var clone = require('../../../utils/object').clone;
@@ -67439,7 +77067,7 @@ function factory (type, config, load, typed) {
 exports.name = 'algorithm14';
 exports.factory = factory;
 
-},{"../../../utils/object":688}],651:[function(require,module,exports){
+},{"../../../utils/object":724}],687:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('./../utils/collection/deepMap');
@@ -67524,7 +77152,7 @@ function factory (type, config, load, typed) {
 exports.name = 'number';
 exports.factory = factory;
 
-},{"./../utils/collection/deepMap":677}],652:[function(require,module,exports){
+},{"./../utils/collection/deepMap":713}],688:[function(require,module,exports){
 'use strict';
 
 function factory(type, config, load, typed) {
@@ -67576,7 +77204,7 @@ function factory(type, config, load, typed) {
 
 exports.factory = factory;
 
-},{}],653:[function(require,module,exports){
+},{}],689:[function(require,module,exports){
 'use strict';
 
 function factory (type, config, load, typed) {
@@ -67649,13 +77277,13 @@ exports.name = 'ResultSet';
 exports.path = 'type';
 exports.factory = factory;
 
-},{}],654:[function(require,module,exports){
+},{}],690:[function(require,module,exports){
 module.exports = [
   // type
   require('./ResultSet')
 ];
 
-},{"./ResultSet":653}],655:[function(require,module,exports){
+},{"./ResultSet":689}],691:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('./../utils/collection/deepMap');
@@ -67726,7 +77354,7 @@ function factory (type, config, load, typed) {
 exports.name = 'string';
 exports.factory = factory;
 
-},{"../utils/number":687,"./../utils/collection/deepMap":677}],656:[function(require,module,exports){
+},{"../utils/number":723,"./../utils/collection/deepMap":713}],692:[function(require,module,exports){
 'use strict';
 
 var endsWith = require('../../utils/string').endsWith;
@@ -67976,8 +77604,12 @@ function factory (type, config, load, typed, math) {
     var unit = new Unit();
     unit.units = [];
 
+    var powerMultiplierCurrent = 1;
+    var expectingUnit = false;
+
     // A unit should follow this pattern:
-    // [number]unit[^number] [unit[^number]]...[/unit[^number] [unit[^number]]]
+    // [number] ...[ [*/] unit[^number] ]
+    // unit[^number] ... [ [*/] unit[^number] ]
 
     // Rules:
     // number is any floating point number.
@@ -67991,6 +77623,7 @@ function factory (type, config, load, typed, math) {
 
     next();
     skipWhitespace();
+
     // Optional number at the start of the string
     var valueStr = parseNumber();
     var value = null;
@@ -68004,12 +77637,19 @@ function factory (type, config, load, typed, math) {
       else { // number
         value = parseFloat(valueStr);
       }
-    }
-    skipWhitespace();    // Whitespace is not required here
 
-    // Next, we read any number of unit[^number]
-    var powerMultiplierCurrent = 1;
-    var expectingUnit = false;
+      skipWhitespace();    // Whitespace is not required here
+
+      // handle multiplication or division right after the value, like '1/s'
+      if (parseCharacter('*')) {
+        powerMultiplierCurrent = 1;
+        expectingUnit = true;
+      }
+      else if (parseCharacter('/')) {
+        powerMultiplierCurrent = -1;
+        expectingUnit = true;
+      }
+    }
 
     // Stack to keep track of powerMultipliers applied to each parentheses group
     var powerMultiplierStack = [];
@@ -71036,7 +80676,7 @@ exports.path = 'type';
 exports.factory = factory;
 exports.math = true; // request access to the math namespace
 
-},{"../../function/arithmetic/abs":432,"../../function/arithmetic/addScalar":434,"../../function/arithmetic/divideScalar":439,"../../function/arithmetic/fix":444,"../../function/arithmetic/multiplyScalar":454,"../../function/arithmetic/pow":457,"../../function/arithmetic/round":458,"../../function/arithmetic/subtract":462,"../../function/relational/equal":533,"../../function/string/format":567,"../../function/utils/isNumeric":603,"../../function/utils/typeof":607,"../../type/complex/Complex":618,"../../type/number":651,"../../utils/bignumber/constants":668,"../../utils/object":688,"../../utils/string":689}],657:[function(require,module,exports){
+},{"../../function/arithmetic/abs":468,"../../function/arithmetic/addScalar":470,"../../function/arithmetic/divideScalar":475,"../../function/arithmetic/fix":480,"../../function/arithmetic/multiplyScalar":490,"../../function/arithmetic/pow":493,"../../function/arithmetic/round":494,"../../function/arithmetic/subtract":498,"../../function/relational/equal":569,"../../function/string/format":603,"../../function/utils/isNumeric":639,"../../function/utils/typeof":643,"../../type/complex/Complex":654,"../../type/number":687,"../../utils/bignumber/constants":704,"../../utils/object":724,"../../utils/string":725}],693:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../../utils/collection/deepMap');
@@ -71123,7 +80763,7 @@ function factory (type, config, load, typed) {
 exports.name = 'createUnit';
 exports.factory = factory;
 
-},{"../../../utils/collection/deepMap":677}],658:[function(require,module,exports){
+},{"../../../utils/collection/deepMap":713}],694:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../../utils/collection/deepMap');
@@ -71162,7 +80802,7 @@ function factory (type, config, load, typed) {
 exports.name = 'splitUnit';
 exports.factory = factory;
 
-},{"../../../utils/collection/deepMap":677}],659:[function(require,module,exports){
+},{"../../../utils/collection/deepMap":713}],695:[function(require,module,exports){
 'use strict';
 
 var deepMap = require('../../../utils/collection/deepMap');
@@ -71225,7 +80865,7 @@ function factory (type, config, load, typed) {
 exports.name = 'unit';
 exports.factory = factory;
 
-},{"../../../utils/collection/deepMap":677}],660:[function(require,module,exports){
+},{"../../../utils/collection/deepMap":713}],696:[function(require,module,exports){
 module.exports = [
   // type
   require('./Unit'),
@@ -71243,7 +80883,7 @@ module.exports = [
   require('./physicalConstants')
 ];
 
-},{"./Unit":656,"./function/createUnit":657,"./function/splitUnit":658,"./function/unit":659,"./physicalConstants":661}],661:[function(require,module,exports){
+},{"./Unit":692,"./function/createUnit":693,"./function/splitUnit":694,"./function/unit":695,"./physicalConstants":697}],697:[function(require,module,exports){
 var lazy = require('../../utils/object').lazy;
 
 
@@ -71335,7 +80975,7 @@ exports.factory = factory;
 exports.lazy = false;  // no lazy loading of constants, the constants themselves are lazy when needed
 exports.math = true;   // request access to the math namespace
 
-},{"../../utils/object":688}],662:[function(require,module,exports){
+},{"../../utils/object":724}],698:[function(require,module,exports){
 'use strict';
 
 var number = require('./number');
@@ -71864,7 +81504,7 @@ exports.generalize = function(a) {
  */
 exports.isArray = Array.isArray;
 
-},{"../error/DimensionError":157,"../error/IndexError":158,"./number":687,"./string":689}],663:[function(require,module,exports){
+},{"../error/DimensionError":193,"../error/IndexError":194,"./number":723,"./string":725}],699:[function(require,module,exports){
 var bitwise = require('./bitwise');
 
 /**
@@ -71934,7 +81574,7 @@ module.exports = function bitAnd(x, y) {
   return bitwise(x, y, function (a, b) { return a & b });
 };
 
-},{"./bitwise":667}],664:[function(require,module,exports){
+},{"./bitwise":703}],700:[function(require,module,exports){
 /**
  * Bitwise not
  * @param {BigNumber} value
@@ -71957,7 +81597,7 @@ module.exports = function bitNot (x) {
   return x;
 };
 
-},{}],665:[function(require,module,exports){
+},{}],701:[function(require,module,exports){
 var bitwise = require('./bitwise');
 
 /**
@@ -72012,7 +81652,7 @@ module.exports = function bitOr (x, y) {
   return bitwise(x, y, function (a, b) { return a | b });
 };
 
-},{"./bitwise":667}],666:[function(require,module,exports){
+},{"./bitwise":703}],702:[function(require,module,exports){
 var bitwise = require('./bitwise');
 var bitNot = require('./bitNot');
 
@@ -72074,7 +81714,7 @@ module.exports = function bitXor(x, y) {
   return bitwise(x, y, function (a, b) { return a ^ b });
 };
 
-},{"./bitNot":664,"./bitwise":667}],667:[function(require,module,exports){
+},{"./bitNot":700,"./bitwise":703}],703:[function(require,module,exports){
 var bitNot = require('./bitNot');
 
 /**
@@ -72200,7 +81840,7 @@ function decCoefficientToBinaryString (x) {
   return arr.reverse();
 }
 
-},{"./bitNot":664}],668:[function(require,module,exports){
+},{"./bitNot":700}],704:[function(require,module,exports){
 var memoize = require('../function').memoize;
 
 /**
@@ -72251,7 +81891,7 @@ function hasher (args) {
   return args[0].precision;
 }
 
-},{"../function":684}],669:[function(require,module,exports){
+},{"../function":720}],705:[function(require,module,exports){
 /**
  * Convert a BigNumber to a formatted string representation.
  *
@@ -72438,7 +82078,7 @@ exports.toFixed = function (value, precision) {
   return value.toFixed(precision);
 };
 
-},{}],670:[function(require,module,exports){
+},{}],706:[function(require,module,exports){
 /**
  * Test whether a value is a BigNumber
  * @param {*} x
@@ -72448,7 +82088,7 @@ module.exports = function isBigNumber(x) {
   return x && x.constructor.prototype.isBigNumber || false
 }
 
-},{}],671:[function(require,module,exports){
+},{}],707:[function(require,module,exports){
 
 /**
  * Bitwise left shift
@@ -72491,7 +82131,7 @@ module.exports = function leftShift (x, y) {
   return x.times(new BigNumber(2).pow(y));
 };
 
-},{}],672:[function(require,module,exports){
+},{}],708:[function(require,module,exports){
 'use strict';
 
 /**
@@ -72538,7 +82178,7 @@ module.exports = function nearlyEqual(x, y, epsilon) {
   return false;
 };
 
-},{}],673:[function(require,module,exports){
+},{}],709:[function(require,module,exports){
 /*
  * Special Cases:
  *   n >> -n =  N
@@ -72587,7 +82227,7 @@ module.exports = function rightArithShift (x, y) {
   return x.div(new BigNumber(2).pow(y)).floor();
 };
 
-},{}],674:[function(require,module,exports){
+},{}],710:[function(require,module,exports){
 'use strict';
 
 /**
@@ -72599,7 +82239,7 @@ exports.isBoolean = function(value) {
   return typeof value == 'boolean';
 };
 
-},{}],675:[function(require,module,exports){
+},{}],711:[function(require,module,exports){
 'use strict';
 
 var isCollection = require('./isCollection');
@@ -72619,7 +82259,7 @@ module.exports = function containsCollections (array) {
   return false;
 };
 
-},{"./isCollection":678}],676:[function(require,module,exports){
+},{"./isCollection":714}],712:[function(require,module,exports){
 'use strict';
 
 var isMatrix = require('./isMatrix');
@@ -72648,7 +82288,7 @@ module.exports = function deepForEach (array, callback) {
   }
 };
 
-},{"./isMatrix":679}],677:[function(require,module,exports){
+},{"./isMatrix":715}],713:[function(require,module,exports){
 'use strict';
 
 /**
@@ -72675,7 +82315,7 @@ module.exports = function deepMap(array, callback, skipZeros) {
   }
 };
 
-},{}],678:[function(require,module,exports){
+},{}],714:[function(require,module,exports){
 'use strict';
 
 var isMatrix = require('./isMatrix');
@@ -72689,7 +82329,7 @@ module.exports = function isCollection (x) {
   return Array.isArray(x) || isMatrix(x);
 };
 
-},{"./isMatrix":679}],679:[function(require,module,exports){
+},{"./isMatrix":715}],715:[function(require,module,exports){
 'use strict';
 
 /**
@@ -72702,7 +82342,7 @@ module.exports = function isMatrix (x) {
   return x && x.constructor.prototype.isMatrix || false;
 };
 
-},{}],680:[function(require,module,exports){
+},{}],716:[function(require,module,exports){
 'use strict';
 
 var arraySize = require('../array').size;
@@ -72788,7 +82428,7 @@ function _switch(mat){
   return ret;
 }
 
-},{"../../error/IndexError":158,"../array":662,"../collection/isMatrix":679}],681:[function(require,module,exports){
+},{"../../error/IndexError":194,"../array":698,"../collection/isMatrix":715}],717:[function(require,module,exports){
 'use strict';
 
 module.exports = function scatter(a, j, w, x, u, mark, c, f, inverse, update, value) {
@@ -72854,7 +82494,7 @@ module.exports = function scatter(a, j, w, x, u, mark, c, f, inverse, update, va
   }
 };
 
-},{}],682:[function(require,module,exports){
+},{}],718:[function(require,module,exports){
 'use strict';
 
 var hasOwnProperty = require('./object').hasOwnProperty;
@@ -73010,7 +82650,7 @@ exports.validateSafeMethod = validateSafeMethod;
 exports.isSafeMethod = isSafeMethod;
 exports.isPlainObject = isPlainObject;
 
-},{"./object":688}],683:[function(require,module,exports){
+},{"./object":724}],719:[function(require,module,exports){
 var Emitter = require('tiny-emitter');
 
 /**
@@ -73031,7 +82671,7 @@ exports.mixin = function (obj) {
   return obj;
 };
 
-},{"tiny-emitter":1008}],684:[function(require,module,exports){
+},{"tiny-emitter":1044}],720:[function(require,module,exports){
 // function utils
 
 /**
@@ -73092,7 +82732,7 @@ exports.callWithRightArgumentCount = function (fn, args, argCount) {
       }, -1);
 };
 
-},{}],685:[function(require,module,exports){
+},{}],721:[function(require,module,exports){
 'use strict';
 
 exports.array = require('./array');
@@ -73103,7 +82743,7 @@ exports.object = require('./object');
 exports.string = require('./string');
 exports.emitter = require('./emitter');
 
-},{"./array":662,"./boolean":674,"./emitter":683,"./function":684,"./number":687,"./object":688,"./string":689}],686:[function(require,module,exports){
+},{"./array":698,"./boolean":710,"./emitter":719,"./function":720,"./number":723,"./object":724,"./string":725}],722:[function(require,module,exports){
 'use strict';
 
 var escape_latex = require('escape-latex')
@@ -73211,7 +82851,7 @@ exports.toSymbol = function (name, isUnit) {
   return exports.escape(name);
 };
 
-},{"escape-latex":146}],687:[function(require,module,exports){
+},{"escape-latex":182}],723:[function(require,module,exports){
 'use strict';
 
 /**
@@ -73743,7 +83383,7 @@ exports.nearlyEqual = function(x, y, epsilon) {
   return false;
 };
 
-},{}],688:[function(require,module,exports){
+},{}],724:[function(require,module,exports){
 'use strict';
 
 var isBigNumber = require('./bignumber/isBigNumber');
@@ -74009,7 +83649,7 @@ exports.isFactory = function (object) {
   return object && typeof object.factory === 'function';
 };
 
-},{"./bignumber/isBigNumber":670}],689:[function(require,module,exports){
+},{"./bignumber/isBigNumber":706}],725:[function(require,module,exports){
 'use strict';
 
 var formatNumber = require('./number').format;
@@ -74221,12 +83861,12 @@ function looksLikeFraction (value) {
       typeof value.d === 'number') || false;
 }
 
-},{"./bignumber/formatter":669,"./bignumber/isBigNumber":670,"./number":687}],690:[function(require,module,exports){
-module.exports = '4.0.0';
+},{"./bignumber/formatter":705,"./bignumber/isBigNumber":706,"./number":723}],726:[function(require,module,exports){
+module.exports = '4.0.1';
 // Note: This file is automatically generated when building math.js.
 // Changes made in this file will be overwritten.
 
-},{}],691:[function(require,module,exports){
+},{}],727:[function(require,module,exports){
 var always = require('./always');
 
 
@@ -74247,7 +83887,7 @@ var always = require('./always');
  */
 module.exports = always(false);
 
-},{"./always":699}],692:[function(require,module,exports){
+},{"./always":735}],728:[function(require,module,exports){
 var always = require('./always');
 
 
@@ -74268,7 +83908,7 @@ var always = require('./always');
  */
 module.exports = always(true);
 
-},{"./always":699}],693:[function(require,module,exports){
+},{"./always":735}],729:[function(require,module,exports){
 /**
  * A special placeholder value used to specify "gaps" within curried functions,
  * allowing partial application of any combination of arguments, regardless of
@@ -74297,7 +83937,7 @@ module.exports = always(true);
  */
 module.exports = {'@@functional/placeholder': true};
 
-},{}],694:[function(require,module,exports){
+},{}],730:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -74322,7 +83962,7 @@ module.exports = _curry2(function add(a, b) {
   return Number(a) + Number(b);
 });
 
-},{"./internal/_curry2":792}],695:[function(require,module,exports){
+},{"./internal/_curry2":828}],731:[function(require,module,exports){
 var _concat = require('./internal/_concat');
 var _curry1 = require('./internal/_curry1');
 var curryN = require('./curryN');
@@ -74367,7 +84007,7 @@ module.exports = _curry1(function addIndex(fn) {
   });
 });
 
-},{"./curryN":731,"./internal/_concat":787,"./internal/_curry1":791}],696:[function(require,module,exports){
+},{"./curryN":767,"./internal/_concat":823,"./internal/_curry1":827}],732:[function(require,module,exports){
 var _concat = require('./internal/_concat');
 var _curry3 = require('./internal/_curry3');
 
@@ -74408,7 +84048,7 @@ module.exports = _curry3(function adjust(fn, idx, list) {
   return _list;
 });
 
-},{"./internal/_concat":787,"./internal/_curry3":793}],697:[function(require,module,exports){
+},{"./internal/_concat":823,"./internal/_curry3":829}],733:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _dispatchable = require('./internal/_dispatchable');
 var _xall = require('./internal/_xall');
@@ -74449,7 +84089,7 @@ module.exports = _curry2(_dispatchable(['all'], _xall, function all(fn, list) {
   return true;
 }));
 
-},{"./internal/_curry2":792,"./internal/_dispatchable":795,"./internal/_xall":828}],698:[function(require,module,exports){
+},{"./internal/_curry2":828,"./internal/_dispatchable":831,"./internal/_xall":864}],734:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var curryN = require('./curryN');
 var max = require('./max');
@@ -74496,7 +84136,7 @@ module.exports = _curry1(function allPass(preds) {
   });
 });
 
-},{"./curryN":731,"./internal/_curry1":791,"./max":880,"./pluck":919,"./reduce":930}],699:[function(require,module,exports){
+},{"./curryN":767,"./internal/_curry1":827,"./max":916,"./pluck":955,"./reduce":966}],735:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 
 
@@ -74525,7 +84165,7 @@ module.exports = _curry1(function always(val) {
   };
 });
 
-},{"./internal/_curry1":791}],700:[function(require,module,exports){
+},{"./internal/_curry1":827}],736:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -74552,7 +84192,7 @@ module.exports = _curry2(function and(a, b) {
   return a && b;
 });
 
-},{"./internal/_curry2":792}],701:[function(require,module,exports){
+},{"./internal/_curry2":828}],737:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _dispatchable = require('./internal/_dispatchable');
 var _xany = require('./internal/_xany');
@@ -74594,7 +84234,7 @@ module.exports = _curry2(_dispatchable(['any'], _xany, function any(fn, list) {
   return false;
 }));
 
-},{"./internal/_curry2":792,"./internal/_dispatchable":795,"./internal/_xany":829}],702:[function(require,module,exports){
+},{"./internal/_curry2":828,"./internal/_dispatchable":831,"./internal/_xany":865}],738:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var curryN = require('./curryN');
 var max = require('./max');
@@ -74642,7 +84282,7 @@ module.exports = _curry1(function anyPass(preds) {
   });
 });
 
-},{"./curryN":731,"./internal/_curry1":791,"./max":880,"./pluck":919,"./reduce":930}],703:[function(require,module,exports){
+},{"./curryN":767,"./internal/_curry1":827,"./max":916,"./pluck":955,"./reduce":966}],739:[function(require,module,exports){
 var _concat = require('./internal/_concat');
 var _curry2 = require('./internal/_curry2');
 var _reduce = require('./internal/_reduce');
@@ -74681,7 +84321,7 @@ module.exports = _curry2(function ap(applicative, fn) {
   );
 });
 
-},{"./internal/_concat":787,"./internal/_curry2":792,"./internal/_reduce":823,"./map":874}],704:[function(require,module,exports){
+},{"./internal/_concat":823,"./internal/_curry2":828,"./internal/_reduce":859,"./map":910}],740:[function(require,module,exports){
 var _aperture = require('./internal/_aperture');
 var _curry2 = require('./internal/_curry2');
 var _dispatchable = require('./internal/_dispatchable');
@@ -74711,7 +84351,7 @@ var _xaperture = require('./internal/_xaperture');
  */
 module.exports = _curry2(_dispatchable([], _xaperture, _aperture));
 
-},{"./internal/_aperture":779,"./internal/_curry2":792,"./internal/_dispatchable":795,"./internal/_xaperture":830}],705:[function(require,module,exports){
+},{"./internal/_aperture":815,"./internal/_curry2":828,"./internal/_dispatchable":831,"./internal/_xaperture":866}],741:[function(require,module,exports){
 var _concat = require('./internal/_concat');
 var _curry2 = require('./internal/_curry2');
 
@@ -74740,7 +84380,7 @@ module.exports = _curry2(function append(el, list) {
   return _concat(list, [el]);
 });
 
-},{"./internal/_concat":787,"./internal/_curry2":792}],706:[function(require,module,exports){
+},{"./internal/_concat":823,"./internal/_curry2":828}],742:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -74768,7 +84408,7 @@ module.exports = _curry2(function apply(fn, args) {
   return fn.apply(this, args);
 });
 
-},{"./internal/_curry2":792}],707:[function(require,module,exports){
+},{"./internal/_curry2":828}],743:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var apply = require('./apply');
 var curryN = require('./curryN');
@@ -74814,7 +84454,7 @@ module.exports = _curry1(function applySpec(spec) {
                 });
 });
 
-},{"./apply":706,"./curryN":731,"./internal/_curry1":791,"./map":874,"./max":880,"./pluck":919,"./reduce":930,"./values":988}],708:[function(require,module,exports){
+},{"./apply":742,"./curryN":767,"./internal/_curry1":827,"./map":910,"./max":916,"./pluck":955,"./reduce":966,"./values":1024}],744:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 
@@ -74845,7 +84485,7 @@ module.exports = _curry3(function ascend(fn, a, b) {
   return aa < bb ? -1 : aa > bb ? 1 : 0;
 });
 
-},{"./internal/_curry3":793}],709:[function(require,module,exports){
+},{"./internal/_curry3":829}],745:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 
@@ -74878,7 +84518,7 @@ module.exports = _curry3(function assoc(prop, val, obj) {
   return result;
 });
 
-},{"./internal/_curry3":793}],710:[function(require,module,exports){
+},{"./internal/_curry3":829}],746:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 var _has = require('./internal/_has');
 var _isArray = require('./internal/_isArray');
@@ -74928,7 +84568,7 @@ module.exports = _curry3(function assocPath(path, val, obj) {
   }
 });
 
-},{"./assoc":709,"./internal/_curry3":793,"./internal/_has":803,"./internal/_isArray":807,"./internal/_isInteger":809}],711:[function(require,module,exports){
+},{"./assoc":745,"./internal/_curry3":829,"./internal/_has":839,"./internal/_isArray":843,"./internal/_isInteger":845}],747:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var nAry = require('./nAry');
 
@@ -74964,7 +84604,7 @@ module.exports = _curry1(function binary(fn) {
   return nAry(2, fn);
 });
 
-},{"./internal/_curry1":791,"./nAry":893}],712:[function(require,module,exports){
+},{"./internal/_curry1":827,"./nAry":929}],748:[function(require,module,exports){
 var _arity = require('./internal/_arity');
 var _curry2 = require('./internal/_curry2');
 
@@ -74997,7 +84637,7 @@ module.exports = _curry2(function bind(fn, thisObj) {
   });
 });
 
-},{"./internal/_arity":780,"./internal/_curry2":792}],713:[function(require,module,exports){
+},{"./internal/_arity":816,"./internal/_curry2":828}],749:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _isFunction = require('./internal/_isFunction');
 var and = require('./and');
@@ -75040,7 +84680,7 @@ module.exports = _curry2(function both(f, g) {
     lift(and)(f, g);
 });
 
-},{"./and":700,"./internal/_curry2":792,"./internal/_isFunction":808,"./lift":870}],714:[function(require,module,exports){
+},{"./and":736,"./internal/_curry2":828,"./internal/_isFunction":844,"./lift":906}],750:[function(require,module,exports){
 var curry = require('./curry');
 
 
@@ -75079,7 +84719,7 @@ module.exports = curry(function call(fn) {
   return fn.apply(this, Array.prototype.slice.call(arguments, 1));
 });
 
-},{"./curry":730}],715:[function(require,module,exports){
+},{"./curry":766}],751:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _dispatchable = require('./internal/_dispatchable');
 var _makeFlat = require('./internal/_makeFlat');
@@ -75116,7 +84756,7 @@ module.exports = _curry2(_dispatchable(['chain'], _xchain, function chain(fn, mo
   return _makeFlat(false)(map(fn, monad));
 }));
 
-},{"./internal/_curry2":792,"./internal/_dispatchable":795,"./internal/_makeFlat":816,"./internal/_xchain":831,"./map":874}],716:[function(require,module,exports){
+},{"./internal/_curry2":828,"./internal/_dispatchable":831,"./internal/_makeFlat":852,"./internal/_xchain":867,"./map":910}],752:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 /**
@@ -75148,7 +84788,7 @@ module.exports = _curry3(function clamp(min, max, value) {
          value;
 });
 
-},{"./internal/_curry3":793}],717:[function(require,module,exports){
+},{"./internal/_curry3":829}],753:[function(require,module,exports){
 var _clone = require('./internal/_clone');
 var _curry1 = require('./internal/_curry1');
 
@@ -75180,7 +84820,7 @@ module.exports = _curry1(function clone(value) {
     _clone(value, [], [], true);
 });
 
-},{"./internal/_clone":784,"./internal/_curry1":791}],718:[function(require,module,exports){
+},{"./internal/_clone":820,"./internal/_curry1":827}],754:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 
 
@@ -75210,7 +84850,7 @@ module.exports = _curry1(function comparator(pred) {
   };
 });
 
-},{"./internal/_curry1":791}],719:[function(require,module,exports){
+},{"./internal/_curry1":827}],755:[function(require,module,exports){
 var lift = require('./lift');
 var not = require('./not');
 
@@ -75239,7 +84879,7 @@ var not = require('./not');
  */
 module.exports = lift(not);
 
-},{"./lift":870,"./not":896}],720:[function(require,module,exports){
+},{"./lift":906,"./not":932}],756:[function(require,module,exports){
 var pipe = require('./pipe');
 var reverse = require('./reverse');
 
@@ -75275,7 +84915,7 @@ module.exports = function compose() {
   return pipe.apply(this, reverse(arguments));
 };
 
-},{"./pipe":916,"./reverse":939}],721:[function(require,module,exports){
+},{"./pipe":952,"./reverse":975}],757:[function(require,module,exports){
 var chain = require('./chain');
 var compose = require('./compose');
 var map = require('./map');
@@ -75320,7 +84960,7 @@ module.exports = function composeK() {
   return compose(compose.apply(this, map(chain, init)), last);
 };
 
-},{"./chain":715,"./compose":720,"./map":874}],722:[function(require,module,exports){
+},{"./chain":751,"./compose":756,"./map":910}],758:[function(require,module,exports){
 var pipeP = require('./pipeP');
 var reverse = require('./reverse');
 
@@ -75366,7 +85006,7 @@ module.exports = function composeP() {
   return pipeP.apply(this, reverse(arguments));
 };
 
-},{"./pipeP":918,"./reverse":939}],723:[function(require,module,exports){
+},{"./pipeP":954,"./reverse":975}],759:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _isArray = require('./internal/_isArray');
 var _isFunction = require('./internal/_isFunction');
@@ -75409,7 +85049,7 @@ module.exports = _curry2(function concat(a, b) {
   return a.concat(b);
 });
 
-},{"./internal/_curry2":792,"./internal/_isArray":807,"./internal/_isFunction":808,"./toString":966}],724:[function(require,module,exports){
+},{"./internal/_curry2":828,"./internal/_isArray":843,"./internal/_isFunction":844,"./toString":1002}],760:[function(require,module,exports){
 var _arity = require('./internal/_arity');
 var _curry1 = require('./internal/_curry1');
 var map = require('./map');
@@ -75458,7 +85098,7 @@ module.exports = _curry1(function cond(pairs) {
   });
 });
 
-},{"./internal/_arity":780,"./internal/_curry1":791,"./map":874,"./max":880,"./reduce":930}],725:[function(require,module,exports){
+},{"./internal/_arity":816,"./internal/_curry1":827,"./map":910,"./max":916,"./reduce":966}],761:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var constructN = require('./constructN');
 
@@ -75498,7 +85138,7 @@ module.exports = _curry1(function construct(Fn) {
   return constructN(Fn.length, Fn);
 });
 
-},{"./constructN":726,"./internal/_curry1":791}],726:[function(require,module,exports){
+},{"./constructN":762,"./internal/_curry1":827}],762:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var curry = require('./curry');
 var nAry = require('./nAry');
@@ -75562,7 +85202,7 @@ module.exports = _curry2(function constructN(n, Fn) {
   }));
 });
 
-},{"./curry":730,"./internal/_curry2":792,"./nAry":893}],727:[function(require,module,exports){
+},{"./curry":766,"./internal/_curry2":828,"./nAry":929}],763:[function(require,module,exports){
 var _contains = require('./internal/_contains');
 var _curry2 = require('./internal/_curry2');
 
@@ -75589,7 +85229,7 @@ var _curry2 = require('./internal/_curry2');
  */
 module.exports = _curry2(_contains);
 
-},{"./internal/_contains":788,"./internal/_curry2":792}],728:[function(require,module,exports){
+},{"./internal/_contains":824,"./internal/_curry2":828}],764:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _map = require('./internal/_map');
 var curryN = require('./curryN');
@@ -75635,7 +85275,7 @@ module.exports = _curry2(function converge(after, fns) {
   });
 });
 
-},{"./curryN":731,"./internal/_curry2":792,"./internal/_map":817,"./max":880,"./pluck":919,"./reduce":930}],729:[function(require,module,exports){
+},{"./curryN":767,"./internal/_curry2":828,"./internal/_map":853,"./max":916,"./pluck":955,"./reduce":966}],765:[function(require,module,exports){
 var reduceBy = require('./reduceBy');
 
 
@@ -75665,7 +85305,7 @@ var reduceBy = require('./reduceBy');
  */
 module.exports = reduceBy(function(acc, elem) { return acc + 1; }, 0);
 
-},{"./reduceBy":931}],730:[function(require,module,exports){
+},{"./reduceBy":967}],766:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var curryN = require('./curryN');
 
@@ -75715,7 +85355,7 @@ module.exports = _curry1(function curry(fn) {
   return curryN(fn.length, fn);
 });
 
-},{"./curryN":731,"./internal/_curry1":791}],731:[function(require,module,exports){
+},{"./curryN":767,"./internal/_curry1":827}],767:[function(require,module,exports){
 var _arity = require('./internal/_arity');
 var _curry1 = require('./internal/_curry1');
 var _curry2 = require('./internal/_curry2');
@@ -75771,7 +85411,7 @@ module.exports = _curry2(function curryN(length, fn) {
   return _arity(length, _curryN(length, [], fn));
 });
 
-},{"./internal/_arity":780,"./internal/_curry1":791,"./internal/_curry2":792,"./internal/_curryN":794}],732:[function(require,module,exports){
+},{"./internal/_arity":816,"./internal/_curry1":827,"./internal/_curry2":828,"./internal/_curryN":830}],768:[function(require,module,exports){
 var add = require('./add');
 
 
@@ -75792,7 +85432,7 @@ var add = require('./add');
  */
 module.exports = add(-1);
 
-},{"./add":694}],733:[function(require,module,exports){
+},{"./add":730}],769:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -75822,7 +85462,7 @@ module.exports = _curry2(function defaultTo(d, v) {
   return v == null || v !== v ? d : v;
 });
 
-},{"./internal/_curry2":792}],734:[function(require,module,exports){
+},{"./internal/_curry2":828}],770:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 
@@ -75853,7 +85493,7 @@ module.exports = _curry3(function descend(fn, a, b) {
   return aa > bb ? -1 : aa < bb ? 1 : 0;
 });
 
-},{"./internal/_curry3":793}],735:[function(require,module,exports){
+},{"./internal/_curry3":829}],771:[function(require,module,exports){
 var _contains = require('./internal/_contains');
 var _curry2 = require('./internal/_curry2');
 
@@ -75891,7 +85531,7 @@ module.exports = _curry2(function difference(first, second) {
   return out;
 });
 
-},{"./internal/_contains":788,"./internal/_curry2":792}],736:[function(require,module,exports){
+},{"./internal/_contains":824,"./internal/_curry2":828}],772:[function(require,module,exports){
 var _containsWith = require('./internal/_containsWith');
 var _curry3 = require('./internal/_curry3');
 
@@ -75932,7 +85572,7 @@ module.exports = _curry3(function differenceWith(pred, first, second) {
   return out;
 });
 
-},{"./internal/_containsWith":789,"./internal/_curry3":793}],737:[function(require,module,exports){
+},{"./internal/_containsWith":825,"./internal/_curry3":829}],773:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -75961,7 +85601,7 @@ module.exports = _curry2(function dissoc(prop, obj) {
   return result;
 });
 
-},{"./internal/_curry2":792}],738:[function(require,module,exports){
+},{"./internal/_curry2":828}],774:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var assoc = require('./assoc');
 var dissoc = require('./dissoc');
@@ -75998,7 +85638,7 @@ module.exports = _curry2(function dissocPath(path, obj) {
   }
 });
 
-},{"./assoc":709,"./dissoc":737,"./internal/_curry2":792}],739:[function(require,module,exports){
+},{"./assoc":745,"./dissoc":773,"./internal/_curry2":828}],775:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -76026,7 +85666,7 @@ var _curry2 = require('./internal/_curry2');
  */
 module.exports = _curry2(function divide(a, b) { return a / b; });
 
-},{"./internal/_curry2":792}],740:[function(require,module,exports){
+},{"./internal/_curry2":828}],776:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _dispatchable = require('./internal/_dispatchable');
 var _xdrop = require('./internal/_xdrop');
@@ -76061,7 +85701,7 @@ module.exports = _curry2(_dispatchable(['drop'], _xdrop, function drop(n, xs) {
   return slice(Math.max(0, n), Infinity, xs);
 }));
 
-},{"./internal/_curry2":792,"./internal/_dispatchable":795,"./internal/_xdrop":832,"./slice":943}],741:[function(require,module,exports){
+},{"./internal/_curry2":828,"./internal/_dispatchable":831,"./internal/_xdrop":868,"./slice":979}],777:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _dispatchable = require('./internal/_dispatchable');
 var _dropLast = require('./internal/_dropLast');
@@ -76091,7 +85731,7 @@ var _xdropLast = require('./internal/_xdropLast');
  */
 module.exports = _curry2(_dispatchable([], _xdropLast, _dropLast));
 
-},{"./internal/_curry2":792,"./internal/_dispatchable":795,"./internal/_dropLast":796,"./internal/_xdropLast":833}],742:[function(require,module,exports){
+},{"./internal/_curry2":828,"./internal/_dispatchable":831,"./internal/_dropLast":832,"./internal/_xdropLast":869}],778:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _dispatchable = require('./internal/_dispatchable');
 var _dropLastWhile = require('./internal/_dropLastWhile');
@@ -76122,7 +85762,7 @@ var _xdropLastWhile = require('./internal/_xdropLastWhile');
  */
 module.exports = _curry2(_dispatchable([], _xdropLastWhile, _dropLastWhile));
 
-},{"./internal/_curry2":792,"./internal/_dispatchable":795,"./internal/_dropLastWhile":797,"./internal/_xdropLastWhile":834}],743:[function(require,module,exports){
+},{"./internal/_curry2":828,"./internal/_dispatchable":831,"./internal/_dropLastWhile":833,"./internal/_xdropLastWhile":870}],779:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var _dispatchable = require('./internal/_dispatchable');
 var _xdropRepeatsWith = require('./internal/_xdropRepeatsWith');
@@ -76150,7 +85790,7 @@ var equals = require('./equals');
  */
 module.exports = _curry1(_dispatchable([], _xdropRepeatsWith(equals), dropRepeatsWith(equals)));
 
-},{"./dropRepeatsWith":744,"./equals":750,"./internal/_curry1":791,"./internal/_dispatchable":795,"./internal/_xdropRepeatsWith":835}],744:[function(require,module,exports){
+},{"./dropRepeatsWith":780,"./equals":786,"./internal/_curry1":827,"./internal/_dispatchable":831,"./internal/_xdropRepeatsWith":871}],780:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _dispatchable = require('./internal/_dispatchable');
 var _xdropRepeatsWith = require('./internal/_xdropRepeatsWith');
@@ -76195,7 +85835,7 @@ module.exports = _curry2(_dispatchable([], _xdropRepeatsWith, function dropRepea
 }));
 
 
-},{"./internal/_curry2":792,"./internal/_dispatchable":795,"./internal/_xdropRepeatsWith":835,"./last":863}],745:[function(require,module,exports){
+},{"./internal/_curry2":828,"./internal/_dispatchable":831,"./internal/_xdropRepeatsWith":871,"./last":899}],781:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _dispatchable = require('./internal/_dispatchable');
 var _xdropWhile = require('./internal/_xdropWhile');
@@ -76235,7 +85875,7 @@ module.exports = _curry2(_dispatchable(['dropWhile'], _xdropWhile, function drop
   return Array.prototype.slice.call(list, idx);
 }));
 
-},{"./internal/_curry2":792,"./internal/_dispatchable":795,"./internal/_xdropWhile":836}],746:[function(require,module,exports){
+},{"./internal/_curry2":828,"./internal/_dispatchable":831,"./internal/_xdropWhile":872}],782:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _isFunction = require('./internal/_isFunction');
 var lift = require('./lift');
@@ -76277,7 +85917,7 @@ module.exports = _curry2(function either(f, g) {
     lift(or)(f, g);
 });
 
-},{"./internal/_curry2":792,"./internal/_isFunction":808,"./lift":870,"./or":903}],747:[function(require,module,exports){
+},{"./internal/_curry2":828,"./internal/_isFunction":844,"./lift":906,"./or":939}],783:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var _isArguments = require('./internal/_isArguments');
 var _isArray = require('./internal/_isArray');
@@ -76326,7 +85966,7 @@ module.exports = _curry1(function empty(x) {
   );
 });
 
-},{"./internal/_curry1":791,"./internal/_isArguments":806,"./internal/_isArray":807,"./internal/_isObject":811,"./internal/_isString":814}],748:[function(require,module,exports){
+},{"./internal/_curry1":827,"./internal/_isArguments":842,"./internal/_isArray":843,"./internal/_isObject":847,"./internal/_isString":850}],784:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 var equals = require('./equals');
 
@@ -76352,7 +85992,7 @@ module.exports = _curry3(function eqBy(f, x, y) {
   return equals(f(x), f(y));
 });
 
-},{"./equals":750,"./internal/_curry3":793}],749:[function(require,module,exports){
+},{"./equals":786,"./internal/_curry3":829}],785:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 var equals = require('./equals');
 
@@ -76382,7 +86022,7 @@ module.exports = _curry3(function eqProps(prop, obj1, obj2) {
   return equals(obj1[prop], obj2[prop]);
 });
 
-},{"./equals":750,"./internal/_curry3":793}],750:[function(require,module,exports){
+},{"./equals":786,"./internal/_curry3":829}],786:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _equals = require('./internal/_equals');
 
@@ -76416,7 +86056,7 @@ module.exports = _curry2(function equals(a, b) {
   return _equals(a, b, [], []);
 });
 
-},{"./internal/_curry2":792,"./internal/_equals":798}],751:[function(require,module,exports){
+},{"./internal/_curry2":828,"./internal/_equals":834}],787:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -76460,7 +86100,7 @@ module.exports = _curry2(function evolve(transformations, object) {
   return result;
 });
 
-},{"./internal/_curry2":792}],752:[function(require,module,exports){
+},{"./internal/_curry2":828}],788:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _dispatchable = require('./internal/_dispatchable');
 var _filter = require('./internal/_filter');
@@ -76510,7 +86150,7 @@ module.exports = _curry2(_dispatchable(['filter'], _xfilter, function(pred, filt
   );
 }));
 
-},{"./internal/_curry2":792,"./internal/_dispatchable":795,"./internal/_filter":799,"./internal/_isObject":811,"./internal/_reduce":823,"./internal/_xfilter":838,"./keys":861}],753:[function(require,module,exports){
+},{"./internal/_curry2":828,"./internal/_dispatchable":831,"./internal/_filter":835,"./internal/_isObject":847,"./internal/_reduce":859,"./internal/_xfilter":874,"./keys":897}],789:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _dispatchable = require('./internal/_dispatchable');
 var _xfind = require('./internal/_xfind');
@@ -76551,7 +86191,7 @@ module.exports = _curry2(_dispatchable(['find'], _xfind, function find(fn, list)
   }
 }));
 
-},{"./internal/_curry2":792,"./internal/_dispatchable":795,"./internal/_xfind":839}],754:[function(require,module,exports){
+},{"./internal/_curry2":828,"./internal/_dispatchable":831,"./internal/_xfind":875}],790:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _dispatchable = require('./internal/_dispatchable');
 var _xfindIndex = require('./internal/_xfindIndex');
@@ -76591,7 +86231,7 @@ module.exports = _curry2(_dispatchable([], _xfindIndex, function findIndex(fn, l
   return -1;
 }));
 
-},{"./internal/_curry2":792,"./internal/_dispatchable":795,"./internal/_xfindIndex":840}],755:[function(require,module,exports){
+},{"./internal/_curry2":828,"./internal/_dispatchable":831,"./internal/_xfindIndex":876}],791:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _dispatchable = require('./internal/_dispatchable');
 var _xfindLast = require('./internal/_xfindLast');
@@ -76629,7 +86269,7 @@ module.exports = _curry2(_dispatchable([], _xfindLast, function findLast(fn, lis
   }
 }));
 
-},{"./internal/_curry2":792,"./internal/_dispatchable":795,"./internal/_xfindLast":841}],756:[function(require,module,exports){
+},{"./internal/_curry2":828,"./internal/_dispatchable":831,"./internal/_xfindLast":877}],792:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _dispatchable = require('./internal/_dispatchable');
 var _xfindLastIndex = require('./internal/_xfindLastIndex');
@@ -76668,7 +86308,7 @@ module.exports = _curry2(_dispatchable([], _xfindLastIndex, function findLastInd
   return -1;
 }));
 
-},{"./internal/_curry2":792,"./internal/_dispatchable":795,"./internal/_xfindLastIndex":842}],757:[function(require,module,exports){
+},{"./internal/_curry2":828,"./internal/_dispatchable":831,"./internal/_xfindLastIndex":878}],793:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var _makeFlat = require('./internal/_makeFlat');
 
@@ -76692,7 +86332,7 @@ var _makeFlat = require('./internal/_makeFlat');
  */
 module.exports = _curry1(_makeFlat(true));
 
-},{"./internal/_curry1":791,"./internal/_makeFlat":816}],758:[function(require,module,exports){
+},{"./internal/_curry1":827,"./internal/_makeFlat":852}],794:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var curry = require('./curry');
 
@@ -76726,7 +86366,7 @@ module.exports = _curry1(function flip(fn) {
   });
 });
 
-},{"./curry":730,"./internal/_curry1":791}],759:[function(require,module,exports){
+},{"./curry":766,"./internal/_curry1":827}],795:[function(require,module,exports){
 var _checkForMethod = require('./internal/_checkForMethod');
 var _curry2 = require('./internal/_curry2');
 
@@ -76775,7 +86415,7 @@ module.exports = _curry2(_checkForMethod('forEach', function forEach(fn, list) {
   return list;
 }));
 
-},{"./internal/_checkForMethod":783,"./internal/_curry2":792}],760:[function(require,module,exports){
+},{"./internal/_checkForMethod":819,"./internal/_curry2":828}],796:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var keys = require('./keys');
 
@@ -76813,7 +86453,7 @@ module.exports = _curry2(function forEachObjIndexed(fn, obj) {
   return obj;
 });
 
-},{"./internal/_curry2":792,"./keys":861}],761:[function(require,module,exports){
+},{"./internal/_curry2":828,"./keys":897}],797:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 
 
@@ -76843,7 +86483,7 @@ module.exports = _curry1(function fromPairs(pairs) {
   return result;
 });
 
-},{"./internal/_curry1":791}],762:[function(require,module,exports){
+},{"./internal/_curry1":827}],798:[function(require,module,exports){
 var _checkForMethod = require('./internal/_checkForMethod');
 var _curry2 = require('./internal/_curry2');
 var reduceBy = require('./reduceBy');
@@ -76896,7 +86536,7 @@ module.exports = _curry2(_checkForMethod('groupBy', reduceBy(function(acc, item)
   return acc;
 }, null)));
 
-},{"./internal/_checkForMethod":783,"./internal/_curry2":792,"./reduceBy":931}],763:[function(require,module,exports){
+},{"./internal/_checkForMethod":819,"./internal/_curry2":828,"./reduceBy":967}],799:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 /**
@@ -76940,7 +86580,7 @@ module.exports = _curry2(function(fn, list) {
   return res;
 });
 
-},{"./internal/_curry2":792}],764:[function(require,module,exports){
+},{"./internal/_curry2":828}],800:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -76967,7 +86607,7 @@ var _curry2 = require('./internal/_curry2');
  */
 module.exports = _curry2(function gt(a, b) { return a > b; });
 
-},{"./internal/_curry2":792}],765:[function(require,module,exports){
+},{"./internal/_curry2":828}],801:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -76994,7 +86634,7 @@ var _curry2 = require('./internal/_curry2');
  */
 module.exports = _curry2(function gte(a, b) { return a >= b; });
 
-},{"./internal/_curry2":792}],766:[function(require,module,exports){
+},{"./internal/_curry2":828}],802:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _has = require('./internal/_has');
 
@@ -77025,7 +86665,7 @@ var _has = require('./internal/_has');
  */
 module.exports = _curry2(_has);
 
-},{"./internal/_curry2":792,"./internal/_has":803}],767:[function(require,module,exports){
+},{"./internal/_curry2":828,"./internal/_has":839}],803:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -77059,7 +86699,7 @@ module.exports = _curry2(function hasIn(prop, obj) {
   return prop in obj;
 });
 
-},{"./internal/_curry2":792}],768:[function(require,module,exports){
+},{"./internal/_curry2":828}],804:[function(require,module,exports){
 var nth = require('./nth');
 
 
@@ -77086,7 +86726,7 @@ var nth = require('./nth');
  */
 module.exports = nth(0);
 
-},{"./nth":897}],769:[function(require,module,exports){
+},{"./nth":933}],805:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -77124,7 +86764,7 @@ module.exports = _curry2(function identical(a, b) {
   }
 });
 
-},{"./internal/_curry2":792}],770:[function(require,module,exports){
+},{"./internal/_curry2":828}],806:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var _identity = require('./internal/_identity');
 
@@ -77150,7 +86790,7 @@ var _identity = require('./internal/_identity');
  */
 module.exports = _curry1(_identity);
 
-},{"./internal/_curry1":791,"./internal/_identity":804}],771:[function(require,module,exports){
+},{"./internal/_curry1":827,"./internal/_identity":840}],807:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 var curryN = require('./curryN');
 
@@ -77188,7 +86828,7 @@ module.exports = _curry3(function ifElse(condition, onTrue, onFalse) {
   );
 });
 
-},{"./curryN":731,"./internal/_curry3":793}],772:[function(require,module,exports){
+},{"./curryN":767,"./internal/_curry3":829}],808:[function(require,module,exports){
 var add = require('./add');
 
 
@@ -77209,7 +86849,7 @@ var add = require('./add');
  */
 module.exports = add(1);
 
-},{"./add":694}],773:[function(require,module,exports){
+},{"./add":730}],809:[function(require,module,exports){
 var reduceBy = require('./reduceBy');
 
 
@@ -77237,7 +86877,7 @@ var reduceBy = require('./reduceBy');
  */
 module.exports = reduceBy(function(acc, elem) { return elem; }, null);
 
-},{"./reduceBy":931}],774:[function(require,module,exports){
+},{"./reduceBy":967}],810:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _indexOf = require('./internal/_indexOf');
 var _isArray = require('./internal/_isArray');
@@ -77268,7 +86908,7 @@ module.exports = _curry2(function indexOf(target, xs) {
     _indexOf(xs, target, 0);
 });
 
-},{"./internal/_curry2":792,"./internal/_indexOf":805,"./internal/_isArray":807}],775:[function(require,module,exports){
+},{"./internal/_curry2":828,"./internal/_indexOf":841,"./internal/_isArray":843}],811:[function(require,module,exports){
 var slice = require('./slice');
 
 
@@ -77298,7 +86938,7 @@ var slice = require('./slice');
  */
 module.exports = slice(0, -1);
 
-},{"./slice":943}],776:[function(require,module,exports){
+},{"./slice":979}],812:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 
@@ -77327,7 +86967,7 @@ module.exports = _curry3(function insert(idx, elt, list) {
   return result;
 });
 
-},{"./internal/_curry3":793}],777:[function(require,module,exports){
+},{"./internal/_curry3":829}],813:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 
@@ -77356,7 +86996,7 @@ module.exports = _curry3(function insertAll(idx, elts, list) {
                    Array.prototype.slice.call(list, idx));
 });
 
-},{"./internal/_curry3":793}],778:[function(require,module,exports){
+},{"./internal/_curry3":829}],814:[function(require,module,exports){
 var _contains = require('./_contains');
 
 
@@ -77529,7 +87169,7 @@ module.exports = (function() {
   return _Set;
 }());
 
-},{"./_contains":788}],779:[function(require,module,exports){
+},{"./_contains":824}],815:[function(require,module,exports){
 module.exports = function _aperture(n, list) {
   var idx = 0;
   var limit = list.length - (n - 1);
@@ -77541,7 +87181,7 @@ module.exports = function _aperture(n, list) {
   return acc;
 };
 
-},{}],780:[function(require,module,exports){
+},{}],816:[function(require,module,exports){
 module.exports = function _arity(n, fn) {
   /* eslint-disable no-unused-vars */
   switch (n) {
@@ -77560,7 +87200,7 @@ module.exports = function _arity(n, fn) {
   }
 };
 
-},{}],781:[function(require,module,exports){
+},{}],817:[function(require,module,exports){
 module.exports = function _arrayFromIterator(iter) {
   var list = [];
   var next;
@@ -77570,13 +87210,13 @@ module.exports = function _arrayFromIterator(iter) {
   return list;
 };
 
-},{}],782:[function(require,module,exports){
+},{}],818:[function(require,module,exports){
 var _objectAssign = require('./_objectAssign');
 
 module.exports =
   typeof Object.assign === 'function' ? Object.assign : _objectAssign;
 
-},{"./_objectAssign":818}],783:[function(require,module,exports){
+},{"./_objectAssign":854}],819:[function(require,module,exports){
 var _isArray = require('./_isArray');
 
 
@@ -77603,7 +87243,7 @@ module.exports = function _checkForMethod(methodname, fn) {
   };
 };
 
-},{"./_isArray":807}],784:[function(require,module,exports){
+},{"./_isArray":843}],820:[function(require,module,exports){
 var _cloneRegExp = require('./_cloneRegExp');
 var type = require('../type');
 
@@ -77645,7 +87285,7 @@ module.exports = function _clone(value, refFrom, refTo, deep) {
   }
 };
 
-},{"../type":973,"./_cloneRegExp":785}],785:[function(require,module,exports){
+},{"../type":1009,"./_cloneRegExp":821}],821:[function(require,module,exports){
 module.exports = function _cloneRegExp(pattern) {
   return new RegExp(pattern.source, (pattern.global     ? 'g' : '') +
                                     (pattern.ignoreCase ? 'i' : '') +
@@ -77654,14 +87294,14 @@ module.exports = function _cloneRegExp(pattern) {
                                     (pattern.unicode    ? 'u' : ''));
 };
 
-},{}],786:[function(require,module,exports){
+},{}],822:[function(require,module,exports){
 module.exports = function _complement(f) {
   return function() {
     return !f.apply(this, arguments);
   };
 };
 
-},{}],787:[function(require,module,exports){
+},{}],823:[function(require,module,exports){
 /**
  * Private `concat` function to merge two array-like objects.
  *
@@ -77694,7 +87334,7 @@ module.exports = function _concat(set1, set2) {
   return result;
 };
 
-},{}],788:[function(require,module,exports){
+},{}],824:[function(require,module,exports){
 var _indexOf = require('./_indexOf');
 
 
@@ -77702,7 +87342,7 @@ module.exports = function _contains(a, list) {
   return _indexOf(list, a, 0) >= 0;
 };
 
-},{"./_indexOf":805}],789:[function(require,module,exports){
+},{"./_indexOf":841}],825:[function(require,module,exports){
 module.exports = function _containsWith(pred, x, list) {
   var idx = 0;
   var len = list.length;
@@ -77716,7 +87356,7 @@ module.exports = function _containsWith(pred, x, list) {
   return false;
 };
 
-},{}],790:[function(require,module,exports){
+},{}],826:[function(require,module,exports){
 var _arity = require('./_arity');
 var _curry2 = require('./_curry2');
 
@@ -77729,7 +87369,7 @@ module.exports = function _createPartialApplicator(concat) {
   });
 };
 
-},{"./_arity":780,"./_curry2":792}],791:[function(require,module,exports){
+},{"./_arity":816,"./_curry2":828}],827:[function(require,module,exports){
 var _isPlaceholder = require('./_isPlaceholder');
 
 
@@ -77751,7 +87391,7 @@ module.exports = function _curry1(fn) {
   };
 };
 
-},{"./_isPlaceholder":812}],792:[function(require,module,exports){
+},{"./_isPlaceholder":848}],828:[function(require,module,exports){
 var _curry1 = require('./_curry1');
 var _isPlaceholder = require('./_isPlaceholder');
 
@@ -77781,7 +87421,7 @@ module.exports = function _curry2(fn) {
   };
 };
 
-},{"./_curry1":791,"./_isPlaceholder":812}],793:[function(require,module,exports){
+},{"./_curry1":827,"./_isPlaceholder":848}],829:[function(require,module,exports){
 var _curry1 = require('./_curry1');
 var _curry2 = require('./_curry2');
 var _isPlaceholder = require('./_isPlaceholder');
@@ -77821,7 +87461,7 @@ module.exports = function _curry3(fn) {
   };
 };
 
-},{"./_curry1":791,"./_curry2":792,"./_isPlaceholder":812}],794:[function(require,module,exports){
+},{"./_curry1":827,"./_curry2":828,"./_isPlaceholder":848}],830:[function(require,module,exports){
 var _arity = require('./_arity');
 var _isPlaceholder = require('./_isPlaceholder');
 
@@ -77863,7 +87503,7 @@ module.exports = function _curryN(length, received, fn) {
   };
 };
 
-},{"./_arity":780,"./_isPlaceholder":812}],795:[function(require,module,exports){
+},{"./_arity":816,"./_isPlaceholder":848}],831:[function(require,module,exports){
 var _isArray = require('./_isArray');
 var _isTransformer = require('./_isTransformer');
 
@@ -77906,14 +87546,14 @@ module.exports = function _dispatchable(methodNames, xf, fn) {
   };
 };
 
-},{"./_isArray":807,"./_isTransformer":815}],796:[function(require,module,exports){
+},{"./_isArray":843,"./_isTransformer":851}],832:[function(require,module,exports){
 var take = require('../take');
 
 module.exports = function dropLast(n, xs) {
   return take(n < xs.length ? xs.length - n : 0, xs);
 };
 
-},{"../take":956}],797:[function(require,module,exports){
+},{"../take":992}],833:[function(require,module,exports){
 module.exports = function dropLastWhile(pred, list) {
   var idx = list.length - 1;
   while (idx >= 0 && pred(list[idx])) {
@@ -77922,7 +87562,7 @@ module.exports = function dropLastWhile(pred, list) {
   return Array.prototype.slice.call(list, 0, idx + 1);
 };
 
-},{}],798:[function(require,module,exports){
+},{}],834:[function(require,module,exports){
 var _arrayFromIterator = require('./_arrayFromIterator');
 var _functionName = require('./_functionName');
 var _has = require('./_has');
@@ -78033,7 +87673,7 @@ module.exports = function _equals(a, b, stackA, stackB) {
   return true;
 };
 
-},{"../identical":769,"../keys":861,"../type":973,"./_arrayFromIterator":781,"./_functionName":802,"./_has":803}],799:[function(require,module,exports){
+},{"../identical":805,"../keys":897,"../type":1009,"./_arrayFromIterator":817,"./_functionName":838,"./_has":839}],835:[function(require,module,exports){
 module.exports = function _filter(fn, list) {
   var idx = 0;
   var len = list.length;
@@ -78048,7 +87688,7 @@ module.exports = function _filter(fn, list) {
   return result;
 };
 
-},{}],800:[function(require,module,exports){
+},{}],836:[function(require,module,exports){
 var _forceReduced = require('./_forceReduced');
 var _reduce = require('./_reduce');
 var _xfBase = require('./_xfBase');
@@ -78082,7 +87722,7 @@ module.exports = (function() {
   };
 }());
 
-},{"../isArrayLike":856,"./_forceReduced":801,"./_reduce":823,"./_xfBase":837}],801:[function(require,module,exports){
+},{"../isArrayLike":892,"./_forceReduced":837,"./_reduce":859,"./_xfBase":873}],837:[function(require,module,exports){
 module.exports = function _forceReduced(x) {
   return {
     '@@transducer/value': x,
@@ -78090,22 +87730,22 @@ module.exports = function _forceReduced(x) {
   };
 };
 
-},{}],802:[function(require,module,exports){
+},{}],838:[function(require,module,exports){
 module.exports = function _functionName(f) {
   // String(x => x) evaluates to "x => x", so the pattern may not match.
   var match = String(f).match(/^function (\w*)/);
   return match == null ? '' : match[1];
 };
 
-},{}],803:[function(require,module,exports){
+},{}],839:[function(require,module,exports){
 module.exports = function _has(prop, obj) {
   return Object.prototype.hasOwnProperty.call(obj, prop);
 };
 
-},{}],804:[function(require,module,exports){
+},{}],840:[function(require,module,exports){
 module.exports = function _identity(x) { return x; };
 
-},{}],805:[function(require,module,exports){
+},{}],841:[function(require,module,exports){
 var equals = require('../equals');
 
 
@@ -78164,7 +87804,7 @@ module.exports = function _indexOf(list, a, idx) {
   return -1;
 };
 
-},{"../equals":750}],806:[function(require,module,exports){
+},{"../equals":786}],842:[function(require,module,exports){
 var _has = require('./_has');
 
 
@@ -78175,7 +87815,7 @@ module.exports = (function() {
     function _isArguments(x) { return _has('callee', x); };
 }());
 
-},{"./_has":803}],807:[function(require,module,exports){
+},{"./_has":839}],843:[function(require,module,exports){
 /**
  * Tests whether or not an object is an array.
  *
@@ -78194,12 +87834,12 @@ module.exports = Array.isArray || function _isArray(val) {
           Object.prototype.toString.call(val) === '[object Array]');
 };
 
-},{}],808:[function(require,module,exports){
+},{}],844:[function(require,module,exports){
 module.exports = function _isFunction(x) {
   return Object.prototype.toString.call(x) === '[object Function]';
 };
 
-},{}],809:[function(require,module,exports){
+},{}],845:[function(require,module,exports){
 /**
  * Determine if the passed argument is an integer.
  *
@@ -78212,39 +87852,39 @@ module.exports = Number.isInteger || function _isInteger(n) {
   return (n << 0) === n;
 };
 
-},{}],810:[function(require,module,exports){
+},{}],846:[function(require,module,exports){
 module.exports = function _isNumber(x) {
   return Object.prototype.toString.call(x) === '[object Number]';
 };
 
-},{}],811:[function(require,module,exports){
+},{}],847:[function(require,module,exports){
 module.exports = function _isObject(x) {
   return Object.prototype.toString.call(x) === '[object Object]';
 };
 
-},{}],812:[function(require,module,exports){
+},{}],848:[function(require,module,exports){
 module.exports = function _isPlaceholder(a) {
   return a != null &&
          typeof a === 'object' &&
          a['@@functional/placeholder'] === true;
 };
 
-},{}],813:[function(require,module,exports){
+},{}],849:[function(require,module,exports){
 module.exports = function _isRegExp(x) {
   return Object.prototype.toString.call(x) === '[object RegExp]';
 };
 
-},{}],814:[function(require,module,exports){
+},{}],850:[function(require,module,exports){
 module.exports = function _isString(x) {
   return Object.prototype.toString.call(x) === '[object String]';
 };
 
-},{}],815:[function(require,module,exports){
+},{}],851:[function(require,module,exports){
 module.exports = function _isTransformer(obj) {
   return typeof obj['@@transducer/step'] === 'function';
 };
 
-},{}],816:[function(require,module,exports){
+},{}],852:[function(require,module,exports){
 var isArrayLike = require('../isArrayLike');
 
 
@@ -78279,7 +87919,7 @@ module.exports = function _makeFlat(recursive) {
   };
 };
 
-},{"../isArrayLike":856}],817:[function(require,module,exports){
+},{"../isArrayLike":892}],853:[function(require,module,exports){
 module.exports = function _map(fn, functor) {
   var idx = 0;
   var len = functor.length;
@@ -78291,7 +87931,7 @@ module.exports = function _map(fn, functor) {
   return result;
 };
 
-},{}],818:[function(require,module,exports){
+},{}],854:[function(require,module,exports){
 var _has = require('./_has');
 
 // Based on https://developer.mozilla.org/en/docs/Web/JavaScript/Reference/Global_Objects/Object/assign
@@ -78317,17 +87957,17 @@ module.exports = function _objectAssign(target) {
   return output;
 };
 
-},{"./_has":803}],819:[function(require,module,exports){
+},{"./_has":839}],855:[function(require,module,exports){
 module.exports = function _of(x) { return [x]; };
 
-},{}],820:[function(require,module,exports){
+},{}],856:[function(require,module,exports){
 module.exports = function _pipe(f, g) {
   return function() {
     return g.call(this, f.apply(this, arguments));
   };
 };
 
-},{}],821:[function(require,module,exports){
+},{}],857:[function(require,module,exports){
 module.exports = function _pipeP(f, g) {
   return function() {
     var ctx = this;
@@ -78337,7 +87977,7 @@ module.exports = function _pipeP(f, g) {
   };
 };
 
-},{}],822:[function(require,module,exports){
+},{}],858:[function(require,module,exports){
 module.exports = function _quote(s) {
   var escaped = s
     .replace(/\\/g, '\\\\')
@@ -78352,7 +87992,7 @@ module.exports = function _quote(s) {
   return '"' + escaped.replace(/"/g, '\\"') + '"';
 };
 
-},{}],823:[function(require,module,exports){
+},{}],859:[function(require,module,exports){
 var _xwrap = require('./_xwrap');
 var bind = require('../bind');
 var isArrayLike = require('../isArrayLike');
@@ -78411,7 +88051,7 @@ module.exports = (function() {
   };
 }());
 
-},{"../bind":712,"../isArrayLike":856,"./_xwrap":847}],824:[function(require,module,exports){
+},{"../bind":748,"../isArrayLike":892,"./_xwrap":883}],860:[function(require,module,exports){
 module.exports = function _reduced(x) {
   return x && x['@@transducer/reduced'] ? x :
     {
@@ -78420,7 +88060,7 @@ module.exports = function _reduced(x) {
     };
 };
 
-},{}],825:[function(require,module,exports){
+},{}],861:[function(require,module,exports){
 var _assign = require('./_assign');
 var _identity = require('./_identity');
 var _isTransformer = require('./_isTransformer');
@@ -78470,7 +88110,7 @@ module.exports = (function() {
   };
 }());
 
-},{"../isArrayLike":856,"../objOf":899,"./_assign":782,"./_identity":804,"./_isTransformer":815}],826:[function(require,module,exports){
+},{"../isArrayLike":892,"../objOf":935,"./_assign":818,"./_identity":840,"./_isTransformer":851}],862:[function(require,module,exports){
 /**
  * Polyfill from <https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date/toISOString>.
  */
@@ -78494,7 +88134,7 @@ module.exports = (function() {
     };
 }());
 
-},{}],827:[function(require,module,exports){
+},{}],863:[function(require,module,exports){
 var _contains = require('./_contains');
 var _map = require('./_map');
 var _quote = require('./_quote');
@@ -78542,7 +88182,7 @@ module.exports = function _toString(x, seen) {
   }
 };
 
-},{"../keys":861,"../reject":935,"./_contains":788,"./_map":817,"./_quote":822,"./_toISOString":826}],828:[function(require,module,exports){
+},{"../keys":897,"../reject":971,"./_contains":824,"./_map":853,"./_quote":858,"./_toISOString":862}],864:[function(require,module,exports){
 var _curry2 = require('./_curry2');
 var _reduced = require('./_reduced');
 var _xfBase = require('./_xfBase');
@@ -78572,7 +88212,7 @@ module.exports = (function() {
   return _curry2(function _xall(f, xf) { return new XAll(f, xf); });
 }());
 
-},{"./_curry2":792,"./_reduced":824,"./_xfBase":837}],829:[function(require,module,exports){
+},{"./_curry2":828,"./_reduced":860,"./_xfBase":873}],865:[function(require,module,exports){
 var _curry2 = require('./_curry2');
 var _reduced = require('./_reduced');
 var _xfBase = require('./_xfBase');
@@ -78602,7 +88242,7 @@ module.exports = (function() {
   return _curry2(function _xany(f, xf) { return new XAny(f, xf); });
 }());
 
-},{"./_curry2":792,"./_reduced":824,"./_xfBase":837}],830:[function(require,module,exports){
+},{"./_curry2":828,"./_reduced":860,"./_xfBase":873}],866:[function(require,module,exports){
 var _concat = require('./_concat');
 var _curry2 = require('./_curry2');
 var _xfBase = require('./_xfBase');
@@ -78640,7 +88280,7 @@ module.exports = (function() {
   return _curry2(function _xaperture(n, xf) { return new XAperture(n, xf); });
 }());
 
-},{"./_concat":787,"./_curry2":792,"./_xfBase":837}],831:[function(require,module,exports){
+},{"./_concat":823,"./_curry2":828,"./_xfBase":873}],867:[function(require,module,exports){
 var _curry2 = require('./_curry2');
 var _flatCat = require('./_flatCat');
 var map = require('../map');
@@ -78650,7 +88290,7 @@ module.exports = _curry2(function _xchain(f, xf) {
   return map(f, _flatCat(xf));
 });
 
-},{"../map":874,"./_curry2":792,"./_flatCat":800}],832:[function(require,module,exports){
+},{"../map":910,"./_curry2":828,"./_flatCat":836}],868:[function(require,module,exports){
 var _curry2 = require('./_curry2');
 var _xfBase = require('./_xfBase');
 
@@ -78673,7 +88313,7 @@ module.exports = (function() {
   return _curry2(function _xdrop(n, xf) { return new XDrop(n, xf); });
 }());
 
-},{"./_curry2":792,"./_xfBase":837}],833:[function(require,module,exports){
+},{"./_curry2":828,"./_xfBase":873}],869:[function(require,module,exports){
 var _curry2 = require('./_curry2');
 var _xfBase = require('./_xfBase');
 
@@ -78709,7 +88349,7 @@ module.exports = (function() {
   return _curry2(function _xdropLast(n, xf) { return new XDropLast(n, xf); });
 }());
 
-},{"./_curry2":792,"./_xfBase":837}],834:[function(require,module,exports){
+},{"./_curry2":828,"./_xfBase":873}],870:[function(require,module,exports){
 var _curry2 = require('./_curry2');
 var _reduce = require('./_reduce');
 var _xfBase = require('./_xfBase');
@@ -78746,7 +88386,7 @@ module.exports = (function() {
   return _curry2(function _xdropLastWhile(fn, xf) { return new XDropLastWhile(fn, xf); });
 }());
 
-},{"./_curry2":792,"./_reduce":823,"./_xfBase":837}],835:[function(require,module,exports){
+},{"./_curry2":828,"./_reduce":859,"./_xfBase":873}],871:[function(require,module,exports){
 var _curry2 = require('./_curry2');
 var _xfBase = require('./_xfBase');
 
@@ -78775,7 +88415,7 @@ module.exports = (function() {
   return _curry2(function _xdropRepeatsWith(pred, xf) { return new XDropRepeatsWith(pred, xf); });
 }());
 
-},{"./_curry2":792,"./_xfBase":837}],836:[function(require,module,exports){
+},{"./_curry2":828,"./_xfBase":873}],872:[function(require,module,exports){
 var _curry2 = require('./_curry2');
 var _xfBase = require('./_xfBase');
 
@@ -78800,7 +88440,7 @@ module.exports = (function() {
   return _curry2(function _xdropWhile(f, xf) { return new XDropWhile(f, xf); });
 }());
 
-},{"./_curry2":792,"./_xfBase":837}],837:[function(require,module,exports){
+},{"./_curry2":828,"./_xfBase":873}],873:[function(require,module,exports){
 module.exports = {
   init: function() {
     return this.xf['@@transducer/init']();
@@ -78810,7 +88450,7 @@ module.exports = {
   }
 };
 
-},{}],838:[function(require,module,exports){
+},{}],874:[function(require,module,exports){
 var _curry2 = require('./_curry2');
 var _xfBase = require('./_xfBase');
 
@@ -78829,7 +88469,7 @@ module.exports = (function() {
   return _curry2(function _xfilter(f, xf) { return new XFilter(f, xf); });
 }());
 
-},{"./_curry2":792,"./_xfBase":837}],839:[function(require,module,exports){
+},{"./_curry2":828,"./_xfBase":873}],875:[function(require,module,exports){
 var _curry2 = require('./_curry2');
 var _reduced = require('./_reduced');
 var _xfBase = require('./_xfBase');
@@ -78859,7 +88499,7 @@ module.exports = (function() {
   return _curry2(function _xfind(f, xf) { return new XFind(f, xf); });
 }());
 
-},{"./_curry2":792,"./_reduced":824,"./_xfBase":837}],840:[function(require,module,exports){
+},{"./_curry2":828,"./_reduced":860,"./_xfBase":873}],876:[function(require,module,exports){
 var _curry2 = require('./_curry2');
 var _reduced = require('./_reduced');
 var _xfBase = require('./_xfBase');
@@ -78891,7 +88531,7 @@ module.exports = (function() {
   return _curry2(function _xfindIndex(f, xf) { return new XFindIndex(f, xf); });
 }());
 
-},{"./_curry2":792,"./_reduced":824,"./_xfBase":837}],841:[function(require,module,exports){
+},{"./_curry2":828,"./_reduced":860,"./_xfBase":873}],877:[function(require,module,exports){
 var _curry2 = require('./_curry2');
 var _xfBase = require('./_xfBase');
 
@@ -78915,7 +88555,7 @@ module.exports = (function() {
   return _curry2(function _xfindLast(f, xf) { return new XFindLast(f, xf); });
 }());
 
-},{"./_curry2":792,"./_xfBase":837}],842:[function(require,module,exports){
+},{"./_curry2":828,"./_xfBase":873}],878:[function(require,module,exports){
 var _curry2 = require('./_curry2');
 var _xfBase = require('./_xfBase');
 
@@ -78942,7 +88582,7 @@ module.exports = (function() {
   return _curry2(function _xfindLastIndex(f, xf) { return new XFindLastIndex(f, xf); });
 }());
 
-},{"./_curry2":792,"./_xfBase":837}],843:[function(require,module,exports){
+},{"./_curry2":828,"./_xfBase":873}],879:[function(require,module,exports){
 var _curry2 = require('./_curry2');
 var _xfBase = require('./_xfBase');
 
@@ -78961,7 +88601,7 @@ module.exports = (function() {
   return _curry2(function _xmap(f, xf) { return new XMap(f, xf); });
 }());
 
-},{"./_curry2":792,"./_xfBase":837}],844:[function(require,module,exports){
+},{"./_curry2":828,"./_xfBase":873}],880:[function(require,module,exports){
 var _curryN = require('./_curryN');
 var _has = require('./_has');
 var _xfBase = require('./_xfBase');
@@ -79003,7 +88643,7 @@ module.exports = (function() {
                  });
 }());
 
-},{"./_curryN":794,"./_has":803,"./_xfBase":837}],845:[function(require,module,exports){
+},{"./_curryN":830,"./_has":839,"./_xfBase":873}],881:[function(require,module,exports){
 var _curry2 = require('./_curry2');
 var _reduced = require('./_reduced');
 var _xfBase = require('./_xfBase');
@@ -79025,7 +88665,7 @@ module.exports = (function() {
   return _curry2(function _xtake(n, xf) { return new XTake(n, xf); });
 }());
 
-},{"./_curry2":792,"./_reduced":824,"./_xfBase":837}],846:[function(require,module,exports){
+},{"./_curry2":828,"./_reduced":860,"./_xfBase":873}],882:[function(require,module,exports){
 var _curry2 = require('./_curry2');
 var _reduced = require('./_reduced');
 var _xfBase = require('./_xfBase');
@@ -79045,7 +88685,7 @@ module.exports = (function() {
   return _curry2(function _xtakeWhile(f, xf) { return new XTakeWhile(f, xf); });
 }());
 
-},{"./_curry2":792,"./_reduced":824,"./_xfBase":837}],847:[function(require,module,exports){
+},{"./_curry2":828,"./_reduced":860,"./_xfBase":873}],883:[function(require,module,exports){
 module.exports = (function() {
   function XWrap(fn) {
     this.f = fn;
@@ -79061,7 +88701,7 @@ module.exports = (function() {
   return function _xwrap(fn) { return new XWrap(fn); };
 }());
 
-},{}],848:[function(require,module,exports){
+},{}],884:[function(require,module,exports){
 var _contains = require('./internal/_contains');
 var _curry2 = require('./internal/_curry2');
 var _filter = require('./internal/_filter');
@@ -79098,7 +88738,7 @@ module.exports = _curry2(function intersection(list1, list2) {
   return uniq(_filter(flip(_contains)(lookupList), filteredList));
 });
 
-},{"./flip":758,"./internal/_contains":788,"./internal/_curry2":792,"./internal/_filter":799,"./uniq":980}],849:[function(require,module,exports){
+},{"./flip":794,"./internal/_contains":824,"./internal/_curry2":828,"./internal/_filter":835,"./uniq":1016}],885:[function(require,module,exports){
 var _containsWith = require('./internal/_containsWith');
 var _curry3 = require('./internal/_curry3');
 var uniqWith = require('./uniqWith');
@@ -79159,7 +88799,7 @@ module.exports = _curry3(function intersectionWith(pred, list1, list2) {
   return uniqWith(pred, results);
 });
 
-},{"./internal/_containsWith":789,"./internal/_curry3":793,"./uniqWith":982}],850:[function(require,module,exports){
+},{"./internal/_containsWith":825,"./internal/_curry3":829,"./uniqWith":1018}],886:[function(require,module,exports){
 var _checkForMethod = require('./internal/_checkForMethod');
 var _curry2 = require('./internal/_curry2');
 
@@ -79196,7 +88836,7 @@ module.exports = _curry2(_checkForMethod('intersperse', function intersperse(sep
   return out;
 }));
 
-},{"./internal/_checkForMethod":783,"./internal/_curry2":792}],851:[function(require,module,exports){
+},{"./internal/_checkForMethod":819,"./internal/_curry2":828}],887:[function(require,module,exports){
 var _clone = require('./internal/_clone');
 var _curry3 = require('./internal/_curry3');
 var _isTransformer = require('./internal/_isTransformer');
@@ -79247,7 +88887,7 @@ module.exports = _curry3(function into(acc, xf, list) {
     _reduce(xf(_stepCat(acc)), _clone(acc, [], [], false), list);
 });
 
-},{"./internal/_clone":784,"./internal/_curry3":793,"./internal/_isTransformer":815,"./internal/_reduce":823,"./internal/_stepCat":825}],852:[function(require,module,exports){
+},{"./internal/_clone":820,"./internal/_curry3":829,"./internal/_isTransformer":851,"./internal/_reduce":859,"./internal/_stepCat":861}],888:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var _has = require('./internal/_has');
 var keys = require('./keys');
@@ -79291,7 +88931,7 @@ module.exports = _curry1(function invert(obj) {
   return out;
 });
 
-},{"./internal/_curry1":791,"./internal/_has":803,"./keys":861}],853:[function(require,module,exports){
+},{"./internal/_curry1":827,"./internal/_has":839,"./keys":897}],889:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var keys = require('./keys');
 
@@ -79336,7 +88976,7 @@ module.exports = _curry1(function invertObj(obj) {
   return out;
 });
 
-},{"./internal/_curry1":791,"./keys":861}],854:[function(require,module,exports){
+},{"./internal/_curry1":827,"./keys":897}],890:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _isFunction = require('./internal/_isFunction');
 var curryN = require('./curryN');
@@ -79379,7 +89019,7 @@ module.exports = _curry2(function invoker(arity, method) {
   });
 });
 
-},{"./curryN":731,"./internal/_curry2":792,"./internal/_isFunction":808,"./toString":966}],855:[function(require,module,exports){
+},{"./curryN":767,"./internal/_curry2":828,"./internal/_isFunction":844,"./toString":1002}],891:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -79410,7 +89050,7 @@ module.exports = _curry2(function is(Ctor, val) {
   return val != null && val.constructor === Ctor || val instanceof Ctor;
 });
 
-},{"./internal/_curry2":792}],856:[function(require,module,exports){
+},{"./internal/_curry2":828}],892:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var _isArray = require('./internal/_isArray');
 var _isString = require('./internal/_isString');
@@ -79449,7 +89089,7 @@ module.exports = _curry1(function isArrayLike(x) {
   return false;
 });
 
-},{"./internal/_curry1":791,"./internal/_isArray":807,"./internal/_isString":814}],857:[function(require,module,exports){
+},{"./internal/_curry1":827,"./internal/_isArray":843,"./internal/_isString":850}],893:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var empty = require('./empty');
 var equals = require('./equals');
@@ -79480,7 +89120,7 @@ module.exports = _curry1(function isEmpty(x) {
   return x != null && equals(x, empty(x));
 });
 
-},{"./empty":747,"./equals":750,"./internal/_curry1":791}],858:[function(require,module,exports){
+},{"./empty":783,"./equals":786,"./internal/_curry1":827}],894:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 
 
@@ -79503,7 +89143,7 @@ var _curry1 = require('./internal/_curry1');
  */
 module.exports = _curry1(function isNil(x) { return x == null; });
 
-},{"./internal/_curry1":791}],859:[function(require,module,exports){
+},{"./internal/_curry1":827}],895:[function(require,module,exports){
 var invoker = require('./invoker');
 
 
@@ -79528,7 +89168,7 @@ var invoker = require('./invoker');
  */
 module.exports = invoker(1, 'join');
 
-},{"./invoker":854}],860:[function(require,module,exports){
+},{"./invoker":890}],896:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var converge = require('./converge');
 
@@ -79554,7 +89194,7 @@ module.exports = _curry1(function juxt(fns) {
   return converge(function() { return Array.prototype.slice.call(arguments, 0); }, fns);
 });
 
-},{"./converge":728,"./internal/_curry1":791}],861:[function(require,module,exports){
+},{"./converge":764,"./internal/_curry1":827}],897:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var _has = require('./internal/_has');
 var _isArguments = require('./internal/_isArguments');
@@ -79629,7 +89269,7 @@ module.exports = (function() {
     });
 }());
 
-},{"./internal/_curry1":791,"./internal/_has":803,"./internal/_isArguments":806}],862:[function(require,module,exports){
+},{"./internal/_curry1":827,"./internal/_has":839,"./internal/_isArguments":842}],898:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 
 
@@ -79662,7 +89302,7 @@ module.exports = _curry1(function keysIn(obj) {
   return ks;
 });
 
-},{"./internal/_curry1":791}],863:[function(require,module,exports){
+},{"./internal/_curry1":827}],899:[function(require,module,exports){
 var nth = require('./nth');
 
 
@@ -79688,7 +89328,7 @@ var nth = require('./nth');
  */
 module.exports = nth(-1);
 
-},{"./nth":897}],864:[function(require,module,exports){
+},{"./nth":933}],900:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _isArray = require('./internal/_isArray');
 var equals = require('./equals');
@@ -79728,7 +89368,7 @@ module.exports = _curry2(function lastIndexOf(target, xs) {
   }
 });
 
-},{"./equals":750,"./internal/_curry2":792,"./internal/_isArray":807}],865:[function(require,module,exports){
+},{"./equals":786,"./internal/_curry2":828,"./internal/_isArray":843}],901:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var _isNumber = require('./internal/_isNumber');
 
@@ -79752,7 +89392,7 @@ module.exports = _curry1(function length(list) {
   return list != null && _isNumber(list.length) ? list.length : NaN;
 });
 
-},{"./internal/_curry1":791,"./internal/_isNumber":810}],866:[function(require,module,exports){
+},{"./internal/_curry1":827,"./internal/_isNumber":846}],902:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var map = require('./map');
 
@@ -79793,7 +89433,7 @@ module.exports = _curry2(function lens(getter, setter) {
   };
 });
 
-},{"./internal/_curry2":792,"./map":874}],867:[function(require,module,exports){
+},{"./internal/_curry2":828,"./map":910}],903:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var lens = require('./lens');
 var nth = require('./nth');
@@ -79824,7 +89464,7 @@ module.exports = _curry1(function lensIndex(n) {
   return lens(nth(n), update(n));
 });
 
-},{"./internal/_curry1":791,"./lens":866,"./nth":897,"./update":986}],868:[function(require,module,exports){
+},{"./internal/_curry1":827,"./lens":902,"./nth":933,"./update":1022}],904:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var assocPath = require('./assocPath');
 var lens = require('./lens');
@@ -79859,7 +89499,7 @@ module.exports = _curry1(function lensPath(p) {
   return lens(path(p), assocPath(p));
 });
 
-},{"./assocPath":710,"./internal/_curry1":791,"./lens":866,"./path":909}],869:[function(require,module,exports){
+},{"./assocPath":746,"./internal/_curry1":827,"./lens":902,"./path":945}],905:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var assoc = require('./assoc');
 var lens = require('./lens');
@@ -79890,7 +89530,7 @@ module.exports = _curry1(function lensProp(k) {
   return lens(prop(k), assoc(k));
 });
 
-},{"./assoc":709,"./internal/_curry1":791,"./lens":866,"./prop":923}],870:[function(require,module,exports){
+},{"./assoc":745,"./internal/_curry1":827,"./lens":902,"./prop":959}],906:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var liftN = require('./liftN');
 
@@ -79921,7 +89561,7 @@ module.exports = _curry1(function lift(fn) {
   return liftN(fn.length, fn);
 });
 
-},{"./internal/_curry1":791,"./liftN":871}],871:[function(require,module,exports){
+},{"./internal/_curry1":827,"./liftN":907}],907:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _reduce = require('./internal/_reduce');
 var ap = require('./ap');
@@ -79953,7 +89593,7 @@ module.exports = _curry2(function liftN(arity, fn) {
   });
 });
 
-},{"./ap":703,"./curryN":731,"./internal/_curry2":792,"./internal/_reduce":823,"./map":874}],872:[function(require,module,exports){
+},{"./ap":739,"./curryN":767,"./internal/_curry2":828,"./internal/_reduce":859,"./map":910}],908:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -79980,7 +89620,7 @@ var _curry2 = require('./internal/_curry2');
  */
 module.exports = _curry2(function lt(a, b) { return a < b; });
 
-},{"./internal/_curry2":792}],873:[function(require,module,exports){
+},{"./internal/_curry2":828}],909:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -80007,7 +89647,7 @@ var _curry2 = require('./internal/_curry2');
  */
 module.exports = _curry2(function lte(a, b) { return a <= b; });
 
-},{"./internal/_curry2":792}],874:[function(require,module,exports){
+},{"./internal/_curry2":828}],910:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _dispatchable = require('./internal/_dispatchable');
 var _map = require('./internal/_map');
@@ -80068,7 +89708,7 @@ module.exports = _curry2(_dispatchable(['map'], _xmap, function map(fn, functor)
   }
 }));
 
-},{"./curryN":731,"./internal/_curry2":792,"./internal/_dispatchable":795,"./internal/_map":817,"./internal/_reduce":823,"./internal/_xmap":843,"./keys":861}],875:[function(require,module,exports){
+},{"./curryN":767,"./internal/_curry2":828,"./internal/_dispatchable":831,"./internal/_map":853,"./internal/_reduce":859,"./internal/_xmap":879,"./keys":897}],911:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 
@@ -80119,7 +89759,7 @@ module.exports = _curry3(function mapAccum(fn, acc, list) {
   return [tuple[0], result];
 });
 
-},{"./internal/_curry3":793}],876:[function(require,module,exports){
+},{"./internal/_curry3":829}],912:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 
@@ -80172,7 +89812,7 @@ module.exports = _curry3(function mapAccumRight(fn, acc, list) {
   return [result, tuple[0]];
 });
 
-},{"./internal/_curry3":793}],877:[function(require,module,exports){
+},{"./internal/_curry3":829}],913:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _reduce = require('./internal/_reduce');
 var keys = require('./keys');
@@ -80206,7 +89846,7 @@ module.exports = _curry2(function mapObjIndexed(fn, obj) {
   }, {}, keys(obj));
 });
 
-},{"./internal/_curry2":792,"./internal/_reduce":823,"./keys":861}],878:[function(require,module,exports){
+},{"./internal/_curry2":828,"./internal/_reduce":859,"./keys":897}],914:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -80235,7 +89875,7 @@ module.exports = _curry2(function match(rx, str) {
   return str.match(rx) || [];
 });
 
-},{"./internal/_curry2":792}],879:[function(require,module,exports){
+},{"./internal/_curry2":828}],915:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _isInteger = require('./internal/_isInteger');
 
@@ -80278,7 +89918,7 @@ module.exports = _curry2(function mathMod(m, p) {
   return ((m % p) + p) % p;
 });
 
-},{"./internal/_curry2":792,"./internal/_isInteger":809}],880:[function(require,module,exports){
+},{"./internal/_curry2":828,"./internal/_isInteger":845}],916:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -80301,7 +89941,7 @@ var _curry2 = require('./internal/_curry2');
  */
 module.exports = _curry2(function max(a, b) { return b > a ? b : a; });
 
-},{"./internal/_curry2":792}],881:[function(require,module,exports){
+},{"./internal/_curry2":828}],917:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 
@@ -80333,7 +89973,7 @@ module.exports = _curry3(function maxBy(f, a, b) {
   return f(b) > f(a) ? b : a;
 });
 
-},{"./internal/_curry3":793}],882:[function(require,module,exports){
+},{"./internal/_curry3":829}],918:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var sum = require('./sum');
 
@@ -80357,7 +89997,7 @@ module.exports = _curry1(function mean(list) {
   return sum(list) / list.length;
 });
 
-},{"./internal/_curry1":791,"./sum":952}],883:[function(require,module,exports){
+},{"./internal/_curry1":827,"./sum":988}],919:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var mean = require('./mean');
 
@@ -80390,7 +90030,7 @@ module.exports = _curry1(function median(list) {
   }).slice(idx, idx + width));
 });
 
-},{"./internal/_curry1":791,"./mean":882}],884:[function(require,module,exports){
+},{"./internal/_curry1":827,"./mean":918}],920:[function(require,module,exports){
 var _arity = require('./internal/_arity');
 var _curry1 = require('./internal/_curry1');
 var _has = require('./internal/_has');
@@ -80434,7 +90074,7 @@ module.exports = _curry1(function memoize(fn) {
   });
 });
 
-},{"./internal/_arity":780,"./internal/_curry1":791,"./internal/_has":803,"./toString":966}],885:[function(require,module,exports){
+},{"./internal/_arity":816,"./internal/_curry1":827,"./internal/_has":839,"./toString":1002}],921:[function(require,module,exports){
 var _assign = require('./internal/_assign');
 var _curry2 = require('./internal/_curry2');
 
@@ -80466,7 +90106,7 @@ module.exports = _curry2(function merge(l, r) {
   return _assign({}, l, r);
 });
 
-},{"./internal/_assign":782,"./internal/_curry2":792}],886:[function(require,module,exports){
+},{"./internal/_assign":818,"./internal/_curry2":828}],922:[function(require,module,exports){
 var _assign = require('./internal/_assign');
 var _curry1 = require('./internal/_curry1');
 
@@ -80492,7 +90132,7 @@ module.exports = _curry1(function mergeAll(list) {
   return _assign.apply(null, [{}].concat(list));
 });
 
-},{"./internal/_assign":782,"./internal/_curry1":791}],887:[function(require,module,exports){
+},{"./internal/_assign":818,"./internal/_curry1":827}],923:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 var mergeWithKey = require('./mergeWithKey');
 
@@ -80527,7 +90167,7 @@ module.exports = _curry3(function mergeWith(fn, l, r) {
   }, l, r);
 });
 
-},{"./internal/_curry3":793,"./mergeWithKey":888}],888:[function(require,module,exports){
+},{"./internal/_curry3":829,"./mergeWithKey":924}],924:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 var _has = require('./internal/_has');
 
@@ -80578,7 +90218,7 @@ module.exports = _curry3(function mergeWithKey(fn, l, r) {
   return result;
 });
 
-},{"./internal/_curry3":793,"./internal/_has":803}],889:[function(require,module,exports){
+},{"./internal/_curry3":829,"./internal/_has":839}],925:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -80601,7 +90241,7 @@ var _curry2 = require('./internal/_curry2');
  */
 module.exports = _curry2(function min(a, b) { return b < a ? b : a; });
 
-},{"./internal/_curry2":792}],890:[function(require,module,exports){
+},{"./internal/_curry2":828}],926:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 
@@ -80633,7 +90273,7 @@ module.exports = _curry3(function minBy(f, a, b) {
   return f(b) < f(a) ? b : a;
 });
 
-},{"./internal/_curry3":793}],891:[function(require,module,exports){
+},{"./internal/_curry3":829}],927:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -80664,7 +90304,7 @@ var _curry2 = require('./internal/_curry2');
  */
 module.exports = _curry2(function modulo(a, b) { return a % b; });
 
-},{"./internal/_curry2":792}],892:[function(require,module,exports){
+},{"./internal/_curry2":828}],928:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -80690,7 +90330,7 @@ var _curry2 = require('./internal/_curry2');
  */
 module.exports = _curry2(function multiply(a, b) { return a * b; });
 
-},{"./internal/_curry2":792}],893:[function(require,module,exports){
+},{"./internal/_curry2":828}],929:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -80740,7 +90380,7 @@ module.exports = _curry2(function nAry(n, fn) {
   }
 });
 
-},{"./internal/_curry2":792}],894:[function(require,module,exports){
+},{"./internal/_curry2":828}],930:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 
 
@@ -80760,7 +90400,7 @@ var _curry1 = require('./internal/_curry1');
  */
 module.exports = _curry1(function negate(n) { return -n; });
 
-},{"./internal/_curry1":791}],895:[function(require,module,exports){
+},{"./internal/_curry1":827}],931:[function(require,module,exports){
 var _complement = require('./internal/_complement');
 var _curry2 = require('./internal/_curry2');
 var _dispatchable = require('./internal/_dispatchable');
@@ -80792,7 +90432,7 @@ var any = require('./any');
  */
 module.exports = _curry2(_complement(_dispatchable(['any'], _xany, any)));
 
-},{"./any":701,"./internal/_complement":786,"./internal/_curry2":792,"./internal/_dispatchable":795,"./internal/_xany":829}],896:[function(require,module,exports){
+},{"./any":737,"./internal/_complement":822,"./internal/_curry2":828,"./internal/_dispatchable":831,"./internal/_xany":865}],932:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 
 
@@ -80819,7 +90459,7 @@ module.exports = _curry1(function not(a) {
   return !a;
 });
 
-},{"./internal/_curry1":791}],897:[function(require,module,exports){
+},{"./internal/_curry1":827}],933:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _isString = require('./internal/_isString');
 
@@ -80855,7 +90495,7 @@ module.exports = _curry2(function nth(offset, list) {
   return _isString(list) ? list.charAt(idx) : list[idx];
 });
 
-},{"./internal/_curry2":792,"./internal/_isString":814}],898:[function(require,module,exports){
+},{"./internal/_curry2":828,"./internal/_isString":850}],934:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var curryN = require('./curryN');
 var nth = require('./nth');
@@ -80886,7 +90526,7 @@ module.exports = _curry1(function nthArg(n) {
   });
 });
 
-},{"./curryN":731,"./internal/_curry1":791,"./nth":897}],899:[function(require,module,exports){
+},{"./curryN":767,"./internal/_curry1":827,"./nth":933}],935:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -80916,7 +90556,7 @@ module.exports = _curry2(function objOf(key, val) {
   return obj;
 });
 
-},{"./internal/_curry2":792}],900:[function(require,module,exports){
+},{"./internal/_curry2":828}],936:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var _of = require('./internal/_of');
 
@@ -80941,7 +90581,7 @@ var _of = require('./internal/_of');
  */
 module.exports = _curry1(_of);
 
-},{"./internal/_curry1":791,"./internal/_of":819}],901:[function(require,module,exports){
+},{"./internal/_curry1":827,"./internal/_of":855}],937:[function(require,module,exports){
 var _contains = require('./internal/_contains');
 var _curry2 = require('./internal/_curry2');
 
@@ -80972,7 +90612,7 @@ module.exports = _curry2(function omit(names, obj) {
   return result;
 });
 
-},{"./internal/_contains":788,"./internal/_curry2":792}],902:[function(require,module,exports){
+},{"./internal/_contains":824,"./internal/_curry2":828}],938:[function(require,module,exports){
 var _arity = require('./internal/_arity');
 var _curry1 = require('./internal/_curry1');
 
@@ -81009,7 +90649,7 @@ module.exports = _curry1(function once(fn) {
   });
 });
 
-},{"./internal/_arity":780,"./internal/_curry1":791}],903:[function(require,module,exports){
+},{"./internal/_arity":816,"./internal/_curry1":827}],939:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -81037,7 +90677,7 @@ module.exports = _curry2(function or(a, b) {
   return a || b;
 });
 
-},{"./internal/_curry2":792}],904:[function(require,module,exports){
+},{"./internal/_curry2":828}],940:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 
@@ -81078,7 +90718,7 @@ module.exports = (function() {
   });
 }());
 
-},{"./internal/_curry3":793}],905:[function(require,module,exports){
+},{"./internal/_curry3":829}],941:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -81100,7 +90740,7 @@ var _curry2 = require('./internal/_curry2');
  */
 module.exports = _curry2(function pair(fst, snd) { return [fst, snd]; });
 
-},{"./internal/_curry2":792}],906:[function(require,module,exports){
+},{"./internal/_curry2":828}],942:[function(require,module,exports){
 var _concat = require('./internal/_concat');
 var _createPartialApplicator = require('./internal/_createPartialApplicator');
 
@@ -81135,7 +90775,7 @@ var _createPartialApplicator = require('./internal/_createPartialApplicator');
  */
 module.exports = _createPartialApplicator(_concat);
 
-},{"./internal/_concat":787,"./internal/_createPartialApplicator":790}],907:[function(require,module,exports){
+},{"./internal/_concat":823,"./internal/_createPartialApplicator":826}],943:[function(require,module,exports){
 var _concat = require('./internal/_concat');
 var _createPartialApplicator = require('./internal/_createPartialApplicator');
 var flip = require('./flip');
@@ -81167,7 +90807,7 @@ var flip = require('./flip');
  */
 module.exports = _createPartialApplicator(flip(_concat));
 
-},{"./flip":758,"./internal/_concat":787,"./internal/_createPartialApplicator":790}],908:[function(require,module,exports){
+},{"./flip":794,"./internal/_concat":823,"./internal/_createPartialApplicator":826}],944:[function(require,module,exports){
 var filter = require('./filter');
 var juxt = require('./juxt');
 var reject = require('./reject');
@@ -81198,7 +90838,7 @@ var reject = require('./reject');
  */
 module.exports = juxt([filter, reject]);
 
-},{"./filter":752,"./juxt":860,"./reject":935}],909:[function(require,module,exports){
+},{"./filter":788,"./juxt":896,"./reject":971}],945:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -81233,7 +90873,7 @@ module.exports = _curry2(function path(paths, obj) {
   return val;
 });
 
-},{"./internal/_curry2":792}],910:[function(require,module,exports){
+},{"./internal/_curry2":828}],946:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 var equals = require('./equals');
 var path = require('./path');
@@ -81267,7 +90907,7 @@ module.exports = _curry3(function pathEq(_path, val, obj) {
   return equals(path(_path, obj), val);
 });
 
-},{"./equals":750,"./internal/_curry3":793,"./path":909}],911:[function(require,module,exports){
+},{"./equals":786,"./internal/_curry3":829,"./path":945}],947:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 var defaultTo = require('./defaultTo');
 var path = require('./path');
@@ -81296,7 +90936,7 @@ module.exports = _curry3(function pathOr(d, p, obj) {
   return defaultTo(d, path(p, obj));
 });
 
-},{"./defaultTo":733,"./internal/_curry3":793,"./path":909}],912:[function(require,module,exports){
+},{"./defaultTo":769,"./internal/_curry3":829,"./path":945}],948:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 var path = require('./path');
 
@@ -81324,7 +90964,7 @@ module.exports = _curry3(function pathSatisfies(pred, propPath, obj) {
   return propPath.length > 0 && pred(path(propPath, obj));
 });
 
-},{"./internal/_curry3":793,"./path":909}],913:[function(require,module,exports){
+},{"./internal/_curry3":829,"./path":945}],949:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -81358,7 +90998,7 @@ module.exports = _curry2(function pick(names, obj) {
   return result;
 });
 
-},{"./internal/_curry2":792}],914:[function(require,module,exports){
+},{"./internal/_curry2":828}],950:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -81392,7 +91032,7 @@ module.exports = _curry2(function pickAll(names, obj) {
   return result;
 });
 
-},{"./internal/_curry2":792}],915:[function(require,module,exports){
+},{"./internal/_curry2":828}],951:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -81426,7 +91066,7 @@ module.exports = _curry2(function pickBy(test, obj) {
   return result;
 });
 
-},{"./internal/_curry2":792}],916:[function(require,module,exports){
+},{"./internal/_curry2":828}],952:[function(require,module,exports){
 var _arity = require('./internal/_arity');
 var _pipe = require('./internal/_pipe');
 var reduce = require('./reduce');
@@ -81464,7 +91104,7 @@ module.exports = function pipe() {
                 reduce(_pipe, arguments[0], tail(arguments)));
 };
 
-},{"./internal/_arity":780,"./internal/_pipe":820,"./reduce":930,"./tail":955}],917:[function(require,module,exports){
+},{"./internal/_arity":816,"./internal/_pipe":856,"./reduce":966,"./tail":991}],953:[function(require,module,exports){
 var composeK = require('./composeK');
 var reverse = require('./reverse');
 
@@ -81509,7 +91149,7 @@ module.exports = function pipeK() {
   return composeK.apply(this, reverse(arguments));
 };
 
-},{"./composeK":721,"./reverse":939}],918:[function(require,module,exports){
+},{"./composeK":757,"./reverse":975}],954:[function(require,module,exports){
 var _arity = require('./internal/_arity');
 var _pipeP = require('./internal/_pipeP');
 var reduce = require('./reduce');
@@ -81542,7 +91182,7 @@ module.exports = function pipeP() {
                 reduce(_pipeP, arguments[0], tail(arguments)));
 };
 
-},{"./internal/_arity":780,"./internal/_pipeP":821,"./reduce":930,"./tail":955}],919:[function(require,module,exports){
+},{"./internal/_arity":816,"./internal/_pipeP":857,"./reduce":966,"./tail":991}],955:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var map = require('./map');
 var prop = require('./prop');
@@ -81572,7 +91212,7 @@ module.exports = _curry2(function pluck(p, list) {
   return map(prop(p), list);
 });
 
-},{"./internal/_curry2":792,"./map":874,"./prop":923}],920:[function(require,module,exports){
+},{"./internal/_curry2":828,"./map":910,"./prop":959}],956:[function(require,module,exports){
 var _concat = require('./internal/_concat');
 var _curry2 = require('./internal/_curry2');
 
@@ -81598,7 +91238,7 @@ module.exports = _curry2(function prepend(el, list) {
   return _concat([el], list);
 });
 
-},{"./internal/_concat":787,"./internal/_curry2":792}],921:[function(require,module,exports){
+},{"./internal/_concat":823,"./internal/_curry2":828}],957:[function(require,module,exports){
 var multiply = require('./multiply');
 var reduce = require('./reduce');
 
@@ -81620,7 +91260,7 @@ var reduce = require('./reduce');
  */
 module.exports = reduce(multiply, 1);
 
-},{"./multiply":892,"./reduce":930}],922:[function(require,module,exports){
+},{"./multiply":928,"./reduce":966}],958:[function(require,module,exports){
 var _map = require('./internal/_map');
 var identity = require('./identity');
 var pickAll = require('./pickAll');
@@ -81648,7 +91288,7 @@ var useWith = require('./useWith');
  */
 module.exports = useWith(_map, [pickAll, identity]); // passing `identity` gives correct arity
 
-},{"./identity":770,"./internal/_map":817,"./pickAll":914,"./useWith":987}],923:[function(require,module,exports){
+},{"./identity":806,"./internal/_map":853,"./pickAll":950,"./useWith":1023}],959:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -81672,7 +91312,7 @@ var _curry2 = require('./internal/_curry2');
  */
 module.exports = _curry2(function prop(p, obj) { return obj[p]; });
 
-},{"./internal/_curry2":792}],924:[function(require,module,exports){
+},{"./internal/_curry2":828}],960:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 var equals = require('./equals');
 
@@ -81705,7 +91345,7 @@ module.exports = _curry3(function propEq(name, val, obj) {
   return equals(val, obj[name]);
 });
 
-},{"./equals":750,"./internal/_curry3":793}],925:[function(require,module,exports){
+},{"./equals":786,"./internal/_curry3":829}],961:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 var is = require('./is');
 
@@ -81734,7 +91374,7 @@ module.exports = _curry3(function propIs(type, name, obj) {
   return is(type, obj[name]);
 });
 
-},{"./internal/_curry3":793,"./is":855}],926:[function(require,module,exports){
+},{"./internal/_curry3":829,"./is":891}],962:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 var _has = require('./internal/_has');
 
@@ -81769,7 +91409,7 @@ module.exports = _curry3(function propOr(val, p, obj) {
   return (obj != null && _has(p, obj)) ? obj[p] : val;
 });
 
-},{"./internal/_curry3":793,"./internal/_has":803}],927:[function(require,module,exports){
+},{"./internal/_curry3":829,"./internal/_has":839}],963:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 
@@ -81795,7 +91435,7 @@ module.exports = _curry3(function propSatisfies(pred, name, obj) {
   return pred(obj[name]);
 });
 
-},{"./internal/_curry3":793}],928:[function(require,module,exports){
+},{"./internal/_curry3":829}],964:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -81832,7 +91472,7 @@ module.exports = _curry2(function props(ps, obj) {
   return out;
 });
 
-},{"./internal/_curry2":792}],929:[function(require,module,exports){
+},{"./internal/_curry2":828}],965:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _isNumber = require('./internal/_isNumber');
 
@@ -81866,7 +91506,7 @@ module.exports = _curry2(function range(from, to) {
   return result;
 });
 
-},{"./internal/_curry2":792,"./internal/_isNumber":810}],930:[function(require,module,exports){
+},{"./internal/_curry2":828,"./internal/_isNumber":846}],966:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 var _reduce = require('./internal/_reduce');
 
@@ -81916,7 +91556,7 @@ var _reduce = require('./internal/_reduce');
  */
 module.exports = _curry3(_reduce);
 
-},{"./internal/_curry3":793,"./internal/_reduce":823}],931:[function(require,module,exports){
+},{"./internal/_curry3":829,"./internal/_reduce":859}],967:[function(require,module,exports){
 var _curryN = require('./internal/_curryN');
 var _dispatchable = require('./internal/_dispatchable');
 var _has = require('./internal/_has');
@@ -81977,7 +91617,7 @@ module.exports = _curryN(4, [], _dispatchable([], _xreduceBy,
     }, {}, list);
   }));
 
-},{"./internal/_curryN":794,"./internal/_dispatchable":795,"./internal/_has":803,"./internal/_reduce":823,"./internal/_xreduceBy":844}],932:[function(require,module,exports){
+},{"./internal/_curryN":830,"./internal/_dispatchable":831,"./internal/_has":839,"./internal/_reduce":859,"./internal/_xreduceBy":880}],968:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 
@@ -82032,7 +91672,7 @@ module.exports = _curry3(function reduceRight(fn, acc, list) {
   return acc;
 });
 
-},{"./internal/_curry3":793}],933:[function(require,module,exports){
+},{"./internal/_curry3":829}],969:[function(require,module,exports){
 var _curryN = require('./internal/_curryN');
 var _reduce = require('./internal/_reduce');
 var _reduced = require('./internal/_reduced');
@@ -82073,7 +91713,7 @@ module.exports = _curryN(4, [], function _reduceWhile(pred, fn, a, list) {
   }, a, list);
 });
 
-},{"./internal/_curryN":794,"./internal/_reduce":823,"./internal/_reduced":824}],934:[function(require,module,exports){
+},{"./internal/_curryN":830,"./internal/_reduce":859,"./internal/_reduced":860}],970:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var _reduced = require('./internal/_reduced');
 
@@ -82103,7 +91743,7 @@ var _reduced = require('./internal/_reduced');
 
 module.exports = _curry1(_reduced);
 
-},{"./internal/_curry1":791,"./internal/_reduced":824}],935:[function(require,module,exports){
+},{"./internal/_curry1":827,"./internal/_reduced":860}],971:[function(require,module,exports){
 var _complement = require('./internal/_complement');
 var _curry2 = require('./internal/_curry2');
 var filter = require('./filter');
@@ -82135,7 +91775,7 @@ module.exports = _curry2(function reject(pred, filterable) {
   return filter(_complement(pred), filterable);
 });
 
-},{"./filter":752,"./internal/_complement":786,"./internal/_curry2":792}],936:[function(require,module,exports){
+},{"./filter":788,"./internal/_complement":822,"./internal/_curry2":828}],972:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 
@@ -82164,7 +91804,7 @@ module.exports = _curry3(function remove(start, count, list) {
   return result;
 });
 
-},{"./internal/_curry3":793}],937:[function(require,module,exports){
+},{"./internal/_curry3":829}],973:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var always = require('./always');
 var times = require('./times');
@@ -82196,7 +91836,7 @@ module.exports = _curry2(function repeat(value, n) {
   return times(always(value), n);
 });
 
-},{"./always":699,"./internal/_curry2":792,"./times":962}],938:[function(require,module,exports){
+},{"./always":735,"./internal/_curry2":828,"./times":998}],974:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 
@@ -82224,7 +91864,7 @@ module.exports = _curry3(function replace(regex, replacement, str) {
   return str.replace(regex, replacement);
 });
 
-},{"./internal/_curry3":793}],939:[function(require,module,exports){
+},{"./internal/_curry3":829}],975:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var _isString = require('./internal/_isString');
 
@@ -82258,7 +91898,7 @@ module.exports = _curry1(function reverse(list) {
                            Array.prototype.slice.call(list, 0).reverse();
 });
 
-},{"./internal/_curry1":791,"./internal/_isString":814}],940:[function(require,module,exports){
+},{"./internal/_curry1":827,"./internal/_isString":850}],976:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 
@@ -82294,7 +91934,7 @@ module.exports = _curry3(function scan(fn, acc, list) {
   return result;
 });
 
-},{"./internal/_curry3":793}],941:[function(require,module,exports){
+},{"./internal/_curry3":829}],977:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var ap = require('./ap');
 var map = require('./map');
@@ -82334,7 +91974,7 @@ module.exports = _curry2(function sequence(of, traversable) {
                 traversable);
 });
 
-},{"./ap":703,"./internal/_curry2":792,"./map":874,"./prepend":920,"./reduceRight":932}],942:[function(require,module,exports){
+},{"./ap":739,"./internal/_curry2":828,"./map":910,"./prepend":956,"./reduceRight":968}],978:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 var always = require('./always');
 var over = require('./over');
@@ -82366,7 +92006,7 @@ module.exports = _curry3(function set(lens, v, x) {
   return over(lens, always(v), x);
 });
 
-},{"./always":699,"./internal/_curry3":793,"./over":904}],943:[function(require,module,exports){
+},{"./always":735,"./internal/_curry3":829,"./over":940}],979:[function(require,module,exports){
 var _checkForMethod = require('./internal/_checkForMethod');
 var _curry3 = require('./internal/_curry3');
 
@@ -82399,7 +92039,7 @@ module.exports = _curry3(_checkForMethod('slice', function slice(fromIndex, toIn
   return Array.prototype.slice.call(list, fromIndex, toIndex);
 }));
 
-},{"./internal/_checkForMethod":783,"./internal/_curry3":793}],944:[function(require,module,exports){
+},{"./internal/_checkForMethod":819,"./internal/_curry3":829}],980:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -82427,7 +92067,7 @@ module.exports = _curry2(function sort(comparator, list) {
   return Array.prototype.slice.call(list, 0).sort(comparator);
 });
 
-},{"./internal/_curry2":792}],945:[function(require,module,exports){
+},{"./internal/_curry2":828}],981:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -82471,7 +92111,7 @@ module.exports = _curry2(function sortBy(fn, list) {
   });
 });
 
-},{"./internal/_curry2":792}],946:[function(require,module,exports){
+},{"./internal/_curry2":828}],982:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -82519,7 +92159,7 @@ module.exports = _curry2(function sortWith(fns, list) {
   });
 });
 
-},{"./internal/_curry2":792}],947:[function(require,module,exports){
+},{"./internal/_curry2":828}],983:[function(require,module,exports){
 var invoker = require('./invoker');
 
 
@@ -82545,7 +92185,7 @@ var invoker = require('./invoker');
  */
 module.exports = invoker(1, 'split');
 
-},{"./invoker":854}],948:[function(require,module,exports){
+},{"./invoker":890}],984:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var length = require('./length');
 var slice = require('./slice');
@@ -82573,7 +92213,7 @@ module.exports = _curry2(function splitAt(index, array) {
   return [slice(0, index, array), slice(index, length(array), array)];
 });
 
-},{"./internal/_curry2":792,"./length":865,"./slice":943}],949:[function(require,module,exports){
+},{"./internal/_curry2":828,"./length":901,"./slice":979}],985:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var slice = require('./slice');
 
@@ -82607,7 +92247,7 @@ module.exports = _curry2(function splitEvery(n, list) {
   return result;
 });
 
-},{"./internal/_curry2":792,"./slice":943}],950:[function(require,module,exports){
+},{"./internal/_curry2":828,"./slice":979}],986:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -82643,7 +92283,7 @@ module.exports = _curry2(function splitWhen(pred, list) {
   return [prefix, Array.prototype.slice.call(list, idx)];
 });
 
-},{"./internal/_curry2":792}],951:[function(require,module,exports){
+},{"./internal/_curry2":828}],987:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -82674,7 +92314,7 @@ module.exports = _curry2(function subtract(a, b) {
   return Number(a) - Number(b);
 });
 
-},{"./internal/_curry2":792}],952:[function(require,module,exports){
+},{"./internal/_curry2":828}],988:[function(require,module,exports){
 var add = require('./add');
 var reduce = require('./reduce');
 
@@ -82696,7 +92336,7 @@ var reduce = require('./reduce');
  */
 module.exports = reduce(add, 0);
 
-},{"./add":694,"./reduce":930}],953:[function(require,module,exports){
+},{"./add":730,"./reduce":966}],989:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var concat = require('./concat');
 var difference = require('./difference');
@@ -82724,7 +92364,7 @@ module.exports = _curry2(function symmetricDifference(list1, list2) {
   return concat(difference(list1, list2), difference(list2, list1));
 });
 
-},{"./concat":723,"./difference":735,"./internal/_curry2":792}],954:[function(require,module,exports){
+},{"./concat":759,"./difference":771,"./internal/_curry2":828}],990:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 var concat = require('./concat');
 var differenceWith = require('./differenceWith');
@@ -82756,7 +92396,7 @@ module.exports = _curry3(function symmetricDifferenceWith(pred, list1, list2) {
   return concat(differenceWith(pred, list1, list2), differenceWith(pred, list2, list1));
 });
 
-},{"./concat":723,"./differenceWith":736,"./internal/_curry3":793}],955:[function(require,module,exports){
+},{"./concat":759,"./differenceWith":772,"./internal/_curry3":829}],991:[function(require,module,exports){
 var _checkForMethod = require('./internal/_checkForMethod');
 var _curry1 = require('./internal/_curry1');
 var slice = require('./slice');
@@ -82791,7 +92431,7 @@ var slice = require('./slice');
  */
 module.exports = _curry1(_checkForMethod('tail', slice(1, Infinity)));
 
-},{"./internal/_checkForMethod":783,"./internal/_curry1":791,"./slice":943}],956:[function(require,module,exports){
+},{"./internal/_checkForMethod":819,"./internal/_curry1":827,"./slice":979}],992:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _dispatchable = require('./internal/_dispatchable');
 var _xtake = require('./internal/_xtake');
@@ -82845,7 +92485,7 @@ module.exports = _curry2(_dispatchable(['take'], _xtake, function take(n, xs) {
   return slice(0, n < 0 ? Infinity : n, xs);
 }));
 
-},{"./internal/_curry2":792,"./internal/_dispatchable":795,"./internal/_xtake":845,"./slice":943}],957:[function(require,module,exports){
+},{"./internal/_curry2":828,"./internal/_dispatchable":831,"./internal/_xtake":881,"./slice":979}],993:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var drop = require('./drop');
 
@@ -82876,7 +92516,7 @@ module.exports = _curry2(function takeLast(n, xs) {
   return drop(n >= 0 ? xs.length - n : 0, xs);
 });
 
-},{"./drop":740,"./internal/_curry2":792}],958:[function(require,module,exports){
+},{"./drop":776,"./internal/_curry2":828}],994:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -82910,7 +92550,7 @@ module.exports = _curry2(function takeLastWhile(fn, list) {
   return Array.prototype.slice.call(list, idx + 1);
 });
 
-},{"./internal/_curry2":792}],959:[function(require,module,exports){
+},{"./internal/_curry2":828}],995:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _dispatchable = require('./internal/_dispatchable');
 var _xtakeWhile = require('./internal/_xtakeWhile');
@@ -82951,7 +92591,7 @@ module.exports = _curry2(_dispatchable(['takeWhile'], _xtakeWhile, function take
   return Array.prototype.slice.call(list, 0, idx);
 }));
 
-},{"./internal/_curry2":792,"./internal/_dispatchable":795,"./internal/_xtakeWhile":846}],960:[function(require,module,exports){
+},{"./internal/_curry2":828,"./internal/_dispatchable":831,"./internal/_xtakeWhile":882}],996:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -82978,7 +92618,7 @@ module.exports = _curry2(function tap(fn, x) {
   return x;
 });
 
-},{"./internal/_curry2":792}],961:[function(require,module,exports){
+},{"./internal/_curry2":828}],997:[function(require,module,exports){
 var _cloneRegExp = require('./internal/_cloneRegExp');
 var _curry2 = require('./internal/_curry2');
 var _isRegExp = require('./internal/_isRegExp');
@@ -83009,7 +92649,7 @@ module.exports = _curry2(function test(pattern, str) {
   return _cloneRegExp(pattern).test(str);
 });
 
-},{"./internal/_cloneRegExp":785,"./internal/_curry2":792,"./internal/_isRegExp":813,"./toString":966}],962:[function(require,module,exports){
+},{"./internal/_cloneRegExp":821,"./internal/_curry2":828,"./internal/_isRegExp":849,"./toString":1002}],998:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -83051,7 +92691,7 @@ module.exports = _curry2(function times(fn, n) {
   return list;
 });
 
-},{"./internal/_curry2":792}],963:[function(require,module,exports){
+},{"./internal/_curry2":828}],999:[function(require,module,exports){
 var invoker = require('./invoker');
 
 
@@ -83072,7 +92712,7 @@ var invoker = require('./invoker');
  */
 module.exports = invoker(0, 'toLowerCase');
 
-},{"./invoker":854}],964:[function(require,module,exports){
+},{"./invoker":890}],1000:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var _has = require('./internal/_has');
 
@@ -83105,7 +92745,7 @@ module.exports = _curry1(function toPairs(obj) {
   return pairs;
 });
 
-},{"./internal/_curry1":791,"./internal/_has":803}],965:[function(require,module,exports){
+},{"./internal/_curry1":827,"./internal/_has":839}],1001:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 
 
@@ -83138,7 +92778,7 @@ module.exports = _curry1(function toPairsIn(obj) {
   return pairs;
 });
 
-},{"./internal/_curry1":791}],966:[function(require,module,exports){
+},{"./internal/_curry1":827}],1002:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var _toString = require('./internal/_toString');
 
@@ -83181,7 +92821,7 @@ var _toString = require('./internal/_toString');
  */
 module.exports = _curry1(function toString(val) { return _toString(val, []); });
 
-},{"./internal/_curry1":791,"./internal/_toString":827}],967:[function(require,module,exports){
+},{"./internal/_curry1":827,"./internal/_toString":863}],1003:[function(require,module,exports){
 var invoker = require('./invoker');
 
 
@@ -83202,7 +92842,7 @@ var invoker = require('./invoker');
  */
 module.exports = invoker(0, 'toUpperCase');
 
-},{"./invoker":854}],968:[function(require,module,exports){
+},{"./invoker":890}],1004:[function(require,module,exports){
 var _reduce = require('./internal/_reduce');
 var _xwrap = require('./internal/_xwrap');
 var curryN = require('./curryN');
@@ -83256,7 +92896,7 @@ module.exports = curryN(4, function transduce(xf, fn, acc, list) {
   return _reduce(xf(typeof fn === 'function' ? _xwrap(fn) : fn), acc, list);
 });
 
-},{"./curryN":731,"./internal/_reduce":823,"./internal/_xwrap":847}],969:[function(require,module,exports){
+},{"./curryN":767,"./internal/_reduce":859,"./internal/_xwrap":883}],1005:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 
 
@@ -83303,7 +92943,7 @@ module.exports = _curry1(function transpose(outerlist) {
   return result;
 });
 
-},{"./internal/_curry1":791}],970:[function(require,module,exports){
+},{"./internal/_curry1":827}],1006:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 var map = require('./map');
 var sequence = require('./sequence');
@@ -83339,7 +92979,7 @@ module.exports = _curry3(function traverse(of, f, traversable) {
   return sequence(of, map(f, traversable));
 });
 
-},{"./internal/_curry3":793,"./map":874,"./sequence":941}],971:[function(require,module,exports){
+},{"./internal/_curry3":829,"./map":910,"./sequence":977}],1007:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 
 
@@ -83377,7 +93017,7 @@ module.exports = (function() {
   }
 }());
 
-},{"./internal/_curry1":791}],972:[function(require,module,exports){
+},{"./internal/_curry1":827}],1008:[function(require,module,exports){
 var _arity = require('./internal/_arity');
 var _concat = require('./internal/_concat');
 var _curry2 = require('./internal/_curry2');
@@ -83414,7 +93054,7 @@ module.exports = _curry2(function _tryCatch(tryer, catcher) {
   });
 });
 
-},{"./internal/_arity":780,"./internal/_concat":787,"./internal/_curry2":792}],973:[function(require,module,exports){
+},{"./internal/_arity":816,"./internal/_concat":823,"./internal/_curry2":828}],1009:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 
 
@@ -83447,7 +93087,7 @@ module.exports = _curry1(function type(val) {
          Object.prototype.toString.call(val).slice(8, -1);
 });
 
-},{"./internal/_curry1":791}],974:[function(require,module,exports){
+},{"./internal/_curry1":827}],1010:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 
 
@@ -83481,7 +93121,7 @@ module.exports = _curry1(function unapply(fn) {
   };
 });
 
-},{"./internal/_curry1":791}],975:[function(require,module,exports){
+},{"./internal/_curry1":827}],1011:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var nAry = require('./nAry');
 
@@ -83517,7 +93157,7 @@ module.exports = _curry1(function unary(fn) {
   return nAry(1, fn);
 });
 
-},{"./internal/_curry1":791,"./nAry":893}],976:[function(require,module,exports){
+},{"./internal/_curry1":827,"./nAry":929}],1012:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var curryN = require('./curryN');
 
@@ -83557,7 +93197,7 @@ module.exports = _curry2(function uncurryN(depth, fn) {
   });
 });
 
-},{"./curryN":731,"./internal/_curry2":792}],977:[function(require,module,exports){
+},{"./curryN":767,"./internal/_curry2":828}],1013:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -83596,7 +93236,7 @@ module.exports = _curry2(function unfold(fn, seed) {
   return result;
 });
 
-},{"./internal/_curry2":792}],978:[function(require,module,exports){
+},{"./internal/_curry2":828}],1014:[function(require,module,exports){
 var _concat = require('./internal/_concat');
 var _curry2 = require('./internal/_curry2');
 var compose = require('./compose');
@@ -83622,7 +93262,7 @@ var uniq = require('./uniq');
  */
 module.exports = _curry2(compose(uniq, _concat));
 
-},{"./compose":720,"./internal/_concat":787,"./internal/_curry2":792,"./uniq":980}],979:[function(require,module,exports){
+},{"./compose":756,"./internal/_concat":823,"./internal/_curry2":828,"./uniq":1016}],1015:[function(require,module,exports){
 var _concat = require('./internal/_concat');
 var _curry3 = require('./internal/_curry3');
 var uniqWith = require('./uniqWith');
@@ -83654,7 +93294,7 @@ module.exports = _curry3(function unionWith(pred, list1, list2) {
   return uniqWith(pred, _concat(list1, list2));
 });
 
-},{"./internal/_concat":787,"./internal/_curry3":793,"./uniqWith":982}],980:[function(require,module,exports){
+},{"./internal/_concat":823,"./internal/_curry3":829,"./uniqWith":1018}],1016:[function(require,module,exports){
 var identity = require('./identity');
 var uniqBy = require('./uniqBy');
 
@@ -83678,7 +93318,7 @@ var uniqBy = require('./uniqBy');
  */
 module.exports = uniqBy(identity);
 
-},{"./identity":770,"./uniqBy":981}],981:[function(require,module,exports){
+},{"./identity":806,"./uniqBy":1017}],1017:[function(require,module,exports){
 var _Set = require('./internal/_Set');
 var _curry2 = require('./internal/_curry2');
 
@@ -83718,7 +93358,7 @@ module.exports = _curry2(function uniqBy(fn, list) {
   return result;
 });
 
-},{"./internal/_Set":778,"./internal/_curry2":792}],982:[function(require,module,exports){
+},{"./internal/_Set":814,"./internal/_curry2":828}],1018:[function(require,module,exports){
 var _containsWith = require('./internal/_containsWith');
 var _curry2 = require('./internal/_curry2');
 
@@ -83760,7 +93400,7 @@ module.exports = _curry2(function uniqWith(pred, list) {
   return result;
 });
 
-},{"./internal/_containsWith":789,"./internal/_curry2":792}],983:[function(require,module,exports){
+},{"./internal/_containsWith":825,"./internal/_curry2":828}],1019:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 
@@ -83793,7 +93433,7 @@ module.exports = _curry3(function unless(pred, whenFalseFn, x) {
   return pred(x) ? x : whenFalseFn(x);
 });
 
-},{"./internal/_curry3":793}],984:[function(require,module,exports){
+},{"./internal/_curry3":829}],1020:[function(require,module,exports){
 var _identity = require('./internal/_identity');
 var chain = require('./chain');
 
@@ -83817,7 +93457,7 @@ var chain = require('./chain');
  */
 module.exports = chain(_identity);
 
-},{"./chain":715,"./internal/_identity":804}],985:[function(require,module,exports){
+},{"./chain":751,"./internal/_identity":840}],1021:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 
@@ -83848,7 +93488,7 @@ module.exports = _curry3(function until(pred, fn, init) {
   return val;
 });
 
-},{"./internal/_curry3":793}],986:[function(require,module,exports){
+},{"./internal/_curry3":829}],1022:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 var adjust = require('./adjust');
 var always = require('./always');
@@ -83880,7 +93520,7 @@ module.exports = _curry3(function update(idx, x, list) {
   return adjust(always(x), idx, list);
 });
 
-},{"./adjust":696,"./always":699,"./internal/_curry3":793}],987:[function(require,module,exports){
+},{"./adjust":732,"./always":735,"./internal/_curry3":829}],1023:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var curryN = require('./curryN');
 
@@ -83926,7 +93566,7 @@ module.exports = _curry2(function useWith(fn, transformers) {
   });
 });
 
-},{"./curryN":731,"./internal/_curry2":792}],988:[function(require,module,exports){
+},{"./curryN":767,"./internal/_curry2":828}],1024:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var keys = require('./keys');
 
@@ -83959,7 +93599,7 @@ module.exports = _curry1(function values(obj) {
   return vals;
 });
 
-},{"./internal/_curry1":791,"./keys":861}],989:[function(require,module,exports){
+},{"./internal/_curry1":827,"./keys":897}],1025:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 
 
@@ -83992,7 +93632,7 @@ module.exports = _curry1(function valuesIn(obj) {
   return vs;
 });
 
-},{"./internal/_curry1":791}],990:[function(require,module,exports){
+},{"./internal/_curry1":827}],1026:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -84030,7 +93670,7 @@ module.exports = (function() {
   });
 }());
 
-},{"./internal/_curry2":792}],991:[function(require,module,exports){
+},{"./internal/_curry2":828}],1027:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 
@@ -84066,7 +93706,7 @@ module.exports = _curry3(function when(pred, whenTrueFn, x) {
   return pred(x) ? whenTrueFn(x) : x;
 });
 
-},{"./internal/_curry3":793}],992:[function(require,module,exports){
+},{"./internal/_curry3":829}],1028:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _has = require('./internal/_has');
 
@@ -84114,7 +93754,7 @@ module.exports = _curry2(function where(spec, testObj) {
   return true;
 });
 
-},{"./internal/_curry2":792,"./internal/_has":803}],993:[function(require,module,exports){
+},{"./internal/_curry2":828,"./internal/_has":839}],1029:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var equals = require('./equals');
 var map = require('./map');
@@ -84152,7 +93792,7 @@ module.exports = _curry2(function whereEq(spec, testObj) {
   return where(map(equals, spec), testObj);
 });
 
-},{"./equals":750,"./internal/_curry2":792,"./map":874,"./where":992}],994:[function(require,module,exports){
+},{"./equals":786,"./internal/_curry2":828,"./map":910,"./where":1028}],1030:[function(require,module,exports){
 var _contains = require('./internal/_contains');
 var _curry2 = require('./internal/_curry2');
 var flip = require('./flip');
@@ -84182,7 +93822,7 @@ module.exports = _curry2(function(xs, list) {
   return reject(flip(_contains)(xs), list);
 });
 
-},{"./flip":758,"./internal/_contains":788,"./internal/_curry2":792,"./reject":935}],995:[function(require,module,exports){
+},{"./flip":794,"./internal/_contains":824,"./internal/_curry2":828,"./reject":971}],1031:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -84221,7 +93861,7 @@ module.exports = _curry2(function xprod(a, b) { // = xprodWith(prepend); (takes 
   return result;
 });
 
-},{"./internal/_curry2":792}],996:[function(require,module,exports){
+},{"./internal/_curry2":828}],1032:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -84255,7 +93895,7 @@ module.exports = _curry2(function zip(a, b) {
   return rv;
 });
 
-},{"./internal/_curry2":792}],997:[function(require,module,exports){
+},{"./internal/_curry2":828}],1033:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -84287,7 +93927,7 @@ module.exports = _curry2(function zipObj(keys, values) {
   return out;
 });
 
-},{"./internal/_curry2":792}],998:[function(require,module,exports){
+},{"./internal/_curry2":828}],1034:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 
@@ -84326,7 +93966,7 @@ module.exports = _curry3(function zipWith(fn, a, b) {
   return rv;
 });
 
-},{"./internal/_curry3":793}],999:[function(require,module,exports){
+},{"./internal/_curry3":829}],1035:[function(require,module,exports){
 (function (global){
 'use strict';
 
@@ -84503,7 +94143,7 @@ function tostring(a) {
 mixkey(Math.random(), pool);
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],1000:[function(require,module,exports){
+},{}],1036:[function(require,module,exports){
 // A library of seedable RNGs implemented in Javascript.
 //
 // Usage:
@@ -84565,7 +94205,7 @@ sr.tychei = tychei;
 
 module.exports = sr;
 
-},{"./lib/alea":1001,"./lib/tychei":1002,"./lib/xor128":1003,"./lib/xor4096":1004,"./lib/xorshift7":1005,"./lib/xorwow":1006,"./seedrandom":1007}],1001:[function(require,module,exports){
+},{"./lib/alea":1037,"./lib/tychei":1038,"./lib/xor128":1039,"./lib/xor4096":1040,"./lib/xorshift7":1041,"./lib/xorwow":1042,"./seedrandom":1043}],1037:[function(require,module,exports){
 // A port of an algorithm by Johannes Baagøe <baagoe@baagoe.com>, 2010
 // http://baagoe.com/en/RandomMusings/javascript/
 // https://github.com/nquinlan/better-random-numbers-for-javascript-mirror
@@ -84681,7 +94321,7 @@ if (module && module.exports) {
 
 
 
-},{}],1002:[function(require,module,exports){
+},{}],1038:[function(require,module,exports){
 // A Javascript implementaion of the "Tyche-i" prng algorithm by
 // Samuel Neves and Filipe Araujo.
 // See https://eden.dei.uc.pt/~sneves/pubs/2011-snfa2.pdf
@@ -84786,7 +94426,7 @@ if (module && module.exports) {
 
 
 
-},{}],1003:[function(require,module,exports){
+},{}],1039:[function(require,module,exports){
 // A Javascript implementaion of the "xor128" prng algorithm by
 // George Marsaglia.  See http://www.jstatsoft.org/v08/i14/paper
 
@@ -84869,7 +94509,7 @@ if (module && module.exports) {
 
 
 
-},{}],1004:[function(require,module,exports){
+},{}],1040:[function(require,module,exports){
 // A Javascript implementaion of Richard Brent's Xorgens xor4096 algorithm.
 //
 // This fast non-cryptographic random number generator is designed for
@@ -85017,7 +94657,7 @@ if (module && module.exports) {
   (typeof define) == 'function' && define   // present with an AMD loader
 );
 
-},{}],1005:[function(require,module,exports){
+},{}],1041:[function(require,module,exports){
 // A Javascript implementaion of the "xorshift7" algorithm by
 // François Panneton and Pierre L'ecuyer:
 // "On the Xorgshift Random Number Generators"
@@ -85116,7 +94756,7 @@ if (module && module.exports) {
 );
 
 
-},{}],1006:[function(require,module,exports){
+},{}],1042:[function(require,module,exports){
 // A Javascript implementaion of the "xorwow" prng algorithm by
 // George Marsaglia.  See http://www.jstatsoft.org/v08/i14/paper
 
@@ -85204,7 +94844,7 @@ if (module && module.exports) {
 
 
 
-},{}],1007:[function(require,module,exports){
+},{}],1043:[function(require,module,exports){
 /*
 Copyright 2014 David Bau.
 
@@ -85453,7 +95093,7 @@ if ((typeof module) == 'object' && module.exports) {
   Math    // math: package containing random, pow, and seedrandom
 );
 
-},{"crypto":1}],1008:[function(require,module,exports){
+},{"crypto":1}],1044:[function(require,module,exports){
 function E () {
   // Keep this empty so it's easier to inherit from
   // (via https://github.com/lipsmack from https://github.com/scottcorgan/tiny-emitter/issues/3)
@@ -85521,7 +95161,7 @@ E.prototype = {
 
 module.exports = E;
 
-},{}],1009:[function(require,module,exports){
+},{}],1045:[function(require,module,exports){
 /**
  * typed-function
  *
@@ -85632,7 +95272,7 @@ module.exports = E;
      *                    Throws a TypeError otherwise
      */
     function findTypeByName (typeName) {
-      var entry = typed.types.find(function (entry) {
+      var entry = findInArray(typed.types, function (entry) {
         return entry.name === typeName;
       });
 
@@ -85644,7 +95284,7 @@ module.exports = E;
         return anyType;
       }
 
-      var hint = typed.types.find(function (entry) {
+      var hint = findInArray(typed.types, function (entry) {
         return entry.name.toLowerCase() === typeName.toLowerCase();
       });
 
@@ -85672,7 +95312,7 @@ module.exports = E;
      *                  the type test matches the value.
      */
     function findTypeName(value) {
-      var entry = typed.types.find(function (entry) {
+      var entry = findInArray(typed.types, function (entry) {
         return entry.test(value);
       });
 
@@ -86513,7 +96153,7 @@ module.exports = E;
           .filter(notNull)
           .forEach(function (parsedSignature) {
             // check whether this parameter conflicts with already parsed signatures
-            var conflictingSignature = parsedSignatures.find(function (s) {
+            var conflictingSignature = findInArray(parsedSignatures, function (s) {
               return hasConflictingParams(s, parsedSignature)
             });
             if (conflictingSignature) {
@@ -86616,8 +96256,17 @@ module.exports = E;
         return generic.apply(null, arguments);
       }
 
-      // attach name and signatures to the typed function
-      Object.defineProperty(fn, 'name', {value: name});
+      // attach name the typed function
+      try {
+        Object.defineProperty(fn, 'name', {value: name});
+      }
+      catch (err) {
+        // old browsers do not support Object.defineProperty and some don't support setting the name property
+        // the function name is not essential for the functioning, it's mostly useful for debugging,
+        // so it's fine to have unnamed functions.
+      }
+
+      // attach signatures to the function
       fn.signatures = createSignaturesMap(signatures);
 
       return fn;
@@ -86721,6 +96370,22 @@ module.exports = E;
       }
 
       return false;
+    }
+
+    /**
+     * Return the first item from an array for which test(arr[i]) returns true
+     * @param {Array} arr
+     * @param {function} test
+     * @return {* | undefined} Returns the first matching item
+     *                         or undefined when there is no match
+     */
+    function findInArray(arr, test) {
+      for (var i = 0; i < arr.length; i++) {
+        if (test(arr[i])) {
+          return arr[i];
+        }
+      }
+      return undefined;
     }
 
     /**
@@ -86860,7 +96525,7 @@ module.exports = E;
 
   return create();
 }));
-},{}],1010:[function(require,module,exports){
+},{}],1046:[function(require,module,exports){
 (function (global){
 /*! https://mths.be/utf8js v2.1.2 by @mathias */
 ;(function(root) {
@@ -87218,7 +96883,7 @@ exports.getBackend = environment_1.Environment.getBackend;
 exports.memory = environment_1.Environment.memory;
 exports.nextFrame = browser_util_1.BrowserUtil.nextFrame;
 
-},{"./browser_util":4,"./contrib":20,"./data/checkpoint_loader":21,"./data/dataset":22,"./data/input_provider":23,"./data/xhr-dataset":24,"./environment":28,"./globals":29,"./graph/graph":33,"./graph/graph_runner":34,"./graph/initializers":36,"./graph/session":58,"./kernels/backend_cpu":61,"./kernels/backend_webgl":62,"./kernels/webgl/gpgpu_context":74,"./kernels/webgl/gpgpu_util":76,"./kernels/webgl/webgl_util":95,"./math":96,"./ops/conv_util":106,"./ops/matmul":111,"./ops/ops":114,"./optimizers/adadelta_optimizer":126,"./optimizers/adagrad_optimizer":127,"./optimizers/adam_optimizer":128,"./optimizers/adamax_optimizer":129,"./optimizers/momentum_optimizer":130,"./optimizers/optimizer":131,"./optimizers/rmsprop_optimizer":133,"./optimizers/sgd_optimizer":134,"./tensor":137,"./test_util":139,"./train":141,"./types":142,"./util":143,"./version":144,"./weights_loader":145}],"kit-interface":[function(require,module,exports){
+},{"./browser_util":40,"./contrib":56,"./data/checkpoint_loader":57,"./data/dataset":58,"./data/input_provider":59,"./data/xhr-dataset":60,"./environment":64,"./globals":65,"./graph/graph":69,"./graph/graph_runner":70,"./graph/initializers":72,"./graph/session":94,"./kernels/backend_cpu":97,"./kernels/backend_webgl":98,"./kernels/webgl/gpgpu_context":110,"./kernels/webgl/gpgpu_util":112,"./kernels/webgl/webgl_util":131,"./math":132,"./ops/conv_util":142,"./ops/matmul":147,"./ops/ops":150,"./optimizers/adadelta_optimizer":162,"./optimizers/adagrad_optimizer":163,"./optimizers/adam_optimizer":164,"./optimizers/adamax_optimizer":165,"./optimizers/momentum_optimizer":166,"./optimizers/optimizer":167,"./optimizers/rmsprop_optimizer":169,"./optimizers/sgd_optimizer":170,"./tensor":173,"./test_util":175,"./train":177,"./types":178,"./util":179,"./version":180,"./weights_loader":181}],"kit-interface":[function(require,module,exports){
 
 
 (function(a, b, c) {
@@ -87424,7 +97089,7 @@ Map.prototype.each = (function Map$prototype$each$(f) {
   return this;
 });
 
-},{"../js/andy-util.js":149,"ramda":"ramda"}],"mathjs":[function(require,module,exports){
+},{"../js/andy-util.js":185,"ramda":"ramda"}],"mathjs":[function(require,module,exports){
 var core = require('./core');
 
 /**
@@ -87464,7 +97129,7 @@ function create (config) {
 // return a new instance of math.js
 module.exports = create();
 
-},{"./core":150,"./lib":608}],"ramda":[function(require,module,exports){
+},{"./core":186,"./lib":644}],"ramda":[function(require,module,exports){
 module.exports = {
   F: require('./src/F'),
   T: require('./src/T'),
@@ -87706,4 +97371,15 @@ module.exports = {
   zipWith: require('./src/zipWith')
 };
 
-},{"./src/F":691,"./src/T":692,"./src/__":693,"./src/add":694,"./src/addIndex":695,"./src/adjust":696,"./src/all":697,"./src/allPass":698,"./src/always":699,"./src/and":700,"./src/any":701,"./src/anyPass":702,"./src/ap":703,"./src/aperture":704,"./src/append":705,"./src/apply":706,"./src/applySpec":707,"./src/ascend":708,"./src/assoc":709,"./src/assocPath":710,"./src/binary":711,"./src/bind":712,"./src/both":713,"./src/call":714,"./src/chain":715,"./src/clamp":716,"./src/clone":717,"./src/comparator":718,"./src/complement":719,"./src/compose":720,"./src/composeK":721,"./src/composeP":722,"./src/concat":723,"./src/cond":724,"./src/construct":725,"./src/constructN":726,"./src/contains":727,"./src/converge":728,"./src/countBy":729,"./src/curry":730,"./src/curryN":731,"./src/dec":732,"./src/defaultTo":733,"./src/descend":734,"./src/difference":735,"./src/differenceWith":736,"./src/dissoc":737,"./src/dissocPath":738,"./src/divide":739,"./src/drop":740,"./src/dropLast":741,"./src/dropLastWhile":742,"./src/dropRepeats":743,"./src/dropRepeatsWith":744,"./src/dropWhile":745,"./src/either":746,"./src/empty":747,"./src/eqBy":748,"./src/eqProps":749,"./src/equals":750,"./src/evolve":751,"./src/filter":752,"./src/find":753,"./src/findIndex":754,"./src/findLast":755,"./src/findLastIndex":756,"./src/flatten":757,"./src/flip":758,"./src/forEach":759,"./src/forEachObjIndexed":760,"./src/fromPairs":761,"./src/groupBy":762,"./src/groupWith":763,"./src/gt":764,"./src/gte":765,"./src/has":766,"./src/hasIn":767,"./src/head":768,"./src/identical":769,"./src/identity":770,"./src/ifElse":771,"./src/inc":772,"./src/indexBy":773,"./src/indexOf":774,"./src/init":775,"./src/insert":776,"./src/insertAll":777,"./src/intersection":848,"./src/intersectionWith":849,"./src/intersperse":850,"./src/into":851,"./src/invert":852,"./src/invertObj":853,"./src/invoker":854,"./src/is":855,"./src/isArrayLike":856,"./src/isEmpty":857,"./src/isNil":858,"./src/join":859,"./src/juxt":860,"./src/keys":861,"./src/keysIn":862,"./src/last":863,"./src/lastIndexOf":864,"./src/length":865,"./src/lens":866,"./src/lensIndex":867,"./src/lensPath":868,"./src/lensProp":869,"./src/lift":870,"./src/liftN":871,"./src/lt":872,"./src/lte":873,"./src/map":874,"./src/mapAccum":875,"./src/mapAccumRight":876,"./src/mapObjIndexed":877,"./src/match":878,"./src/mathMod":879,"./src/max":880,"./src/maxBy":881,"./src/mean":882,"./src/median":883,"./src/memoize":884,"./src/merge":885,"./src/mergeAll":886,"./src/mergeWith":887,"./src/mergeWithKey":888,"./src/min":889,"./src/minBy":890,"./src/modulo":891,"./src/multiply":892,"./src/nAry":893,"./src/negate":894,"./src/none":895,"./src/not":896,"./src/nth":897,"./src/nthArg":898,"./src/objOf":899,"./src/of":900,"./src/omit":901,"./src/once":902,"./src/or":903,"./src/over":904,"./src/pair":905,"./src/partial":906,"./src/partialRight":907,"./src/partition":908,"./src/path":909,"./src/pathEq":910,"./src/pathOr":911,"./src/pathSatisfies":912,"./src/pick":913,"./src/pickAll":914,"./src/pickBy":915,"./src/pipe":916,"./src/pipeK":917,"./src/pipeP":918,"./src/pluck":919,"./src/prepend":920,"./src/product":921,"./src/project":922,"./src/prop":923,"./src/propEq":924,"./src/propIs":925,"./src/propOr":926,"./src/propSatisfies":927,"./src/props":928,"./src/range":929,"./src/reduce":930,"./src/reduceBy":931,"./src/reduceRight":932,"./src/reduceWhile":933,"./src/reduced":934,"./src/reject":935,"./src/remove":936,"./src/repeat":937,"./src/replace":938,"./src/reverse":939,"./src/scan":940,"./src/sequence":941,"./src/set":942,"./src/slice":943,"./src/sort":944,"./src/sortBy":945,"./src/sortWith":946,"./src/split":947,"./src/splitAt":948,"./src/splitEvery":949,"./src/splitWhen":950,"./src/subtract":951,"./src/sum":952,"./src/symmetricDifference":953,"./src/symmetricDifferenceWith":954,"./src/tail":955,"./src/take":956,"./src/takeLast":957,"./src/takeLastWhile":958,"./src/takeWhile":959,"./src/tap":960,"./src/test":961,"./src/times":962,"./src/toLower":963,"./src/toPairs":964,"./src/toPairsIn":965,"./src/toString":966,"./src/toUpper":967,"./src/transduce":968,"./src/transpose":969,"./src/traverse":970,"./src/trim":971,"./src/tryCatch":972,"./src/type":973,"./src/unapply":974,"./src/unary":975,"./src/uncurryN":976,"./src/unfold":977,"./src/union":978,"./src/unionWith":979,"./src/uniq":980,"./src/uniqBy":981,"./src/uniqWith":982,"./src/unless":983,"./src/unnest":984,"./src/until":985,"./src/update":986,"./src/useWith":987,"./src/values":988,"./src/valuesIn":989,"./src/view":990,"./src/when":991,"./src/where":992,"./src/whereEq":993,"./src/without":994,"./src/xprod":995,"./src/zip":996,"./src/zipObj":997,"./src/zipWith":998}]},{},[]);
+},{"./src/F":727,"./src/T":728,"./src/__":729,"./src/add":730,"./src/addIndex":731,"./src/adjust":732,"./src/all":733,"./src/allPass":734,"./src/always":735,"./src/and":736,"./src/any":737,"./src/anyPass":738,"./src/ap":739,"./src/aperture":740,"./src/append":741,"./src/apply":742,"./src/applySpec":743,"./src/ascend":744,"./src/assoc":745,"./src/assocPath":746,"./src/binary":747,"./src/bind":748,"./src/both":749,"./src/call":750,"./src/chain":751,"./src/clamp":752,"./src/clone":753,"./src/comparator":754,"./src/complement":755,"./src/compose":756,"./src/composeK":757,"./src/composeP":758,"./src/concat":759,"./src/cond":760,"./src/construct":761,"./src/constructN":762,"./src/contains":763,"./src/converge":764,"./src/countBy":765,"./src/curry":766,"./src/curryN":767,"./src/dec":768,"./src/defaultTo":769,"./src/descend":770,"./src/difference":771,"./src/differenceWith":772,"./src/dissoc":773,"./src/dissocPath":774,"./src/divide":775,"./src/drop":776,"./src/dropLast":777,"./src/dropLastWhile":778,"./src/dropRepeats":779,"./src/dropRepeatsWith":780,"./src/dropWhile":781,"./src/either":782,"./src/empty":783,"./src/eqBy":784,"./src/eqProps":785,"./src/equals":786,"./src/evolve":787,"./src/filter":788,"./src/find":789,"./src/findIndex":790,"./src/findLast":791,"./src/findLastIndex":792,"./src/flatten":793,"./src/flip":794,"./src/forEach":795,"./src/forEachObjIndexed":796,"./src/fromPairs":797,"./src/groupBy":798,"./src/groupWith":799,"./src/gt":800,"./src/gte":801,"./src/has":802,"./src/hasIn":803,"./src/head":804,"./src/identical":805,"./src/identity":806,"./src/ifElse":807,"./src/inc":808,"./src/indexBy":809,"./src/indexOf":810,"./src/init":811,"./src/insert":812,"./src/insertAll":813,"./src/intersection":884,"./src/intersectionWith":885,"./src/intersperse":886,"./src/into":887,"./src/invert":888,"./src/invertObj":889,"./src/invoker":890,"./src/is":891,"./src/isArrayLike":892,"./src/isEmpty":893,"./src/isNil":894,"./src/join":895,"./src/juxt":896,"./src/keys":897,"./src/keysIn":898,"./src/last":899,"./src/lastIndexOf":900,"./src/length":901,"./src/lens":902,"./src/lensIndex":903,"./src/lensPath":904,"./src/lensProp":905,"./src/lift":906,"./src/liftN":907,"./src/lt":908,"./src/lte":909,"./src/map":910,"./src/mapAccum":911,"./src/mapAccumRight":912,"./src/mapObjIndexed":913,"./src/match":914,"./src/mathMod":915,"./src/max":916,"./src/maxBy":917,"./src/mean":918,"./src/median":919,"./src/memoize":920,"./src/merge":921,"./src/mergeAll":922,"./src/mergeWith":923,"./src/mergeWithKey":924,"./src/min":925,"./src/minBy":926,"./src/modulo":927,"./src/multiply":928,"./src/nAry":929,"./src/negate":930,"./src/none":931,"./src/not":932,"./src/nth":933,"./src/nthArg":934,"./src/objOf":935,"./src/of":936,"./src/omit":937,"./src/once":938,"./src/or":939,"./src/over":940,"./src/pair":941,"./src/partial":942,"./src/partialRight":943,"./src/partition":944,"./src/path":945,"./src/pathEq":946,"./src/pathOr":947,"./src/pathSatisfies":948,"./src/pick":949,"./src/pickAll":950,"./src/pickBy":951,"./src/pipe":952,"./src/pipeK":953,"./src/pipeP":954,"./src/pluck":955,"./src/prepend":956,"./src/product":957,"./src/project":958,"./src/prop":959,"./src/propEq":960,"./src/propIs":961,"./src/propOr":962,"./src/propSatisfies":963,"./src/props":964,"./src/range":965,"./src/reduce":966,"./src/reduceBy":967,"./src/reduceRight":968,"./src/reduceWhile":969,"./src/reduced":970,"./src/reject":971,"./src/remove":972,"./src/repeat":973,"./src/replace":974,"./src/reverse":975,"./src/scan":976,"./src/sequence":977,"./src/set":978,"./src/slice":979,"./src/sort":980,"./src/sortBy":981,"./src/sortWith":982,"./src/split":983,"./src/splitAt":984,"./src/splitEvery":985,"./src/splitWhen":986,"./src/subtract":987,"./src/sum":988,"./src/symmetricDifference":989,"./src/symmetricDifferenceWith":990,"./src/tail":991,"./src/take":992,"./src/takeLast":993,"./src/takeLastWhile":994,"./src/takeWhile":995,"./src/tap":996,"./src/test":997,"./src/times":998,"./src/toLower":999,"./src/toPairs":1000,"./src/toPairsIn":1001,"./src/toString":1002,"./src/toUpper":1003,"./src/transduce":1004,"./src/transpose":1005,"./src/traverse":1006,"./src/trim":1007,"./src/tryCatch":1008,"./src/type":1009,"./src/unapply":1010,"./src/unary":1011,"./src/uncurryN":1012,"./src/unfold":1013,"./src/union":1014,"./src/unionWith":1015,"./src/uniq":1016,"./src/uniqBy":1017,"./src/uniqWith":1018,"./src/unless":1019,"./src/unnest":1020,"./src/until":1021,"./src/update":1022,"./src/useWith":1023,"./src/values":1024,"./src/valuesIn":1025,"./src/view":1026,"./src/when":1027,"./src/where":1028,"./src/whereEq":1029,"./src/without":1030,"./src/xprod":1031,"./src/zip":1032,"./src/zipObj":1033,"./src/zipWith":1034}],"webgl":[function(require,module,exports){
+module.exports = {
+    util:require("./util.js"),
+    Timestep:require("./timestep.js"),
+    event:require("./event"),
+    clock:require("./clock.js"),
+    //error:require("./error.js"),
+    //application:require("./application.js"),
+    gl:require("./webgl/gl")
+};
+
+},{"./clock.js":3,"./event":4,"./timestep.js":27,"./util.js":28,"./webgl/gl":32}]},{},[]);

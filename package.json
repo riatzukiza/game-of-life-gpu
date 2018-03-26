@@ -5,7 +5,8 @@
     "main": "main.js",
     "bin": {},
     "scripts": {
-        "start": "node ./server/index.js"
+        "start": "node ./server/index.js",
+        "bundles":"browserify -r kit/js/util -r deeplearn -r mathjs -r ramda -r kit-interface -r /home/aaron/devel/andy/andy_webgl/lib/index.js:webgl -o ./client/bundle.js"
     },
     "dependencies": {
         "deeplearn": "*",

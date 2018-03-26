@@ -38,10 +38,17 @@
 (def-tidy point-tensor (p )
   (.reshape dl (.neg (.abs (.tensor dl p))) [1 1 1 p.length]))
 
+(def-tidy mod-tensor (t m)
+
+  (var dim (.tensor dl m))
+  (var q (.div t dim))
+  (var r (.sub q (.floor q)))
+  (.mul r dim))
 
 (def-tidy distance-matrix (p plane)
   (var [_ w h _] plane.shape)
-  (.norm  (.add plane p ) "euclidean" 3))
+  (var r (mod-tensor  (.add plane p ) [w h]))
+  (.norm   r "euclidean" 3))
 
 (def-tidy inverse-square-matrix (I c p plane)
   (.abs (.div  I (.add c (.square (distance-matrix  p plane))))))
@@ -63,6 +70,7 @@
 
   (.assign p (point-tensor [sun-pos.x sun-pos.y ])))
 (def tick ()
+
      (pipe (dl.next-frame )
            (then-do
             (dl.tidy

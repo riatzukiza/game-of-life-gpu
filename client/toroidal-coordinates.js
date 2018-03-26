@@ -1,68 +1,18 @@
-(function(a, b, c) {
-    /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/core/defs.sibilant:53:9 */
+var _point = (function _point$(x_y$179, i_j$183) {
+    /* *point eval.sibilant:2:0 */
 
-    return foo(this);
-}).bind(this);
+    var x = x_y$179[0],
+        y = x_y$179[1],
+        i = i_j$183[0],
+        j = i_j$183[1];
 
-
-
-
-
-;
-var R = require("ramda");
-var {
-    create,
-    extend,
-    mixin,
-    conditional,
-    cond,
-    partiallyApplyAfter
-} = require("kit/js/util");
-var {
-    Interface
-} = require("kit-interface");;
-Array.prototype.each = (function Array$prototype$each$(f) {
-    /* Array.prototype.each inc/misc.sibilant:1:0 */
-
-    this.forEach(f);
-    return this;
+    return [m.cos(((x / i) * tau)), m.sin(((y / j) * tau))];
 });
-Object.prototype.each = (function Object$prototype$each$(f) {
-    /* Object.prototype.each inc/misc.sibilant:4:0 */
-
-    return Object.keys(this).forEach(((k) => {
-
-        return f(this[k], k);
-
-    }));
-});
-var dl = require("deeplearn"),
-    m = require("mathjs");
-var running__QUERY = true;
-var rgb = (function rgb$(r, g, b) {
-    /* rgb eval.sibilant:26:0 */
-
-    return {
-        r,
-        g,
-        b
-    };
-});
-var W = window.innerWidth,
-    H = window.innerHeight;
-var tau = (Math.PI * 2);
-var _point = (function _point$(x_y$73, i_j$73) {
-    /* *point eval.sibilant:31:0 */
-
-    var x = x_y$73[0],
-        y = x_y$73[1],
-        i = i_j$73[0],
-        j = i_j$73[1];
-
-    return [(Math.cos(((x / i) * tau)) + Math.sin(((x / i) * tau))), (Math.sin(((y / j) * tau)) + Math.cos(((y / j) * tau)))];
-});
-var coordinateGrid = (function coordinateGrid$(i, j) {
+var coordinateGrid = (function coordinateGrid$(j_i$40) {
     /* coordinate-grid inc/dl.sibilant:3:8 */
+
+    var j = j_i$40[0],
+        i = j_i$40[1];
 
     return dl.tidy((() => {
 
@@ -78,17 +28,17 @@ var coordinateGrid = (function coordinateGrid$(i, j) {
 
     }));
 });
-var pointTensor = (function pointTensor$(x_y$74, i_j$74) {
+var pointTensor = (function pointTensor$(x_y$180, i_j$184) {
     /* point-tensor inc/dl.sibilant:3:8 */
 
-    var x = x_y$74[0],
-        y = x_y$74[1],
-        i = i_j$74[0],
-        j = i_j$74[1];
+    var x = x_y$180[0],
+        y = x_y$180[1],
+        i = i_j$184[0],
+        j = i_j$184[1];
 
     return dl.tidy((() => {
 
-        return dl.reshape(dl.tensor(_point([x, y], [i, j])), [1, 1, 1, 2]);
+        return dl.tensor(_point([x, y], [i, j]));
 
     }));
 });
@@ -106,16 +56,17 @@ var inverseSquareMatrix = (function inverseSquareMatrix$(I, c, p, plane) {
 
     return dl.tidy((() => {
 
-        return I.div(c.add(distanceMatrix(p, plane).square())).abs();
+        return I.div(c.add(distanceMatrix(p, plane).square()));
 
     }));
 });
-var coords = coordinateGrid(H, W);
+var dim = [W, H];
+var coords = coordinateGrid(dim);
 var sunPos = {
-    x: (H / 2),
-    y: (W / 2)
+    x: (W / 2),
+    y: (H / 2)
 };
-var p = dl.variable(pointTensor([sunPos.y, sunPos.x], [H, W]));
+var p = dl.variable(pointTensor([sunPos.y, sunPos.x], dim));
 var I = dl.scalar(0.9),
     c = dl.scalar(1);
 var state = dl.variable(inverseSquareMatrix(I, c, p, coords));
@@ -124,13 +75,13 @@ var move = (function move$() {
 
     return dl.tidy((() => {
 
-        sunPos.y = (sunPos.y + 1);
-        return p.assign(pointTensor([sunPos.x, sunPos.y], [H, W]));
+        sunPos.x = (sunPos.x + 1);
+        return p.assign(pointTensor([sunPos.y, sunPos.x], dim));
 
     }));
 });
 var tick = (function tick$() {
-    /* tick eval.sibilant:78:0 */
+    /* tick eval.sibilant:50:0 */
 
     return dl.nextFrame().then(((nil) => {
 
@@ -148,14 +99,14 @@ var tick = (function tick$() {
 state.print();
 var field = null;
 window.onload = (function window$onload$() {
-    /* window.onload eval.sibilant:88:0 */
+    /* window.onload eval.sibilant:60:0 */
 
     var white = rgb(255, 255, 255);
     var canvas = document.createElement("canvas");
     document.body.appendChild(canvas);
     canvas.height = H;
     canvas.width = W;
-    field = colored(canvas, white, [W, H], state);
+    field = colored(canvas, white, dim, state);
     tick();
     document.body.style.margin = 0;
     return document.body.style.padding = 0;

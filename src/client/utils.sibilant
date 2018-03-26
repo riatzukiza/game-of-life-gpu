@@ -1,25 +1,71 @@
-(include "./inc/dl" "./inc/async")
+(include "kit/header"
+         "kit-interface/header"
+         "./inc/async")
+
 
 (import-namespace async)
+(import-namespace kit)
+(import-namespace interface)
+
+(include "./inc/misc.sibilant")
+;;(include "./field.sibilant")
+
+;; (include "kit-html/src/dom")
+;; (import-namespace dom)
+
+(include "./inc/dl")
 (import-namespace dl)
+
+(require! dl 'deeplearn
+          m 'mathjs)
+
+(var running? true)
+
+
+
+(var tau (* Math.PI 2))
+
+(var W window.inner-width H window.inner-height)
 
 (def rgb (r g b ) (lit  r g b ))
 
-(def-tidy field (t) ( dl.cast ( dl.reshape t [1 W H 1]) "float32"))
+(def-tidy field ([w h]) ( dl.cast ( dl.zeros  [1 w h 1]) "float32"))
 
 (def-tidy bit-field (t ) (.greater t (.scalar dl 0.5 "float32")))
 (def-tidy random-bit-field (w h) (bit-field (dl.random-uniform [w h])))
 
-(def-tidy create-grayscale-image (t) (.mul (field t) (.scalar dl 255 "float32")))
-(def-tidy random-grayscale (w h) (pipe (bit-field w h) create-grayscale-image))
 
-(def-tidy grayscale-to-rgba (imgs) (.tile imgs [1 1 1 4]))
-(def-tidy grayscale-to-rgb (imgs) (.tile imgs [1 1 1 3]))
+(define coord-types Interface
 
-(fn uint8c (arr) (.from Uint8ClampedArray arr))
+  (def toroid ([x y] [i j]) [(m.cos (*   (/ x i) tau)) (m.sin (*   (/ y j) tau))]) 
 
-(def-async image (t)
-  (new Image-data (uint8c (await t.data()))
-       (second t.shape) ;; width
-       (third t.shape) ;; height
-       ))
+  (def cartesian ([x y] [i j]) [(/ x i) (/ y j)]))
+
+
+(def-tidy coordinate-grid ([ j i] *point)
+  (var r [])
+
+  (for! (x 0) (< x i) (++ x)
+        (var r* (set r x []))
+        (for! (y 0) (< y j) (++ y)
+              (.push r* (*point [x y] [i j]))))
+
+  (.reshape (.tensor dl r) [1 i j 2]))
+
+(def-tidy point-tensor ([x y] [i j]  *point) (.tensor dl (*point [x y] [i j])))
+
+(def-tidy distance-matrix (p plane) (.norm  (.add plane p ) "euclidean" 3))
+
+(def-tidy inverse-square-matrix (I c p plane)
+  (.div  I (.add c (.square (distance-matrix  p plane)))))
+
+(define Coordinate-system Interface
+  (def-generic grid (dim *type) (coordinate-grid dim *type))
+  (def-generic point (p dim *type) (point-tensor p dim *type)))
+
+(define Toroid Coordinate-system
+  (*type coord-types.toroid))
+
+(define Cartesian Coordinate-system
+  (*type coord-types.cartesian))
+

@@ -22,4 +22,5 @@
 
             (portfolio-piece "game-of-life")
             (portfolio-piece "simple-sun")
-            (portfolio-piece "toroidal-coordinates"))))
+            (portfolio-piece "toroidal-coordinates")
+            (portfolio-piece "ants"))))

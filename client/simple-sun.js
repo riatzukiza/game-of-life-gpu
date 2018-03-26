@@ -76,6 +76,18 @@ var pointTensor = (function pointTensor$(p) {
 
     }));
 });
+var modTensor = (function modTensor$(t, m) {
+    /* mod-tensor inc/dl.sibilant:3:8 */
+
+    return dl.tidy((() => {
+
+        var dim = dl.tensor(m);
+        var q = t.div(dim);
+        var r = q.sub(q.floor());
+        return r.mul(dim);
+
+    }));
+});
 var distanceMatrix = (function distanceMatrix$(p, plane) {
     /* distance-matrix inc/dl.sibilant:3:8 */
 
@@ -85,7 +97,8 @@ var distanceMatrix = (function distanceMatrix$(p, plane) {
             w = plane.shape[1],
             h = plane.shape[2],
             _ = plane.shape[3];
-        return plane.add(p).norm("euclidean", 3);
+        var r = modTensor(plane.add(p), [w, h]);
+        return r.norm("euclidean", 3);
 
     }));
 });
@@ -117,7 +130,7 @@ var move = (function move$() {
     }));
 });
 var tick = (function tick$() {
-    /* tick eval.sibilant:65:0 */
+    /* tick eval.sibilant:72:0 */
 
     return dl.nextFrame().then(((nil) => {
 
@@ -135,7 +148,7 @@ var tick = (function tick$() {
 state.print();
 var field = null;
 window.onload = (function window$onload$() {
-    /* window.onload eval.sibilant:83:0 */
+    /* window.onload eval.sibilant:91:0 */
 
     var white = rgb(255, 255, 255);
     var canvas = document.createElement("canvas");
