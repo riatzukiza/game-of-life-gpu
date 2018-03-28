@@ -1,0 +1,49 @@
+
+(type Interface
+
+      (property symbols {})
+      (property types {}))
+
+(def Interface.create ()
+  ((create this) (dots arguments)))
+
+(def Interface.define
+    (name (default obj {})
+          (default shares (or obj.shares []))
+          (default ext (or obj.extend {}))
+          (default build obj.build))
+
+
+  (var types this.types
+
+       symbols this.symbols)
+
+  (if (in name symbols)
+
+      (do (print "modifying interface" name)
+          (mixin obj (get types (get symbols name))))
+
+      (let ((symbol (Symbol name)))
+        (print "creating interface" name)
+        (collect m (extend  ext (mixin  [(dots shares) (lit name symbol) ] obj))
+
+                 (set symbols name symbol)
+                 (set types  symbol m)
+
+                 (when m.build
+                   (print "attempting to build interface" build)
+                   (.build m ))))))
+
+
+(macro def-interface (name args ...body)
+
+       (var init-body `(init @ args
+                               ...@(pipe body
+                                         (.find  (=> (el) (= (get (first el.contents ) 'token) "init")))
+                                         (or {contents []})
+                                         (get 'contents)
+                                         rest)))
+
+       `(var @name (.define Interface (quote @name)
+                            (lit @init-body
+                                 ...@ (.filter body (=> (el) (not (= (get (first el.contents ) 'token) "init"))))))))

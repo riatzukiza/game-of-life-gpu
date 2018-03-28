@@ -1,0 +1,12 @@
+
+(var wrap Document-node.wrap)
+
+(var container (dom (.div .id "container")))
+(var wrap Document-node.wrap)
+(var stage (dom (.div .id 'stage )))
+
+(var container (dom (.div .id "container"  stage Vertex-system.*gl.context.canvas)))
+
+
+(with-dom Document-root
+  (.div .id 'frame container))

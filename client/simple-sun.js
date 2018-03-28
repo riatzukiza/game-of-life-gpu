@@ -1,3 +1,6 @@
+/home/aaron / devel / apps / game - of -life / src / client;
+
+
 (function(a, b, c) {
     /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/core/defs.sibilant:53:9 */
 
@@ -81,10 +84,18 @@ var modTensor = (function modTensor$(t, m) {
 
     return dl.tidy((() => {
 
-        var dim = dl.tensor(m);
-        var q = t.div(dim);
+        var q = t.div(m);
         var r = q.sub(q.floor());
-        return r.mul(dim);
+        return r.mul(m);
+
+    }));
+});
+var norm = (function norm$(t, n) {
+    /* norm inc/dl.sibilant:3:8 */
+
+    return dl.tidy((() => {
+
+        return t.norm("euclidean", n);
 
     }));
 });
@@ -97,8 +108,7 @@ var distanceMatrix = (function distanceMatrix$(p, plane) {
             w = plane.shape[1],
             h = plane.shape[2],
             _ = plane.shape[3];
-        var r = modTensor(plane.add(p), [w, h]);
-        return r.norm("euclidean", 3);
+        return norm(plane.add(p), 3);
 
     }));
 });
@@ -107,7 +117,7 @@ var inverseSquareMatrix = (function inverseSquareMatrix$(I, c, p, plane) {
 
     return dl.tidy((() => {
 
-        return I.div(c.add(distanceMatrix(p, plane).square())).abs();
+        return I.div(c.add(distanceMatrix(p, plane).square()));
 
     }));
 });
@@ -117,27 +127,29 @@ var sunPos = {
     y: 0
 };
 var p = dl.variable(pointTensor([0, 0]));
-var state = dl.variable(inverseSquareMatrix(dl.scalar(100), dl.scalar(10), p, coords));
+var I = dl.scalar(100000),
+    c = dl.scalar(10);
+var state = dl.variable(inverseSquareMatrix(I, c, p, coords));
 var move = (function move$() {
     /* move inc/dl.sibilant:3:8 */
 
     return dl.tidy((() => {
 
-        sunPos.x = ((sunPos.x + 1) % H);
-        sunPos.y = ((sunPos.y + 1) % W);
+        sunPos.x = (sunPos.x + 1);
+        sunPos.y = (sunPos.y + 1);
         return p.assign(pointTensor([sunPos.x, sunPos.y]));
 
     }));
 });
 var tick = (function tick$() {
-    /* tick eval.sibilant:72:0 */
+    /* tick eval.sibilant:80:0 */
 
     return dl.nextFrame().then(((nil) => {
 
         dl.tidy((() => {
 
             move();
-            return state.assign(inverseSquareMatrix(dl.scalar(100), dl.scalar(10), p, coords).mul(dl.randomUniform([1, H, W])));
+            return state.assign(inverseSquareMatrix(I, c, p, coords).mul(dl.randomUniform([1, H, W])));
 
         }));
         field.render();
@@ -148,7 +160,7 @@ var tick = (function tick$() {
 state.print();
 var field = null;
 window.onload = (function window$onload$() {
-    /* window.onload eval.sibilant:91:0 */
+    /* window.onload eval.sibilant:98:0 */
 
     var white = rgb(255, 255, 255);
     var canvas = document.createElement("canvas");
@@ -160,3 +172,4 @@ window.onload = (function window$onload$() {
     document.body.style.margin = 0;
     return document.body.style.padding = 0;
 });
+.;

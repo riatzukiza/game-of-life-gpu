@@ -6,17 +6,25 @@
 (.on compiler 'error (aprint "compiler:error"))
 
 (def js-target-path (src-path) (+ (strip-sibilant-extension src-path) ".js"))
-(def strip-sibilant-extension (path) (Path.basename path ".sibilant"))
+(def strip-sibilant-extension (path)
+     (Path.join
+      (Path.dirname path)
+      (Path.basename path ".sibilant")))
 
 (def-async compile-module (file dest)
 
   (print "compiling source file" file.path)
   (var lisp (await file.string))
-  (var js (await (.send compiler lisp)))
+  (var js (await (.send compiler (+ "(meta (assign sibilant.dir \"" (Path.dirname file.path) "\" ) null)"
+                                    lisp))))
+  (await (.send compiler "(meta (assign sibilant.dir \".\") null)"))
   (print js)
+  (var dest-path (+  (strip-sibilant-extension file.rel ) ".js"))
+  (print "creating" dest-path)
+  (await (.insert dest dest-path ))
+  (print "saving" dest-path)
 
-  (.catch (.set dest (+  (strip-sibilant-extension file.rel ) ".js") (beautify js))
-          (aprint "compiler error:")))
+  (.set dest dest-path (beautify js)))
 
 (def-async compile-html (file dest)
 
@@ -24,5 +32,7 @@
 
   (var js (await file.string))
   (var result (eval js))
-  (var dest-file (await (.insert dest (+ (Path.basename file.rel ".js") ".html"))))
+  (var dest-file (await (.insert dest (+ (Path.join
+                                          (Path.dirname file.rel)
+                                          (Path.basename file.rel ".js")) ".html"))))
   (.render result dest-file.write-stream))

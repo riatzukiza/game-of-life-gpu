@@ -1,0 +1,23 @@
+
+(def-interface Light-map ((*sources ))
+  (extend Map.Layer)
+  (def *update ()))
+
+
+(def-interface Light-map.Component
+    (entity brightness ))
+
+(def-interface Entity ())
+(def-interface Entity-map ()
+  (extend Map.Layer)
+  (Component Entity))
+
+(def-interface Road-map ())
+
+(def-interface Building-map ())
+(def-interface Zone-map ())
+
+(def-interface Power-map ())
+(def-interface Plumbing-map ())
+
+(def-interface Water-map ())

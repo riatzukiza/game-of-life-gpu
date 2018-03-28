@@ -1,3 +1,6 @@
+/home/aaron / devel / apps / game - of -life / src / client;
+
+
 (function(a, b, c) {
     /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/core/defs.sibilant:53:9 */
 
@@ -41,45 +44,9 @@ var dl = require("deeplearn"),
 var running__QUERY = true;
 var W = window.innerWidth,
     H = window.innerHeight;
-var rgb = (function rgb$(r, g, b) {
-    /* rgb eval.sibilant:25:0 */
-
-    return {
-        r,
-        g,
-        b
-    };
-});
-var bitField = (function bitField$(w, h) {
-    /* bit-field inc/dl.sibilant:2:8 */
-
-    return dl.tidy((() => {
-
-        return dl.randomUniform([w, h]).greater(dl.scalar(0.5, "float32"));
-
-    }));
-});
-var createGrayscaleImage = (function createGrayscaleImage$(t) {
-    /* create-grayscale-image inc/dl.sibilant:2:8 */
-
-    return dl.tidy((() => {
-
-        return dl.cast(dl.reshape(t, [1, W, H, 1]), "float32").mul(dl.scalar(255, "float32"));
-
-    }));
-});
-var randomGrayscale = (function randomGrayscale$(w, h) {
-    /* random-grayscale inc/dl.sibilant:2:8 */
-
-    return dl.tidy((() => {
-
-        return createGrayscaleImage(bitField(w, h));
-
-    }));
-});
 var grayscaleImage = randomGrayscale(W, H);
 var convert = (function convert$(imgs) {
-    /* convert inc/dl.sibilant:2:8 */
+    /* convert inc/dl.sibilant:3:8 */
 
     return dl.tidy((() => {
 
@@ -93,21 +60,24 @@ async function image(t) {
     return (new ImageData(Uint8ClampedArray.from(d), t.shape[1], t.shape[2]));
 
 };
+var fillWithColor = (function fillWithColor$(color, canvas) {
+    /* fill-with-color eval.sibilant:54:0 */
+
+    var ctx = canvas.getContext("2d");
+    ctx.globalCompositionOperation = "destination-over";
+    ctx.fillStyle = color;
+    return ctx.fillRect(0, 0, canvas.width, canvas.height);
+});
 window.onload = async function onload() {
 
     var canvas = document.createElement("canvas");
     document.body.appendChild(canvas);
     canvas.height = H;
     canvas.width = W;
-    var foreground = await image(convert(grayscaleImage)),
-        background = await image(convert(createGrayscaleImage(dl.cast(dl.ones([1, W, H, 1]), "float32"))));
-    (function() {
-        /* eval.sibilant:28:8 */
-
-        console.log("background", background);
-        return background;
-    }).call(this);
+    canvas.style.backgroundColor = "black";
+    var foreground = await image(convert(grayscaleImage));
     var ctx = canvas.getContext("2d");
-    return ctx.putImageData(background, 0, 0);
+    return ctx.putImageData(foreground, 0, 0);
 
 };
+.;

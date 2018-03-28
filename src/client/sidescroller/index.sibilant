@@ -1,0 +1,130 @@
+(console.log "gl" window.gl)
+
+(include "kit/header")
+
+(include "kit-interface/header")
+(import-namespace interface)
+
+(import-namespace kit)
+
+(macro in (  o k) [k " in " o])
+(macro def-system (name args ...body)
+       `(def-interface @name ()
+
+          (init (.call Pooled-system.init this))
+          (extend Pooled-system)
+
+          ...@(.map (content-of args) (=> (name) `(@name [])))
+          ...@body))
+
+(def-curried fset (o k v) (set o k v))
+
+(require! 'sibilant)
+
+
+
+(def window.size () [window.inner-width window.inner-height])
+
+
+(include "./meta")
+
+
+(require! (lit create extend mixin cond partially-apply-after ) "kit/js/util"
+
+          (lit Event-emitter ) "events" 
+          )
+(macro sprint (...args)
+
+       (print "expanding sprint" args)
+       `(print ...@(Array.bind args (=> (a) [`(quote @a) a]))))
+
+
+(var curry R.curry)
+
+(include "./headers/globals")
+
+(include "./lib/lib")
+
+
+(include "./ticker")
+
+;;(include "./system.sibilant")
+
+;; These need to go into kit, or some other external library so I know I can use them easily
+;; else where, they are incredibly useful
+;; (require! (lit Tree) "./lib/collection/tree"
+;;           (lit Tree-map) "./lib/collection/tree-map")
+
+(include  "./lib/collection/ordered-map.sibilant"
+          "./lib/collection/ordered-bucket-map.sibilant"
+          "./lib/collection/bucketed-tree.sibilant")
+
+
+(include "./events")
+
+(include "./andy")
+
+(include "./inc/math"
+         "./inc/vertex"
+         "./object-pool.sibilant"
+         "./game"
+         "./pooled-system.sibilant"
+         "./systems/rendering"
+
+         )
+
+
+(var lagged-ticks 0)
+
+(def handle-lag ( (default handle-lag (-> )))
+
+  (if (> Ticker.elapsed Ticker.rate)
+      (handle-lag)
+      (assign lagged-ticks 0)))
+
+(def-interface Vertex (layer)
+
+  (extend Renderable)
+
+  (structure (new Andy.Gl.Type.Composite
+                  (lit (point Andy.Type.Vector3)
+                       (color Andy.Color.RGBA)
+                       (size Andy.Type.float)))))
+
+(def-interface Scalar (value)
+  (def-generic mul (array value)
+    (.map array (#-> (* value))))
+  (def-generic div (array value)
+    (.map array (#-> (/ value))))
+  (def-generic sub (array value)
+    (.map array (#-> (- value)))))
+
+(const rendering (.load Rendering
+                        (lit (size (.sub Scalar  (window.size) 8))
+                           (limit 100)
+                           (blend true))))
+
+(.resize rendering (.sub Scalar  (window.size) 4))
+(assign rendering.background-color
+        (lit (r 0)
+             (g 0)
+             (b 0)
+             (a 150)))
+
+(var wrap Document-node.wrap)
+
+(var stage
+     (dom
+      (.div .id 'stage )))
+
+(var container
+     (dom
+      (.div .id "container"
+            rendering.context.canvas)))
+
+(with-dom Document-root
+  (.div .id 'frame container))
+
+(include "./systems/test.sibilant")
+
+(print "DONE LOADING")

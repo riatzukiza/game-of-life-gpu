@@ -1,0 +1,82 @@
+
+(def-interface Renderable ( layer structure))
+
+(def-interface Layer
+
+    (limit
+     (interface Renderable)
+
+     (uniform [])
+     (shaders [])
+     context
+
+
+
+     (program (Gl.program (first shaders) (second shaders) context))
+
+     (*members (interface.structure.Array limit))
+
+     (buffer (Gl.buffer *members context)))
+
+  (extend Pooled-system)
+
+
+  (def spawn () (pipe this.*pool (.aquire)))
+
+  (def despawn (o) (pipe this.*pool (.release o)))
+
+
+  (init
+
+   ;; This is where the the magic for vertex memory pooly ness occurs, needs an abstraction to make it
+   ;; more clear that it is occuring methings.
+
+   ;; Right now, I don't think there is a safe way to remove these from the game once they have been added.
+
+   (.call Pooled-system.init this
+          limit
+          interface
+          ((create Object-pool) limit interface *members))
+
+   (.push this.rendering.layers this))
+
+  (def-generic clear (buffer *members context)
+
+    (pipe buffer .bind (.data *members.data) .unbind))
+
+  (def-generic enable (buffer uniform program context)
+
+    (.bind buffer)
+
+    (.enable program)
+    (.each uniform enabled)
+    (.enable-gl-attributes this.interface.structure)
+
+    )
+
+  (def-generic disable (buffer uniform program)
+
+    ;;(.disable-gl-attributes this.interface.structure)
+    (.disable program)
+
+    ;;(.each uniforms disabled)
+
+    (.unbind buffer)
+
+    )
+
+  (def-generic draw (context)
+
+    (unless (= this.*pool.used 0)
+      (print "drawing")
+      (.draw context context.POINTS  (- this.*pool.size this.*pool.used ) this.*pool.used))
+    )
+
+  (def-generic render ()
+
+    (.clear this)
+    (.enable this)
+
+    (.draw this )
+
+    (.disable this)))

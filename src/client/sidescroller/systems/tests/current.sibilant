@@ -1,0 +1,8 @@
+(include "./physics.sibilant")
+(.on game.events 'tick (aprint "tick"))
+(define Player interface
+  (def run ())
+  (def jump ())
+  (def fall ())
+  (def glide ())
+  (def fly ()))

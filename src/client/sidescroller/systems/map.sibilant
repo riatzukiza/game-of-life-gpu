@@ -1,0 +1,47 @@
+(var Pooled Pooled-system)
+
+
+
+(def-interface Coordinate (x y ))
+
+(def-interface Coordinates ()
+  ((*coords ((create Tree-map)))
+   (layers ((create Group))))
+
+  (extend Pooled )
+
+  (gett interface Coordinate)
+
+  (def add-layer ()
+    (.push layers ((create Layer))))
+
+  (def-generic find ([x y] layers *tiles )
+    (remember *tiles (.map [x y] Math.floor)
+              (.spawn this x y))))
+
+
+(def-interface Layer ((*tiles (new Map)))
+  (doc "abstract type for other layers to durive, can be used with only the addition of a member interface.")
+
+  (extend Pooled)
+
+  (def-generic update (*tiles *update)
+    (.each *tiles *update))
+
+  (def-generic delete (tile)
+    (.release this tile)
+    (.delete *tiles tile))
+
+  (def-generic get (tile *tiles)
+    (.get *tiles tile))
+
+  (def-generic add (tile *tiles)
+    (remember *tiles tile
+              (.spawn this tile))))
+
+(def-interface Map.Layer (z)
+  (extend Layer)
+
+  (gett interface this.Cell)
+  )
+

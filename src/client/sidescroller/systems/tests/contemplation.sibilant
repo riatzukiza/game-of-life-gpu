@@ -1,0 +1,96 @@
+
+(include "../ecs")
+(include "../components")
+
+
+(require! Mousetrap 'mousetrap)
+
+
+
+(def vertex-layer (limit)
+  "encapsulates commonly used pattern for spawning vertex layers with a given limit"
+  (.spawn rendering limit Vertex
+          [ uniforms.res uniforms.scale]
+          [(vert-shader) fragment-shader-string]))
+
+(define Direction Component-system
+  (define interface Component
+    (gett dx (first this.data))
+    (gett dy (second this.data))))
+
+(def-lit-macro define (name parent ...body)
+  `(property @name
+             (.define @parent @name
+                      (lit ...@body))))
+
+(define Colored-square Component-system
+
+  (verts (vertex-layer 100000))
+
+  (define interface Component
+
+    (gett color this.data)
+    (gett pos (.get Position this.entity))
+    (gett scale this.data.scale)
+    (gett vertex this.data.vertex))
+
+  (def spawn (entity data)
+    (assign data.vertex (.spawn this.verts))
+    (.call Component-system.spawn this entity data))
+
+  (def *update-component (dot)
+    (set dot.vertex.point
+         'x dot.pos.x
+         'y dot.pos.y
+
+         'z 0)
+    (set dot.vertex
+         'size dot.scale)
+    (set dot.vertex.color
+         'r dot.color.r
+         'g dot.color.g
+         'b dot.color.b
+         'a dot.color.a)))
+
+(var movable-dot [Position Colored-square ])
+(var player (.spawn Entity movable-dot
+                    [(lit (x 0) (y 0) )
+                     (lit (r 10) (g 255) (b 100) (a  255))]))
+(define player Entity-type
+  (aspects movable-dot)
+
+  )
+
+(.bind Mousetrap "w"
+       (-> (var p (.get Position player))
+           (.move Position player (lit (x p.x) (y (+ 1 p.y))))))
+
+(var UP -1
+     DOWN 1
+     LEFT -1
+     RIGHT 1
+     )
+(.bind Mousetrap "w" (-> (.shift Position player [0  UP]) false))
+(.bind Mousetrap "w+d" (-> (.shift Position player [RIGHT  UP]) false))
+(.bind Mousetrap "w+a" (-> (.shift Position player [LEFT  UP]) false))
+
+(.bind Mousetrap "s" (-> (.shift Position player [0 DOWN]) false))
+(.bind Mousetrap "s+d" (-> (.shift Position player [RIGHT  DOWN]) false))
+(.bind Mousetrap "s+a" (-> (.shift Position player [LEFT  DOWN]) false))
+
+(.bind Mousetrap "a" (-> (.shift Position player [LEFT 0]) false))
+(.bind Mousetrap "d" (-> (.shift Position player [RIGHT  0]) false))
+
+(define Game Interface
+  )
+
+
+(.start Game )
+
+(pipe Ticker
+      (.init 10)
+      (.start)
+      (.remove-all-listeners 'tick)
+      (.on 'tick (-> (.update Position)
+                     (.update rendering)
+                     (.update Colored-square))))

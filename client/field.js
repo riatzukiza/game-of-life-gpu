@@ -1,3 +1,6 @@
+/home/aaron / devel / apps / game - of -life / src / client;
+
+
 (function(a, b, c) {
     /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/core/defs.sibilant:53:9 */
 

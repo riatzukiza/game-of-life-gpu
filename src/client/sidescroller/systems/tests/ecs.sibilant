@@ -1,0 +1,35 @@
+(include "../ecs")
+(include "../components")
+
+(include "../sprite")
+
+(var movable-sprite [Position Sprite])
+
+(var Lavo null)
+
+(var x 32 y 32)
+
+(pipe (.load Image "/home/aaron/Pictures/sprites/WalkLavo.png" "/home/aaron/Pictures/sprites/floortile.png")
+
+      (.then (=> ([walk-lavo floor-tile])
+                 (assign Lavo (.spawn Entity movable-sprite
+                                      [ (lit x y)
+                                        (lit (image walk-lavo)
+                                             (frame-count 4)
+                                             (dim [32 32]))]))
+
+                 (pipe Ticker
+                       (.on 'tick (-> (.move Position Lavo (lit x y))
+
+                                      (.update Position)
+                                      (.update rendering)
+                                      (.update Sprite)))))))
+
+(pipe Ticker
+      (.init 10)
+      (.start)
+      (.remove-all-listeners 'tick))
+
+
+
+

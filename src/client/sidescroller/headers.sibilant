@@ -1,0 +1,37 @@
+
+(include "./meta")
+
+
+(require! (lit create extend mixin cond partially-apply-after ) "kit/js/util"
+
+          (lit Event-emitter ) "events" 
+          )
+(macro sprint (...args)
+
+       (print "expanding sprint" args)
+       `(print ...@(Array.bind args (=> (a) [`(quote @a) a]))))
+
+
+(var curry R.curry)
+
+(include "./headers/globals")
+
+(include "./lib/lib")
+
+
+(include "./ticker")
+
+;;(include "./system.sibilant")
+
+;; These need to go into kit, or some other external library so I know I can use them easily
+;; else where, they are incredibly useful
+(require! (lit Tree) "./lib/collection/tree"
+          (lit Tree-map) "./lib/collection/tree-map")
+
+(require! (lit Ordered-map) "./lib/collection/ordered-map.sibilant"
+          (lit Ordered-bucket-map) "./lib/collection/ordered-bucket-map.sibilant"
+          (lit Bucketed-tree) "./lib/collection/bucketed-tree.sibilant")
+
+
+(include "./events")
+

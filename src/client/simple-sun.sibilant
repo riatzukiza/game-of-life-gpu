@@ -1,19 +1,19 @@
 
 (include "kit/header"
          "kit-interface/header"
-         "./inc/async")
+         "../../inc/async")
 
 (import-namespace async)
 (import-namespace kit)
 (import-namespace interface)
 
-(include "./inc/misc.sibilant")
+(include "../../inc/misc.sibilant")
 ;;(include "./field.sibilant")
 
 ;; (include "kit-html/src/dom")
 ;; (import-namespace dom)
 
-(include "./inc/dl")
+(include "../../inc/dl")
 (import-namespace dl)
 
 (require! dl 'deeplearn
@@ -40,18 +40,22 @@
 
 (def-tidy mod-tensor (t m)
 
-  (var dim (.tensor dl m))
-  (var q (.div t dim))
+  (var q (.div t m))
   (var r (.sub q (.floor q)))
-  (.mul r dim))
+  (.mul r m))
 
+(def-tidy norm (t n) (.norm t "euclidean" n))
 (def-tidy distance-matrix (p plane)
   (var [_ w h _] plane.shape)
-  (var r (mod-tensor  (.add plane p ) [w h]))
-  (.norm   r "euclidean" 3))
+
+  ;; (mod-tensor  (.norm   q "euclidean" 3) (.scalar dl (m.sqrt (+ (m.square w) (m.square h)))))
+  (norm (.add plane p ) 3)
+  )
+
+
 
 (def-tidy inverse-square-matrix (I c p plane)
-  (.abs (.div  I (.add c (.square (distance-matrix  p plane))))))
+  (.div  I (.add c (.square (distance-matrix  p plane)))))
 
 
 (var coords (coordinate-grid    H W))
@@ -59,14 +63,18 @@
 
 (var p (dl.variable (point-tensor [0 0])))
 
+
+(var I (.scalar dl 100000)
+     c (.scalar dl 10))
+
 (var state (dl.variable (inverse-square-matrix
-                         (.scalar dl 100)
-                         (.scalar dl 10)
+                         I c
+
                          p
                          coords)))
 (def-tidy move ()
-  (assign sun-pos.x (mod (+ sun-pos.x 1) H)
-          sun-pos.y (mod (+ sun-pos.y 1) W))
+  (assign sun-pos.x (+ sun-pos.x 1)
+          sun-pos.y (+ sun-pos.y 1))
 
   (.assign p (point-tensor [sun-pos.x sun-pos.y ])))
 (def tick ()
@@ -77,8 +85,7 @@
              (-> (move)
                  (.assign state
                           (.mul (inverse-square-matrix
-                                 (.scalar dl 100)
-                                 (.scalar dl 10)
+                                 I c
                                  p
                                  coords)
                                 (.random-uniform dl [1 H W ]))))) (.render field) (tick))

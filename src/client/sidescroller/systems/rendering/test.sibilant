@@ -1,0 +1,102 @@
+(def-interface Vertex (layer)
+
+  (extend Renderable)
+
+  (structure (new Andy.Gl.Type.Composite
+                  (lit (point Andy.Type.Vector3)
+                       (color Andy.Color.RGBA)
+                       (size Andy.Type.float)))))
+
+
+
+
+(var rendering (.load Rendering
+                      (lit (size (window.size))
+                           (limit 100)
+                           (blend true))))
+
+(print rendering.context)
+(var test-layer (.spawn rendering 10000 Vertex
+
+                        [ uniforms.res uniforms.scale]
+                        [(vert-shader) fragment-shader-string]))
+
+;; our errors from last time came from the "global" nature of the gl module.
+;; we have a dot now.
+
+
+(print test-layer)
+(print rendering.blend)
+(var p1 (.spawn test-layer))
+(set p1.point
+     'x 20
+     'y 40
+     'z 1)
+(print p1)
+
+(set p1 'size 4.0)
+
+(set p1.color
+     'r 255
+     'g 255
+     'b 0
+
+     'a 255)
+
+(var p2 (.spawn test-layer))
+(set p2.point
+     'x 20
+     'y 40
+     'z 0)
+(print p2)
+
+(set p2 'size 50.0)
+
+(set p2.color
+     'r 0
+     'g 0
+     'b 255
+
+     'a 100)
+(var test2 (.spawn rendering 10000 Vertex
+
+                   [ uniforms.res uniforms.scale]
+                   [(vert-shader) fragment-shader-string]))
+(var p3 (.spawn test2))
+
+(set p3.point
+     'x 20
+     'y 58
+     'z 0)
+(print p2)
+
+(set p3 'size 20.0)
+
+(set p3.color
+     'r 0
+     'g 0
+     'b 255
+
+     'a 100)
+
+
+
+
+(var i 0)
+
+(pipe Ticker
+      (.init  10)
+      (.start )
+
+      (.remove-all-listeners 'tick)
+
+      (.on 'tick (=> (now tick)
+                     ;; (handle-lag (-> (print "lagging for" lagged-ticks)))
+
+                     (++ i)
+                     (var s (Math.abs (Math.sin (/ i 10))))
+                     (set p1 'size (* s 100))
+                     (.update rendering)
+                     ;;(.update rand-field)
+
+                     )))

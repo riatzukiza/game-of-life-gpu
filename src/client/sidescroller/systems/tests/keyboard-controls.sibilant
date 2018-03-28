@@ -1,0 +1,114 @@
+
+(def-lit-macro define (name parent ...body)
+  `(property @name
+             (.define @parent (quote @name)
+                      (lit ...@body))))
+(macro array-of (n ...body)
+       `(collect array [] (do-times @n (.push array (scoped ...@body)))))
+
+(include "../ecs")
+
+
+(include "../components")
+
+
+(require! Mousetrap 'mousetrap)
+
+(define Keyboard Interface
+  (def on ([key state] f)
+    (fluently (.bind Mousetrap key f (+ "key" state))))
+
+  (def once ([key state-name] f)
+
+    (fluently
+     (var key-state (+ "key" state-name))
+
+     (.bind Mousetrap key f
+            (-> (f) (.unbind Mousetrap key key-state) )
+            key-state))))
+(def bind-player-velocity-key ([key d s])
+
+  (var player-velocity (.get Velocity player ))
+  (var vd (get player-velocity d))
+
+  (.on Keyboard [key 'down]
+       (-> (set  player-velocity d (+ vd (* s velocity-unit)))
+           false))
+
+  (.on Keyboard [key 'up]
+       (-> (set player-velocity d 0)
+           false)))
+
+(def position (x y) (lit x y))
+
+(def velocity (xd yd) [xd yd])
+
+(def dot (r g b a)
+  (lit r g b a))
+
+(def physics (mass scale forces)
+  (lit mass scale forces))
+
+(def sprite (image frame-count scale dim)
+  (lit image frame-count scale dim))
+
+(def collision () null)
+
+(def entity (aspects data)
+  ((aprint "spawning entity") (.spawn Entity aspects data)))
+
+(def floor-tile (x y)
+  [(position  (* x 32)  (* y 32))
+   (velocity 0 0)
+   (sprite floor-tile-image 1 1 [32 32])
+   (physics 10 32 [])
+   (collision)])
+
+(var velocity-unit 10)
+
+(var bind-player-velocity-keys (fmap bind-player-velocity-key))
+
+(var physics-dot [Position Velocity Dot Physics  Collision ]
+
+     physical-object [ Position Velocity Sprite Physics Collision]
+     UP -1 DOWN 1 LEFT -1 RIGHT 1)
+
+(var walk-lavo (.load Image "/home/aaron/Pictures/sprites/WalkLavo.png")
+     floor-tile-image (.load Image "/home/aaron/Pictures/sprites/floortile.png"))
+
+(var systems [Position Physics Velocity Collision rendering Dot Sprite])
+
+(var Lavo [(position 0 0)
+           (velocity 0 0 )
+           (sprite walk-lavo 4 1 [32 32])
+           (physics 10 32 [Gravity Friction ])
+           (collision)])
+
+(var player (entity physical-object Lavo)
+
+     floor (array-of 10 ((aprint "spawning floor") (entity physical-object (floor-tile i 40)))))
+(.on Collision.events 'collision
+     (=> ([c c* d])
+
+         (var [d1x d1y d2x d2y] d)
+
+         (var min (Math.min.apply null d))
+         (var max (Math.max.apply null d))
+
+         (if (or (= d1x max) (= d2x max))
+             (set c.pos 'x (- c.pos.x c.velocity.xd ))
+
+             (or (= d1y max) (= d2y max))
+             (set c.pos 'y (- c.pos.y c.velocity.yd )))))
+(.on Collision.events 'collision (aprint "collision detected"))
+
+(bind-player-velocity-keys
+ [["w" 'yd UP]
+  ["s" 'yd DOWN]
+  ["d" 'xd RIGHT]
+  ["a" 'xd LEFT]])
+
+(.remove-all-listeners Ticker 'tick)
+(pipe Ticker (.init 30) .start
+      (.remove-all-listeners 'tick)
+      (.on 'tick (-> (.each systems (#-> .update)))))

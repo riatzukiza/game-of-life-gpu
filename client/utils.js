@@ -1,3 +1,6 @@
+/home/aaron / devel / apps / game - of -life / src / client;
+
+
 (function(a, b, c) {
     /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/core/defs.sibilant:53:9 */
 
@@ -51,11 +54,11 @@ var rgb = (function rgb$(r, g, b) {
         b
     };
 });
-var field = (function field$(w_h$24) {
+var field = (function field$(w_h$1) {
     /* field inc/dl.sibilant:3:8 */
 
-    var w = w_h$24[0],
-        h = w_h$24[1];
+    var w = w_h$1[0],
+        h = w_h$1[1];
 
     return dl.tidy((() => {
 
@@ -93,11 +96,11 @@ var coordTypes = Interface.define("coordTypes", {
 
     }
 });
-var coordinateGrid = (function coordinateGrid$(j_i$49, _point) {
+var coordinateGrid = (function coordinateGrid$(j_i$1, _point) {
     /* coordinate-grid inc/dl.sibilant:3:8 */
 
-    var j = j_i$49[0],
-        i = j_i$49[1];
+    var j = j_i$1[0],
+        i = j_i$1[1];
 
     return dl.tidy((() => {
 
@@ -113,13 +116,13 @@ var coordinateGrid = (function coordinateGrid$(j_i$49, _point) {
 
     }));
 });
-var pointTensor = (function pointTensor$(x_y$197, i_j$193, _point) {
+var pointTensor = (function pointTensor$(x_y$1, i_j$1, _point) {
     /* point-tensor inc/dl.sibilant:3:8 */
 
-    var x = x_y$197[0],
-        y = x_y$197[1],
-        i = i_j$193[0],
-        j = i_j$193[1];
+    var x = x_y$1[0],
+        y = x_y$1[1],
+        i = i_j$1[0],
+        j = i_j$1[1];
 
     return dl.tidy((() => {
 
@@ -163,3 +166,4 @@ var Toroid = CoordinateSystem.define("Toroid", {
 var Cartesian = CoordinateSystem.define("Cartesian", {
     _type: coordTypes.cartesian
 });
+.;

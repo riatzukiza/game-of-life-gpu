@@ -1,0 +1,13 @@
+(let* (( lighting ((create Lighting)))
+
+       ( t (.spawn lighting 10 20 100))
+       ( r (.spawn lighting 10 10 100)))
+
+  (pipe Ticker
+        (.init 1)
+        (.start)
+        (.remove-all-listeners 'tick)
+        (.on 'tick (->
+                    (incr-by t.x 10)
+                    (.update lighting)
+                    (.update rendering)))))

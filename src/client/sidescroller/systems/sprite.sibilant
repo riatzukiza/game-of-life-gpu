@@ -1,0 +1,90 @@
+(require! 'jimp)
+
+(macro remember (m k ...body)
+       `(if (.has @m @k)
+            (.get @m @k)
+            (do
+             (var r (scoped ...@body))
+             (.set @m @k r) r)))
+
+(macro collect (name value ...body)
+       `(.call (lambda (@name) ...@body @name) this @value))
+
+(macro array-of (size ...body)
+       `(collect array []
+                 (do-times @size (.push array (scoped ...@body)) array)))
+
+(macro fourth (a) `(get @a 3))
+
+
+
+(include "../matrix-map.sibilant"
+         "../image.sibilant")
+
+
+
+(define Sprite-interface Component
+
+  (def-generic register (dim system)
+    (assign this.verts ((create Matrix-map) dim
+                        (array-of (product-of dim)
+                                  (.spawn system.verts )))))
+  (frame-id 0),
+
+  (delay 1) ;; number of ticks between frames
+
+  (gett pos (.get Position this.entity))
+
+  (gett dim this.data.dim),
+  (gett image (.resolve Promise this.data.image)),
+  (gett frame-count this.data.frame-count),
+  (gett scale this.data.scale)
+
+  (gett height (second this.dim))
+  (gett width (first this.dim))
+
+  (gett x this.pos.x)
+  (gett y this.pos.y)
+
+
+  (def-generic get-frame-pixel (i j bit-map width frame-id frame-count image)
+    (.get  bit-map [(+ i (* width (mod   frame-id frame-count))) j]))
+
+  (def-generic move-vertex (i j scale v pos height width )
+    (set v.point
+         'x (mod (+ (- pos.x (/ (* width scale) 2)) (* i scale)) (first rendering.dimensions))
+         'y (mod (+ (- pos.y (/ (* height scale) 2)) (* j scale)) (second rendering.dimensions))
+
+         'z 0))
+
+  (def set-color (v pixel)
+    (set v.color
+         'r pixel.r
+         'g pixel.g
+         'b pixel.b
+         'a pixel.a))
+
+  (def-generic draw (verts image frame-id frame-count pos height width)
+    (++ this.frame-id)
+    (var scale 1)
+    (pipe (then image bit-map
+                ( each verts (v [i j])
+                       (var pixel (.get-frame-pixel this i j bit-map))
+
+                       (.move-vertex this i j scale v)
+
+                       (set v 'size scale)
+                       (.set-color this v pixel))
+                (.emit this.system.game 'draw [bit-map this])))))
+
+(define Sprite Component-system
+
+  (verts (.spawn rendering 1 Vertex
+                 [ uniforms.res uniforms.scale]
+                 [(vert-shader) fragment-shader-string]))
+
+  (interface Sprite-interface)
+
+  (def *update-component (sprite)))
+
+

@@ -1,0 +1,6 @@
+
+;; each layer is a field, the tile system its self is a field.
+;; so each layer is a system.
+
+(def-interface Tile-system (layers )
+  (extend Field))

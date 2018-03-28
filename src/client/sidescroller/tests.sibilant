@@ -1,0 +1,81 @@
+(scoped
+ ;; Test a random field of colors with varying alpha channels
+
+ (print "hold on a sec, this could take a while, loading vertices and tiles")
+ (let* (( dim [200 200])
+        ( context ((create Vertex-context) dim))
+        ( tiles ((create Tile-system) [200 200] context)))
+
+
+   (.update context)
+
+   (let* (( wrap Document-node.wrap)
+          ( stage (dom (.div .id 'stage )))
+          ( container (dom (.div .id "container"  stage context.context.canvas))))
+
+     (with-dom Document-root
+       (.div .id 'frame container))
+
+     (print "DONE LOADING"))))
+(scoped
+ ;; render two overlapping dots, test for alpha channel.
+
+ (print "hold on a sec, this could take a while, loading vertices and tiles")
+
+ (var layer-count 1)
+ (var context ((create Vertex-context) [100 100]))
+
+
+ (var test-vert (.spawn context ))
+
+ (print test-vert)
+
+ (set test-vert.point
+      'x 10
+      'y 10
+      'z 0)
+
+ (set test-vert.color
+
+      'r 255
+      'g 255
+      'b 0
+      'a 100
+      )
+
+ (var test-vert2 (.spawn context ))
+
+ (print test-vert2)
+
+ (set test-vert2.point
+      'x 10
+      'y 10
+      'z 0)
+
+ (set test-vert2.color
+
+      'r 255
+      'g 0
+      'b 0
+      'a 100
+      )
+
+ (.update context)
+
+ (var wrap Document-node.wrap)
+ (var stage (dom (.div .id 'stage )))
+
+ (var container (dom (.div .id "container"  stage context.context.canvas)))
+
+ (with-dom Document-root
+   (.div .id 'frame container))
+
+ (print "DONE LOADING")
+
+ ;; (export Entity-system)
+
+ ;; (require! (lit Game) "./game/game.sibilant"
+ ;;           (lit Entity-system) "./game/systems/prototypes/entity.sibilant"
+ ;;           )
+
+ )

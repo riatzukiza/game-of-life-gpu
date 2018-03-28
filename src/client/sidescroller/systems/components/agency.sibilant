@@ -1,0 +1,4 @@
+(define Agency Component)
+
+(define Agent Component-system
+  (interface Agency))

@@ -1,0 +1,12 @@
+(include "./components/position"
+         "./components/velocity"
+         "./components/dot"
+         "./components/agency"
+         "./components/collision"
+         "./components/physics"
+         "./components/sprite"
+         )
+
+
+
+

@@ -1,0 +1,44 @@
+
+
+
+
+(def position (x y) (lit x y))
+
+(def velocity (xd yd) [xd yd])
+
+(def dot (r g b a)
+  (lit r g b a))
+
+(def physics (mass scale forces)
+  (lit mass scale forces
+       (falling false)))
+
+(def sprite (image frame-count scale dim orientation)
+  (lit image frame-count scale dim orientation))
+
+(def collision (type)
+  (lit type))
+
+(def entity (aspects data)
+  (.spawn game.ent aspects data))
+
+(def floor-tile (x y)
+  [(position  (* x 32)  (* y 32))
+   (velocity 0 0)
+   ;;(sprite floor-tile-image 1 1 [32 32] [1 1])
+   (dot 255 255 10 255)
+   (physics 10 32 [])
+   (collision 'static)])
+
+(define Tile-map Interface
+  (tree ((create Tree-map)))
+  (def get ([x y])
+    (.get this.tree [x y]))
+
+  (def spawn ([x y ])))
+
+
+
+
+
+(print physical-object)

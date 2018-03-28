@@ -1,0 +1,43 @@
+(define Component Interface
+
+  (def register ())
+
+  (init (entity data system)
+        (.register this)))
+
+(define Component-system Interface
+  (interface Component)
+  (def register ())
+  (init (game interface
+              (components ((create Ordered-map)))
+              (pool ((create Dynamic-pool)  interface))
+              (thread (Promise.resolve)))
+        (.register this))
+
+  (gett system this)
+  (template false)
+
+  (def build ()
+    (print "building component system" this)
+    (unless (or this.template )
+      (.init this)))
+
+  (def-generic clear (pool components entity )
+    (.delete components entity)
+    (.clear pool))
+
+  (def-generic get (entity components)
+    (.get components entity))
+
+  (def-generic spawn (entity data pool components)
+    (collect c (.spawn pool entity data this)
+             (.set components entity c)))
+
+
+  (def *update-component (component t)
+    (throw (new Error "need to override *update-component on sub classes of component system")))
+
+  (def-generic *update-all (t components )
+    (.each components (fpipe (this.*update-component t))))
+
+  (def update (t) (accumulate this.thread (then-do (.*update-all this t)))))

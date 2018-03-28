@@ -1,0 +1,128 @@
+(var Pooled Pooled-system)
+
+(def slope ([x y] [x* y*] )
+  [(- y y*) (- x x*)])
+
+(def-curried line (f [x y] [x* y*] scale)
+
+  (var smooth (fpipe (* scale) Math.round))
+  (var m (slope (.map [x y] smooth) (.map [x* y*] smooth)))
+  (var p [x y])
+
+  (f p)
+  (while p
+    (assign p (.map p (=> (c i) (+ c (get m i)))))
+
+    (if (or (> (first p) x*)
+            (> (second p) y*))
+        (assign p null)
+        (f p))))
+
+
+(def-interface Layer (interface )
+  (doc "abstract type for other layers to durive, can be used with only the addition of a member interface.")
+  (limit (Math.pow 2 16))
+
+  (init (.call Pooled.init this))
+
+  (extend Pooled)
+
+  (def-generic update (*tiles *update)
+    (.each *tiles *update))
+
+  (def-generic delete (tile)
+    (.release this tile)
+    (.delete *tiles tile))
+
+  (def-generic get (tile *tiles)
+    (.get *tiles tile))
+
+  (def-generic add (tile *tiles)
+    (remember *tiles tile
+              (.spawn this tile))))
+
+
+
+(def-interface Graph-node (point (edges []))
+  (def connect ())
+  (def disconnect ()))
+
+(def-interface Graph-edge (pair data)
+  (init (each pair (*n) (.push *n.edges this))))
+
+(def-interface Edge-segment ())
+
+(macro remember (m k ...body)
+       `(if (.has @m @k)
+            (.get @m @k)
+            (do
+             (var r (scoped ...@body))
+             (.set @m @k r) r)))
+
+(def-interface Graph ((nodes (new Map))
+                      (edges ((create Tree-map))))
+
+  (Node Graph-Node)
+  (Edge Graph-Edge)
+
+  (def add-node (k)
+    (remember this.nodes k
+              ((create this.Node) k)))
+
+  (def add-edge (k1 k2)
+    (remember this.edges [k1 k2]
+              ((create this.Edge)
+               [(.get-node this k1)
+                (.get-node this k2)])))
+
+  (def get-node (k)
+    (.get this.nodes k))
+
+  (def get-edge (k1 k2)
+    (var *t (.find this.edges [k1 k2]))
+    (if *t *t.value false))
+
+  (def remove-node (k)
+    (.delete this.nodes k))
+
+  (def remove-edge (k1 k2)
+    (.delete this.edges [k1 k2]))
+
+  (def traverse (f)
+    (each this.nodes f)))
+
+
+;; (scoped
+
+;;  (var t ((create Tree-map)))
+;;  (.set t ['a 'b] 'tacos)
+
+;;  (assert (= (get (.find t ['a 'b]) 'value) 'tacos) "tree value misset")
+;;  (.delete t ['a 'b])
+
+;;  (assert (not (.find t ['a 'b])) "value not removed from tree"))
+
+
+;; (scoped
+
+;;  (var g ((create Graph)))
+
+;;  (var [a b] [(.add-node g 'a) (.add-node g 'b)])
+;;  (print (.get-node g 'a))
+
+;;  (assert (= (.get-node g 'a) a) "nodes not equal to value gotten when graph is queried")
+;;  (assert (= (.get-node g 'b) b) "nodes not equal to value gotten when graph is queried")
+
+;;  (var e (.add-edge g 'a 'b))
+
+;;  (assert (= e (.get-edge g 'a 'b)) "edges are not equal")
+
+;;  (.remove-edge g 'a 'b)
+
+;;  (assert (not (.get-edge g ['a 'b])) "Edge was not deleted")
+
+;;  (assert (.remove-node g 'a) "element didn't appear to exist")
+
+;;  (print (.get-node g 'a))
+
+;;  (assert (not (.get-node g 'a)) "node was not deleted"))

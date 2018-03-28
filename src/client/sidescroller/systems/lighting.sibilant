@@ -1,0 +1,182 @@
+(var Pooled Pooled-system)
+(def empty-array (a)
+  (each a () (.pop a)))
+
+(def luminosity (I spread x y i j)
+  (Math.min 255 (inverse-square I spread (lit x y) (lit (x (+ x i)) (y (+ y j))))))
+
+
+(def-interface Moore-neighborhood (pos size ))
+
+(def-interface Data (value ))
+
+(def falloff-threshold (x y I)
+  "calculate the falloff distance"
+
+  (var looping true)
+
+  (collect n 0
+           (while looping
+
+             (var local-i (inverse-square I 1
+                                          (lit x y)
+                                          (lit (x (+ x n)) (y (+ y n)))))
+
+             ;;(print "calculating falloff" (lit x y I n local-i))
+
+
+             (if (> 1 local-i)
+                 (assign looping false)
+                 (++ n)))
+           (print 'falloff-threshold n)))
+
+(def square-matrix (s)
+  ((create Matrix) s s))
+
+(def Ray ())
+
+(def-interface Source (x y intensity (verts []))
+
+  (gett size (* this.threshold 2) )
+
+  ;; (sett x x (assign this.pos [x this.*y]))
+  ;; (sett y y (assign this.pos [this.*x y]))
+
+  (*threshold 0)
+
+  (gett intensity this.*intensity)
+
+  (sett intensity *intensity
+
+        (print "intensity setter" *intensity)
+        (assign this.*intensity *intensity)
+
+        ;; if the threshold has changed, that means we have to render a different area
+        ;; of points.
+
+        ;; so when this happens, we clear the matrix containing the verticies,
+        ;; and repopulate it with the appropriate number of verticies.
+        ;; We do not set their values here, that occurs in the update method
+        ;; of the lighting system
+
+        ;; (unless (= n this.threshold)
+
+        ;;   (print "threshold has changed")
+
+        ;;   (assign this.*intensity *intensity)
+
+        ;;   (assign this.*threshold n)
+
+        ;;   (each this.verts (x) (.despawn rendering x))
+        ;;   (.init this.verts n n)
+
+        ;;   (var (lit x y) this)
+
+        ;;   (.dmap this.verts (=> (v i j) (.spawn layer))))
+        )
+
+
+
+  ;; (gett pos [this.x this.y])
+
+  ;; (sett pos [x y]
+
+  ;;       ;; when ever the position of the source changes,
+  ;;       ;; we also have the change the position of every vertex casted from
+  ;;       ;; this source.
+
+  ;;       (set this '*x x '*y y)
+
+  ;;       (each this.verts (v i j)
+  ;;             (set v.point
+  ;;                  'x (mod (+ x (- i (/ this.verts.width 2))) (first rendering.dimensions))
+  ;;                  'y (mod (+ y (- j (/ this.verts.height 2))) (second rendering.dimensions))
+  ;;                  'z 0)))
+
+  (gett threshold this.*threshold)
+  (gett intensity this.*intensity))
+
+(def-interface Light-map ())
+
+(def-curried cast (s layer i j)
+
+  (var scaling-factor 10
+       spread 1)
+
+  (var v (.spawn layer))
+  (.push s.verts v)
+  (var intensity (* s.intensity 10))
+
+  (var Lum (luminosity intensity scaling-factor
+                       s.x
+
+                       s.y i j))
+
+  (set v 'size (* scaling-factor (Math.pow (/ Lum 255) 0.4)))
+
+  (set v.color 'r 255 'g 255 'b 255 'a Lum )
+
+
+  (var x* (+ s.x (* i spread))
+       y* (+ s.y (* j spread)))
+
+
+  (set v.point
+
+       'x (mod (* scaling-factor x*) (first rendering.dimensions))
+
+       'y (mod (* scaling-factor y*) (second rendering.dimensions))
+
+       'z 0))
+
+(def-interface Lighting
+    ((layer (.spawn rendering 1000000 Vertex
+                    [ uniforms.res uniforms.scale]
+                    [(vert-shader) fragment-shader-string]))
+     (*sources [])
+     ;; (*matrix ((create Matrix (dots rendering.dimensions))))
+     )
+
+  (interface Source)
+
+  (extend Pooled)
+
+  (init (.call Pooled-system.init this ))
+
+  (def-generic update (*sources layer)
+
+    (print "Updating" this.*pool.*in-use)
+    (each this.*pool.*in-use (s)
+
+          ;; all of this some how ends up in the light source.
+          ;; The light source then projects each point of light to a ray.
+          (var (lit x y intensity) s)
+
+
+          ;; we release every vertex we allocated on the previous pass,
+          ;; this is not too bad considering the objects are pooled, but
+          ;; but friction from the release/aquire process adds overhead to the
+          ;; algorithim
+          (each s.verts (v i)
+                (.despawn layer v))
+
+          (empty-array s.verts)
+
+          (square (falloff-threshold x  y intensity)
+                  (cast s layer)
+                  )))
+  (def despawn (src))
+
+
+  )
+
+
+;;(var lighting ((create Lighting)))
+
+;; (var t (.spawn lighting 500 500  50))
+;; (var r (.spawn lighting 500 400  50))
+
+;; y = mx+b
+;; (+ (* m x) b)
+
+

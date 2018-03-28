@@ -1,9 +1,11 @@
 (include "kit/header")
 (include "kit-interface/header")
-(include "./inc/dl")
+
+(include "../../inc/dl")
 
 (import-namespace kit)
 (import-namespace interface)
+(import-namespace dl)
 
 (def-tidy imageify (state)
   (.state reshape [(* H W) ]))

@@ -1,0 +1,22 @@
+
+;; (var vert-sys ((create Vertex-system) 1000))
+;; (var coords [[ 10 10 0 ] [ 0 255 0 255 ] ])
+;; (var p1 (.insert vert-sys coords))
+;; (var p2 (.insert vert-sys coords))
+
+;; (sprint (.find vert-sys [10 10 0 998]))
+
+
+;; ;; Dot wasn't working till shortly before we started.
+
+;; (def move (loc dest tree)
+;;   (var node (.find tree loc))
+;;   (.delete tree loc)
+;;   (.set tree dest)
+;;   node)
+
+;; (print p1)
+;; (print Ordered-map)
+;; (print vert-sys)
+
+;; (print  Bucketed-tree)
