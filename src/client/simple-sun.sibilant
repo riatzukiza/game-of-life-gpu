@@ -5,7 +5,7 @@
 
 
 (var dim [W H])
-(var coords ((create Toroid) dim))
+(var coords ((create Cartesian) dim))
 (var sun-pos (lit (x (* 0.5 W)) (y (* 0.5 H))))
 
 (var p (dl.variable (.point coords [(* 0.5 W)
@@ -20,7 +20,8 @@
 
 (def-tidy move ()
   (assign sun-pos.x (- sun-pos.x 1)
-          sun-pos.y (- sun-pos.y 1))
+          sun-pos.y (- sun-pos.y 1)
+          )
 
   (.assign p (coords.point [sun-pos.x sun-pos.y ] )))
 

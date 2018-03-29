@@ -18,7 +18,7 @@
   (init ((systems [])
          (game-speed 1)
          (entities ((create Entity-system)))
-         (events (new Event-emitter))
+         (events ((create Event-emitter)))
          (ticker ((create Ticker) (* game-speed 60) events)))
 
         (.each systems (=> (s) (assign s.game this))))

@@ -85,12 +85,12 @@
             u (* (m.cos theta) (m.sin theta))
             v (* (m.sin phi) (m.cos phi))
             c 1 a 1)
-       [(* (+ u (* v (m.cos phi)))
+       [(* (+ c (* a (m.sin phi)))
            (m.cos theta))
-        (* (+ u (* v (m.cos phi)))
+        (* (+ c (* a (m.cos phi)))
            (m.sin theta))])
 
-  (def cartesian ([x y] [i j]) [(/ x i) (/ y j)]))
+  (def cartesian ([x y] [i j]) [(/ (mod (- x 1) i) i) (/ (mod (- y 1) j) j)]))
 
 (define Coordinate-system Interface
 

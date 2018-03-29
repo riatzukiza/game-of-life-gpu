@@ -5,14 +5,18 @@
     "main": "main.js",
     "bin": {},
     "scripts": {
-        "dev":"kit-shell < ./scripts/dev.sibilant",
+        "dev": "kit-shell < ./scripts/dev.sibilant",
         "start": "node ./server/index.js",
-        "bundles": "browserify -r events -r fs -r assert  -r kit/js/matrix -r kit/js/util -r deeplearn -r mathjs -r ramda -r kit-interface -r /home/aaron/devel/andy/andy_webgl/lib/index.js:webgl -o ./client/bundle.js"
+        "publish":"git add .;git commit -m 'published';git push origin master; git push heroku master;",
+        "bundles": "browserify -r mousetrap -r tree-kit -r jimp -r kit-events -r events -r fs -r assert  -r kit/js/matrix -r kit/js/util -r deeplearn -r mathjs -r ramda -r kit-interface -r /home/aaron/devel/andy/andy_webgl/lib/index.js:webgl -o ./client/bundle.js"
     },
     "dependencies": {
         "deeplearn": "*",
         "js-beautify": "^1.7.5",
+        "mousetrap":"*",
+        "jimp": "0.2.27",
         "kit": "git+https://github.com/riatzukiza/kit.git",
+        "tree-kit": "git+https://github.com/riatzukiza/tree-kit.git",
         "kit-events": "git+https://github.com/riatzukiza/kit-events.git",
         "kit-file-system": "git+https://github.com/riatzukiza/kit-file-system.git",
         "kit-html": "git+https://github.com/riatzukiza/kit-html.git",

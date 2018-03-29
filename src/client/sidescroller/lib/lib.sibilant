@@ -1,33 +1,10 @@
 (include "./natives/array.sibilant"
          "./natives/map.sibilant")
 
-;;(include "./obj/interface")
-
-;;(include "./common/promise-writer" )
-
-
 (include "./math")
 
-;; (include ;;"./html/element"
-;;          "./html/dom"
-;;          )
+(print "math done")
 
-;; (require! (lit Document-node Document-root)
-;;           "./lib/html/dom"
-;;           )
-
-(include "./html/dom")
-(var create-document-node (create Document-node))
-
-(include "./html/macros")
-
-;; (require! (lit Matrix  Matrix-view Kernel ) "kit/js/matrix"
-;;           (lit Tree-map) "kit/js/data-structures")
-
-;; (require! (lit Matrix  Matrix-view Kernel ) "kit/sib/matrix"
-;;           (lit Tree-map) "kit/sib/data-structures")
-
-(include "kit/sib/data-structures/index")
 (require! (lit Matrix  Matrix-view Kernel ) "kit/js/matrix")
 
 (var matrix (create Matrix))

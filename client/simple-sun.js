@@ -1,5 +1,5 @@
 var dim = [W, H];
-var coords = create(Toroid)(dim);
+var coords = create(Cartesian)(dim);
 var sunPos = {
     x: (0.5 * W),
     y: (0.5 * H)
@@ -25,7 +25,7 @@ var move = (function move$() {
     }));
 });
 var tick = (function() {
-    /* eval.sibilant:27:10 */
+    /* eval.sibilant:28:10 */
 
     return dl.nextFrame(arguments[0]).then(((nil) => {
 
@@ -43,7 +43,7 @@ var tick = (function() {
 });
 var field = null;
 window.onload = (function window$onload$() {
-    /* window.onload eval.sibilant:35:0 */
+    /* window.onload eval.sibilant:36:0 */
 
     var white = rgb(255, 255, 255);
     var canvas = document.createElement("canvas");

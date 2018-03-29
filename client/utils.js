@@ -62,11 +62,11 @@ var rgb = (function rgb$(r, g, b) {
         b
     };
 });
-var field = (function field$(w_h$53) {
+var field = (function field$(w_h$59) {
     /* field inc/dl.sibilant:3:8 */
 
-    var w = w_h$53[0],
-        h = w_h$53[1];
+    var w = w_h$59[0],
+        h = w_h$59[1];
 
     return dl.tidy((() => {
 
@@ -124,11 +124,11 @@ var modTensor = (function modTensor$(t, m) {
 
     }));
 });
-var coordinateGrid = (function coordinateGrid$(j_i$56, _point) {
+var coordinateGrid = (function coordinateGrid$(j_i$62, _point) {
     /* coordinate-grid inc/dl.sibilant:3:8 */
 
-    var j = j_i$56[0],
-        i = j_i$56[1];
+    var j = j_i$62[0],
+        i = j_i$62[1];
 
     return dl.tidy((() => {
 
@@ -144,13 +144,13 @@ var coordinateGrid = (function coordinateGrid$(j_i$56, _point) {
 
     }));
 });
-var pointTensor = (function pointTensor$(x_y$59, i_j$59, _point) {
+var pointTensor = (function pointTensor$(x_y$65, i_j$65, _point) {
     /* point-tensor inc/dl.sibilant:3:8 */
 
-    var x = x_y$59[0],
-        y = x_y$59[1],
-        i = i_j$59[0],
-        j = i_j$59[1];
+    var x = x_y$65[0],
+        y = x_y$65[1],
+        i = i_j$65[0],
+        j = i_j$65[1];
 
     return dl.tidy((() => {
 
@@ -186,12 +186,12 @@ var coordTypes = Interface.define("coordTypes", {
             v = (m.sin(phi) * m.cos(phi)),
             c = 1,
             a = 1;
-        return [((u + (v * m.cos(phi))) * m.cos(theta)), ((u + (v * m.cos(phi))) * m.sin(theta))];
+        return [((c + (a * m.sin(phi))) * m.cos(theta)), ((c + (a * m.cos(phi))) * m.sin(theta))];
 
     },
     cartesian([x, y], [i, j]) {
 
-        return [(x / i), (y / j)];
+        return [(((x - 1) % i) / i), (((y - 1) % j) / j)];
 
     }
 });

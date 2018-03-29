@@ -1,7 +1,7 @@
 create(HtmlElement)("html", {}, [create(HtmlElement)("head", {}, [create(HtmlElement)("script", {
-    src: "/js/bundle.js"
+    'src': "/js/bundle.js"
 }, []), create(HtmlElement)("script", {
-    src: "/js/list.js"
+    'src': "/js/list.js"
 }, []), create(HtmlElement)("script", {
-    src: "/js/main.js"
+    'src': "/js/sidescroller/main.js"
 }, [])])]);

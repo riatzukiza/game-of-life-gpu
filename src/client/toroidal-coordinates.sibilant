@@ -1,74 +1,30 @@
 
-(def *point ([x y] [i j])
-     [
-      (m.cos (*   (/ x i) tau))
-      (m.sin (*   (/ y j) tau))
-      ])
-
-(def-tidy coordinate-grid ([ j i])
-  (var r [])
-
-  (for! (x 0) (< x i) (++ x)
-        (var r* (set r x []))
-        (for! (y 0) (< y j) (++ y)
-              (.push r* (*point [x y] [i j]))))
-
-  (.reshape (.tensor dl r) [1 i j 2]))
-
-(def-tidy mod-tensor (t m)
-
-  (var q (.div t m))
-
-  (var r (.sub q (dl.where (dl.greater q (dl.scalar 0))
-                           (.floor q)
-                           (.ceil q))))
-
-  (.mul r m))
-
-(def-tidy point-tensor ([x y] [i j]  )
-  (.tensor dl (*point [x y] [i j])))
-
-(def-tidy distance-matrix (p plane)
-
-  (var [_ w h _] plane.shape)
-  (var m (mod-tensor  (.add plane p ) (dl.tensor [w h])))
-
-  (.norm  m "euclidean" 3))
-
-
-
-(def-tidy inverse-square-matrix (I c p plane)
-  (.div  I (.add c (.square (distance-matrix  p plane)))))
-
 
 (var dim [ W H])
 
-(var coords (coordinate-grid  dim))
+(var coords ((create Toroid) dim))
 (var sun-pos (lit (x (/  W 2)) (y  (/  H 2))))
 
-(var p (dl.variable (point-tensor [sun-pos.y sun-pos.x] dim)))
+(var p (dl.variable (coords.point [0 0])))
 
 
-(var I (.scalar dl 0.9) c (.scalar dl 1))
-(var state (dl.variable (inverse-square-matrix
-                         I
-                         c
-                         p
-                         coords)))
+(var I (.scalar dl 0.9)
+     c (.scalar dl 1))
+(var state (dl.variable (coords.inverse-square I c p)))
+
+(def calculate-state () (coords.inverse-square I c p))
+
 (def-tidy move ()
-  (assign ;;sun-pos.y (+ sun-pos.y 1)
-          sun-pos.x (+ sun-pos.x 1)
-          )
+  (assign sun-pos.x (- sun-pos.x 1)
+          sun-pos.y (- sun-pos.y 1))
 
-  (.assign p (point-tensor [sun-pos.y sun-pos.x ]
-                           dim)))
-(def tick ()
-     (pipe (dl.next-frame )
-           (then-do
-            (dl.tidy
-             (-> (move)
-                 (.assign state
-                          (inverse-square-matrix I c p coords)))) (.render field) (tick))))
+  (.assign p (coords.point [sun-pos.x sun-pos.y ] )))
+
+(var tick (#-> (dl.next-frame )
+               (then-do (cleanly  (move) (.assign state (calculate-state)))
+                        (print "tick")
+                        (.render field)
+                        (tick))))
 (.print state)
 (var field null)
 

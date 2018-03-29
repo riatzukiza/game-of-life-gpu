@@ -1,4 +1,4 @@
-(require! 'jimp)
+(require! jimp "jimp/index")
 
 (macro remember (m k ...body)
        `(if (.has @m @k)
