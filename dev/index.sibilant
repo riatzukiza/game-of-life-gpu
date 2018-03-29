@@ -30,4 +30,3 @@
 
 (watch js.templates "." "change" (compile-html file html.files))
 
-(require! (lit server) "./server")

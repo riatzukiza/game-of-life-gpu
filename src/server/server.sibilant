@@ -13,6 +13,8 @@
 (var server ((create Http.Server) PORT))
 
 (.use server app)
-(.start server)
 
 (export server)
+(export app)
+(export PORT)
+

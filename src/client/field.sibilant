@@ -47,7 +47,5 @@
             j       (Math.round (* this.color.r a))
             (+ j 1) (Math.round (* this.color.g a))
             (+ j 2) (Math.round (* this.color.b a))
-            (+ j 3) 255
-            )))
-
+            (+ j 3) 255)))
 (var colored (create Colored))

@@ -1,6 +1,3 @@
-/home/aaron / devel / apps / game - of -life / src / client;
-
-
 (function(a, b, c) {
     /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/core/defs.sibilant:53:9 */
 
@@ -43,7 +40,7 @@ var dl = require("deeplearn"),
     m = require("mathjs");
 var running__QUERY = true;
 var rgb = (function rgb$(r, g, b) {
-    /* rgb eval.sibilant:26:0 */
+    /* rgb eval.sibilant:27:0 */
 
     return {
         r,
@@ -57,7 +54,7 @@ var kernel = dl.reshape(dl.tensor2d([
     [1, 1, 1]
 ]), [3, 3, 1, 1]);
 window.onload = (function window$onload$() {
-    /* window.onload eval.sibilant:34:0 */
+    /* window.onload eval.sibilant:35:0 */
 
     var W = window.innerWidth,
         H = window.innerHeight;

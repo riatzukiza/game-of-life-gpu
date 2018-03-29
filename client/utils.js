@@ -1,6 +1,3 @@
-/home/aaron / devel / apps / game - of -life / src / client;
-
-
 (function(a, b, c) {
     /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/core/defs.sibilant:53:9 */
 
@@ -41,12 +38,23 @@ Object.prototype.each = (function Object$prototype$each$(f) {
 });
 var dl = require("deeplearn"),
     m = require("mathjs");
-var running__QUERY = true;
+var running__QUERY = false;
+var start = (function start$() {
+    /* start eval.sibilant:23:0 */
+
+    running__QUERY = true;
+    return tick();
+});
+var stop = (function stop$() {
+    /* stop eval.sibilant:24:0 */
+
+
+});
 var tau = (Math.PI * 2);
 var W = window.innerWidth,
     H = window.innerHeight;
 var rgb = (function rgb$(r, g, b) {
-    /* rgb eval.sibilant:30:0 */
+    /* rgb eval.sibilant:32:0 */
 
     return {
         r,
@@ -54,11 +62,11 @@ var rgb = (function rgb$(r, g, b) {
         b
     };
 });
-var field = (function field$(w_h$1) {
+var field = (function field$(w_h$53) {
     /* field inc/dl.sibilant:3:8 */
 
-    var w = w_h$1[0],
-        h = w_h$1[1];
+    var w = w_h$53[0],
+        h = w_h$53[1];
 
     return dl.tidy((() => {
 
@@ -84,23 +92,43 @@ var randomBitField = (function randomBitField$(w, h) {
 
     }));
 });
-var coordTypes = Interface.define("coordTypes", {
-    toroid([x, y], [i, j]) {
+var rotate = (function rotate$(t, theta) {
+    /* rotate inc/dl.sibilant:3:8 */
 
-        return [m.cos(((x / i) * tau)), m.sin(((y / j) * tau))];
+    return dl.tidy((() => {
 
-    },
-    cartesian([x, y], [i, j]) {
+        return t.matMul(dl.tensor2d([
+            [Math.cos(theta), (-1 * Math.sin(theta))],
+            [Math.sin(theta), Math.cos(theta)]
+        ]));
 
-        return [(x / i), (y / j)];
-
-    }
+    }));
 });
-var coordinateGrid = (function coordinateGrid$(j_i$1, _point) {
+var norm = (function norm$(t, n) {
+    /* norm inc/dl.sibilant:3:8 */
+
+    return dl.tidy((() => {
+
+        return t.norm("euclidean", n);
+
+    }));
+});
+var modTensor = (function modTensor$(t, m) {
+    /* mod-tensor inc/dl.sibilant:3:8 */
+
+    return dl.tidy((() => {
+
+        var q = t.div(m);
+        var r = q.sub(dl.where(dl.greater(q, dl.scalar(0)), q.floor(), q.ceil()));
+        return r.mul(m);
+
+    }));
+});
+var coordinateGrid = (function coordinateGrid$(j_i$56, _point) {
     /* coordinate-grid inc/dl.sibilant:3:8 */
 
-    var j = j_i$1[0],
-        i = j_i$1[1];
+    var j = j_i$56[0],
+        i = j_i$56[1];
 
     return dl.tidy((() => {
 
@@ -116,13 +144,13 @@ var coordinateGrid = (function coordinateGrid$(j_i$1, _point) {
 
     }));
 });
-var pointTensor = (function pointTensor$(x_y$1, i_j$1, _point) {
+var pointTensor = (function pointTensor$(x_y$59, i_j$59, _point) {
     /* point-tensor inc/dl.sibilant:3:8 */
 
-    var x = x_y$1[0],
-        y = x_y$1[1],
-        i = i_j$1[0],
-        j = i_j$1[1];
+    var x = x_y$59[0],
+        y = x_y$59[1],
+        i = i_j$59[0],
+        j = i_j$59[1];
 
     return dl.tidy((() => {
 
@@ -130,7 +158,8 @@ var pointTensor = (function pointTensor$(x_y$1, i_j$1, _point) {
 
     }));
 });
-var distanceMatrix = (function distanceMatrix$(p, plane) {
+var zero = dl.scalar(0);
+var distanceMatrix = (function distanceMatrix$(p, plane, _point) {
     /* distance-matrix inc/dl.sibilant:3:8 */
 
     return dl.tidy((() => {
@@ -139,16 +168,51 @@ var distanceMatrix = (function distanceMatrix$(p, plane) {
 
     }));
 });
-var inverseSquareMatrix = (function inverseSquareMatrix$(I, c, p, plane) {
+var inverseSquareMatrix = (function inverseSquareMatrix$(I, c, p, plane, _point) {
     /* inverse-square-matrix inc/dl.sibilant:3:8 */
 
     return dl.tidy((() => {
 
-        return I.div(c.add(distanceMatrix(p, plane).square()));
+        return I.div(c.add(distanceMatrix(p, plane, _point).square()));
 
     }));
 });
+var coordTypes = Interface.define("coordTypes", {
+    toroid([x, y], [i, j]) {
+
+        var theta = ((x / i) * tau),
+            phi = ((y / j) * tau),
+            u = (m.cos(theta) * m.sin(theta)),
+            v = (m.sin(phi) * m.cos(phi)),
+            c = 1,
+            a = 1;
+        return [((u + (v * m.cos(phi))) * m.cos(theta)), ((u + (v * m.cos(phi))) * m.sin(theta))];
+
+    },
+    cartesian([x, y], [i, j]) {
+
+        return [(x / i), (y / j)];
+
+    }
+});
 var CoordinateSystem = Interface.define("CoordinateSystem", {
+    init(dim = this.dim, plane = this.grid(dim)) {
+
+        this.dim = dim;
+        this.plane = plane;
+        return this;
+
+    },
+    distances(p = this.p, plane = this.plane, _type = this._type) {
+
+        return distanceMatrix(p, plane, _type);
+
+    },
+    inverseSquare(I = this.I, c = this.c, p = this.p, plane = this.plane, _type = this._type) {
+
+        return inverseSquareMatrix(I, c, p, plane, _type);
+
+    },
     grid(dim = this.dim, _type = this._type) {
 
         return coordinateGrid(dim, _type);
@@ -166,4 +230,3 @@ var Toroid = CoordinateSystem.define("Toroid", {
 var Cartesian = CoordinateSystem.define("Cartesian", {
     _type: coordTypes.cartesian
 });
-.;

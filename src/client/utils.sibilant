@@ -19,13 +19,15 @@
 (require! dl 'deeplearn
           m 'mathjs)
 
-(var running? true)
-
+(var running? false)
+(def start () (assign running? true) (tick))
+(def stop ())
 
 
 (var tau (* Math.PI 2))
 
 (var W window.inner-width H window.inner-height)
+
 
 (def rgb (r g b ) (lit  r g b ))
 
@@ -34,12 +36,24 @@
 (def-tidy bit-field (t ) (.greater t (.scalar dl 0.5 "float32")))
 (def-tidy random-bit-field (w h) (bit-field (dl.random-uniform [w h])))
 
+(def-tidy rotate (t theta)
+  (.mat-mul t (.tensor2d dl [[(Math.cos theta) (* -1 (Math.sin theta))]
+                             [(Math.sin theta) (Math.cos theta)]])))
 
-(define coord-types Interface
 
-  (def toroid ([x y] [i j]) [(m.cos (*   (/ x i) tau)) (m.sin (*   (/ y j) tau))]) 
+(def-tidy norm (t n) (.norm t "euclidean" n))
 
-  (def cartesian ([x y] [i j]) [(/ x i) (/ y j)]))
+
+(def-tidy mod-tensor (t m)
+
+  (var q (.div t m))
+
+  (var r (.sub q (dl.where (dl.greater q (dl.scalar 0))
+                           (.floor q)
+                           (.ceil q))))
+
+  (.mul r m))
+
 
 
 (def-tidy coordinate-grid ([ j i] *point)
@@ -54,12 +68,39 @@
 
 (def-tidy point-tensor ([x y] [i j]  *point) (.tensor dl (*point [x y] [i j])))
 
-(def-tidy distance-matrix (p plane) (.norm  (.add plane p ) "euclidean" 3))
+(var zero (dl.scalar 0))
+(def-tidy distance-matrix (p plane *point)
 
-(def-tidy inverse-square-matrix (I c p plane)
-  (.div  I (.add c (.square (distance-matrix  p plane)))))
+  (.norm  (.add plane p ) "euclidean" 3))
+
+(def-tidy inverse-square-matrix (I c p plane *point)
+  (.div  I (.add c (.square (distance-matrix  p plane *point)))))
+
+(define coord-types Interface
+
+  (def toroid ([x y] [i j])
+       (var theta (* (/ x i) tau)
+            phi (* (/ y j) tau)
+
+            u (* (m.cos theta) (m.sin theta))
+            v (* (m.sin phi) (m.cos phi))
+            c 1 a 1)
+       [(* (+ u (* v (m.cos phi)))
+           (m.cos theta))
+        (* (+ u (* v (m.cos phi)))
+           (m.sin theta))])
+
+  (def cartesian ([x y] [i j]) [(/ x i) (/ y j)]))
 
 (define Coordinate-system Interface
+
+  (init (dim (plane (.grid this dim))))
+
+  (def-generic distances (p plane *type) (distance-matrix p plane *type))
+
+  (def-generic inverse-square (I c p plane *type)
+    (inverse-square-matrix I c p plane *type))
+
   (def-generic grid (dim *type) (coordinate-grid dim *type))
   (def-generic point (p dim *type) (point-tensor p dim *type)))
 

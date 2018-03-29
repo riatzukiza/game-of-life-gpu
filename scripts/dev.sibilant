@@ -1,0 +1,7 @@
+(include "./dev/index")
+(import-namespace dev)
+(import-namespace markup)
+
+(require! (lit server) "./server")
+
+(.start server)

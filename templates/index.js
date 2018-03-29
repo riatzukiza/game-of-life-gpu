@@ -14,8 +14,12 @@ var portfolioPiece = (function portfolioPiece$(name) {
 });
 create(HtmlElement)("html", {}, [create(HtmlElement)("head", {}, [create(HtmlElement)("title", {}, ["Welcome to the Error Log"]), create(HtmlElement)("script", {
     'src': "/js/bundle.js"
-}, [])]), create(HtmlElement)("body", {}, [create(HtmlElement)("header", {
+}, []), create(HtmlElement)("script", {}, [(function() {
+    /* eval.sibilant:14:46 */
+
+
+}).call(this)])]), create(HtmlElement)("body", {}, [create(HtmlElement)("header", {
     'style': "text-align:center;"
-}, [create(HtmlElement)("h1", {}, ["Error log"])]), create(HtmlElement)("section", {
-    'style': "display:flex;flex-wrap:wrap;margin:auto;"
-}, [portfolioPiece("game-of-life"), portfolioPiece("simple-sun"), portfolioPiece("toroidal-coordinates"), portfolioPiece("ants")])])]);
+}, [create(HtmlElement)("h1", {}, ["Error log"])]), create(HtmlElement)("nav", {}, []), create(HtmlElement)("section", {
+    'style': "display:flex;flex-wrap:wrap;margin:auto;width:80%;"
+}, [portfolioPiece("game-of-life"), portfolioPiece("simple-sun"), portfolioPiece("toroidal-coordinates")])])]);

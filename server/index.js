@@ -1,2 +1,2 @@
-var server = require("./server");
-exports.server = server;
+var srv = require("./server");
+module.exports = srv;

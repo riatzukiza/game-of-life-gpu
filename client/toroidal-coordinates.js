@@ -1,18 +1,18 @@
-var _point = (function _point$(x_y$179, i_j$183) {
+var _point = (function _point$(x_y$5, i_j$5) {
     /* *point eval.sibilant:2:0 */
 
-    var x = x_y$179[0],
-        y = x_y$179[1],
-        i = i_j$183[0],
-        j = i_j$183[1];
+    var x = x_y$5[0],
+        y = x_y$5[1],
+        i = i_j$5[0],
+        j = i_j$5[1];
 
     return [m.cos(((x / i) * tau)), m.sin(((y / j) * tau))];
 });
-var coordinateGrid = (function coordinateGrid$(j_i$40) {
+var coordinateGrid = (function coordinateGrid$(j_i$3) {
     /* coordinate-grid inc/dl.sibilant:3:8 */
 
-    var j = j_i$40[0],
-        i = j_i$40[1];
+    var j = j_i$3[0],
+        i = j_i$3[1];
 
     return dl.tidy((() => {
 
@@ -28,13 +28,24 @@ var coordinateGrid = (function coordinateGrid$(j_i$40) {
 
     }));
 });
-var pointTensor = (function pointTensor$(x_y$180, i_j$184) {
+var modTensor = (function modTensor$(t, m) {
+    /* mod-tensor inc/dl.sibilant:3:8 */
+
+    return dl.tidy((() => {
+
+        var q = t.div(m);
+        var r = q.sub(dl.where(dl.greater(q, dl.scalar(0)), q.floor(), q.ceil()));
+        return r.mul(m);
+
+    }));
+});
+var pointTensor = (function pointTensor$(x_y$6, i_j$6) {
     /* point-tensor inc/dl.sibilant:3:8 */
 
-    var x = x_y$180[0],
-        y = x_y$180[1],
-        i = i_j$184[0],
-        j = i_j$184[1];
+    var x = x_y$6[0],
+        y = x_y$6[1],
+        i = i_j$6[0],
+        j = i_j$6[1];
 
     return dl.tidy((() => {
 
@@ -47,7 +58,12 @@ var distanceMatrix = (function distanceMatrix$(p, plane) {
 
     return dl.tidy((() => {
 
-        return plane.add(p).norm("euclidean", 3);
+        var _ = plane.shape[0],
+            w = plane.shape[1],
+            h = plane.shape[2],
+            _ = plane.shape[3];
+        var m = modTensor(plane.add(p), dl.tensor([w, h]));
+        return m.norm("euclidean", 3);
 
     }));
 });
@@ -81,7 +97,7 @@ var move = (function move$() {
     }));
 });
 var tick = (function tick$() {
-    /* tick eval.sibilant:50:0 */
+    /* tick eval.sibilant:65:0 */
 
     return dl.nextFrame().then(((nil) => {
 
@@ -99,7 +115,7 @@ var tick = (function tick$() {
 state.print();
 var field = null;
 window.onload = (function window$onload$() {
-    /* window.onload eval.sibilant:60:0 */
+    /* window.onload eval.sibilant:75:0 */
 
     var white = rgb(255, 255, 255);
     var canvas = document.createElement("canvas");
