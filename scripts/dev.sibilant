@@ -4,4 +4,3 @@
 
 (require! (lit server) "./server")
 
-(.start server)
