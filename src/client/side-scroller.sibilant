@@ -1,0 +1,169 @@
+(include "kit/header")
+
+(import-namespace kit)
+
+(include "kit-interface/header")
+(import-namespace interface)
+
+(include "kit-html/src/dom")
+(import-namespace dom)
+
+(require! 'assert)
+
+
+
+
+(var *assign-id (=> (m k) (assign  m.id k) m))
+
+(set global
+     'create create
+     'extend extend
+     'mixin mixin)
+
+(var green (color 0 255 0) yellow (color 255  255  0))
+
+(var despawned (fpipe .despawn))
+(const rendering (.load Rendering
+                        (lit (size (.sub Scalar  (window.size) 8))
+                             (limit 100)
+                             (blend true))))
+
+(.resize rendering (.sub Scalar  (window.size) 4))
+(assign rendering.background-color
+        (lit (r 0)
+             (g 0)
+             (b 0)
+             (a 150)))
+
+(var wrap Document-node.wrap)
+
+(var stage
+     (dom
+      (.div .id 'stage )))
+
+
+(var container
+     (dom
+      (.div .id "container"
+            rendering.context.canvas)))
+(with-dom Document-root
+  (.div .id 'frame container))
+
+(def spawn-vertex-layer ()
+     (.spawn rendering 1000000 Vertex
+             [ uniforms.res uniforms.scale]
+             [(vert-shader) fragment-shader-string]))
+
+(def free-space (pool) pool.free)
+(def sum-of (list f) (.map list))
+
+(def bind-player-velocity-key ([key d s])
+
+  (var player-velocity (.get Velocity player ))
+  (var vd (get player-velocity d))
+
+  (.on Keyboard [key 'down]
+       (-> (print "pressed" key "key")(set  player-velocity d (+ vd (* s velocity-unit)))
+           false))
+
+  (.on Keyboard [key 'up]
+       (-> (print key " key released")(set player-velocity d 0)
+           false)))
+
+(def position (x y) (lit x y))
+
+(def velocity (xd yd) [xd yd])
+
+(def dot (r g b a)
+     (lit r g b a))
+
+(def physics (mass scale forces)
+     (lit mass scale forces
+          (falling false)))
+
+(def sprite (image frame-count scale dim)
+     (lit image frame-count scale dim))
+
+(def collision (type)
+     (lit type))
+
+(def entity (aspects data)
+     (.spawn game.ent aspects data))
+
+(def floor-tile (x y)
+     [(position  (* x 32)  (* y 32))
+      (dot 255 255 10 255)
+      (velocity 0 0)
+      (physics 10 32 [])
+      (collision 'static)])
+
+(var velocity-unit 16)
+
+(var bind-player-velocity-keys (fmap bind-player-velocity-key))
+
+(var movable-dot [ Position Velocity Dot    Physics Collision]
+     physics-dot [Position Dot  Velocity  Physics Collision]
+
+     UP -1 DOWN 1 LEFT -1 RIGHT 1)
+
+
+(var game ((create Game) [,Physics  Velocity  Collision, , ,Position   Dot, rendering]
+           ))
+
+(var Player-dot [(position 0 0)
+                 (dot 0 10 255 255)
+                 (velocity 0 0 )
+                 (physics 10 32 [Gravity Friction])
+                 (collision 'dynamic)])
+
+
+
+(var player (entity physics-dot Player-dot)
+
+     floor (array-of 20 ((aprint "spawning floor") (entity physics-dot (floor-tile i 40)))))
+
+(bind-player-velocity-keys
+ [["w" 'yd UP]
+  ["s" 'yd DOWN]
+  ["d" 'xd RIGHT]
+  ["a" 'xd LEFT]])
+
+(var nothing null)
+
+(on (.remove-all-listeners game.events 'collision)
+
+    'collision ([c c* d])
+
+    (var [d1x d1y d2x d2y] : d,
+
+         max : (Math.max.apply null d)
+         min : (Math.min.apply null d))
+
+    (var physics (.get Physics c.entity))
+
+
+    (when (= c.type 'dynamic)
+
+
+      (when (or (= d1x max)
+                (= d2x max))
+        (set c.pos 'x (+ c.pos.x
+                         (if (= d1x max) -1 1)
+                           (* max (if (= d1x max) 1 -1))))
+        (set c.velocity.xd 0))
+      (when (or (= d1y max)
+                (= d2y max))
+        (set c.pos 'y (+ c.pos.y
+                         (if (= d1y max) -1 1)
+                           (* max (if (= d1y max) 1 -1))))
+        (set c.velocity.yd 0))))
+
+
+(on game.events 'move (v)
+    (var collision (.get Collision v.entity))
+    (set collision
+         'colliding false))
+
+(.start game)
+
+(print "DONE LOADING")

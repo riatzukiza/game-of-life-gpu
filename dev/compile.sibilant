@@ -1,7 +1,8 @@
 (namespace dev)
 
 (var compiler (.spawn Compiler))
-(require! (lit (js beautify))  "js-beautify")
+(require! (lit (js beautify))  "js-beautify"
+          'browserify)
 
 (.on compiler 'error (aprint "compiler:error"))
 
@@ -10,6 +11,22 @@
      (Path.join
       (Path.dirname path)
       (Path.basename path ".sibilant")))
+(def-async bundle (file dest)
+  (print "bundling client file" file.path)
+  (var bundle (browserify))
+  (.require bundle file.path)
+  (var dest-file (await (.insert dest file.rel)))
+  (var reader (.bundle bundle))
+  (var writer dest-file.write-stream)
+  (print "writer" writer)
+  (print "reader" reader)
+
+  (await (make-promise
+          (.on reader 'error fail)
+          (.on writer 'finish success)
+          (.on writer 'error fail)
+          (.pipe reader writer)))
+  (print "bundled" dest-file.path))
 
 (def-async compile-module (file dest)
 

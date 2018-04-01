@@ -167,12 +167,13 @@ var {
     TreeMap
 } = require("tree-kit");
 var exports = {};
-window.size = (function window$size$() {
-    /* window.size eval.sibilant:19:0 */
-
-    return [window.innerWidth, window.innerHeight];
-});
 window.global = window;
+var events = require("events");
+EventEmitter.removeAllListeners = (function EventEmitter$removeAllListeners$(...args) {
+    /* Event-emitter.remove-all-listeners eval.sibilant:22:0 */
+
+    return events.EventEmitter.prototype.removeAllListeners.call(this, ...args);
+});
 var curry = R.curry;
 var fmap = R.curry(((f, a) => {
 
@@ -184,6 +185,11 @@ var fset = R.curry(((o, k, v) => {
     return o[k] = v;
 
 }));
+window.size = (function window$size$() {
+    /* window.size eval.sibilant:33:0 */
+
+    return [window.innerWidth, window.innerHeight];
+});
 var Andy = require("webgl");
 var Gl = Andy.gl,
     Color = Andy.Color;
@@ -207,10 +213,10 @@ var {
     BlendMode
 } = Color;
 Array.transform = (function Array$transform$(f, a, r = a) {
-    /* Array.transform src/client/sidescroller/lib/natives/array.sibilant:1:0 */
+    /* Array.transform eval.sibilant:54:0 */
 
     return (function(r) {
-        /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/scope.sibilant:12:9 */
+        /* eval.sibilant:1400:15 */
 
         a.each(((e, i) => {
 
@@ -218,10 +224,10 @@ Array.transform = (function Array$transform$(f, a, r = a) {
 
         }));
         return r;
-    })(r);
+    }).call(this, r);
 });
 Array.prototype.bind = Array.bind = (function Array$bind$(a, f) {
-    /* Array.bind src/client/sidescroller/lib/natives/array.sibilant:5:8 */
+    /* Array.bind eval.sibilant:58:8 */
 
     return a.reduce(((r, e, i) => {
 
@@ -235,16 +241,16 @@ Array.prototype.bind = Array.bind = (function Array$bind$(a, f) {
     }), []);
 });
 Array.prototype.each = (function Array$prototype$each$(f) {
-    /* Array.prototype.each src/client/sidescroller/lib/natives/array.sibilant:19:0 */
+    /* Array.prototype.each eval.sibilant:70:0 */
 
     this.forEach(f);
     return this;
 });
 Array.prototype.bind = (function Array$prototype$bind$(f) {
-    /* Array.prototype.bind src/client/sidescroller/lib/natives/array.sibilant:22:0 */
+    /* Array.prototype.bind eval.sibilant:73:0 */
 
     return (function(r) {
-        /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/scope.sibilant:12:9 */
+        /* eval.sibilant:1400:15 */
 
         this.each(((a) => {
 
@@ -252,22 +258,22 @@ Array.prototype.bind = (function Array$prototype$bind$(f) {
 
         }));
         return r;
-    })([]);
+    }).call(this, []);
 });
 Map.prototype.each = (function Map$prototype$each$(f) {
-    /* Map.prototype.each src/client/sidescroller/lib/natives/map.sibilant:1:0 */
+    /* Map.prototype.each eval.sibilant:76:0 */
 
     this.forEach(f);
     return this;
 });
 var euclidianDistance = (function euclidianDistance$(x, y, a, b) {
-    /* euclidian-distance src/client/sidescroller/lib/math/geometry.sibilant:1:0 */
+    /* euclidian-distance eval.sibilant:80:0 */
 
     return Math.sqrt((Math.pow((x - a), 2) + Math.pow((y - b), 2)));
 });
 exports.euclidianDistance = euclidianDistance;
 var square = (function square$(dim, f) {
-    /* square src/client/sidescroller/lib/math/geometry.sibilant:6:0 */
+    /* square eval.sibilant:85:0 */
 
     var lim = Math.round((dim / 2));
     (function() {
@@ -301,21 +307,20 @@ var inverseSquare = (function inverseSquare$(rate, c, pos, {
     x,
     y
 }) {
-    /* inverse-square src/client/sidescroller/lib/math/geometry.sibilant:21:0 */
+    /* inverse-square eval.sibilant:100:0 */
 
     return (rate / (c + Math.pow(euclidianDistance(x, y, pos.x, pos.y), 2)));
-});;
+});
 var add = (function add$(a, b) {
-    /* add src/client/sidescroller/lib/math.sibilant:7:0 */
+    /* add eval.sibilant:119:0 */
 
     return (a + b);
 });
 var summate = (function summate$(a) {
-    /* summate src/client/sidescroller/lib/math.sibilant:8:0 */
+    /* summate eval.sibilant:120:0 */
 
     return a.reduce(add, 0);
 });
-console.log("math done");
 var {
     Matrix,
     MatrixView,
@@ -330,14 +335,13 @@ var setValue = R.curry(((value, entity) => {
     return entity.value = value;
 
 }));
-var curry = R.curry;
 var {
     not: fnot,
     pipe: fpipe,
     equals
 } = R;
 Object.prototype.each = (function Object$prototype$each$(f) {
-    /* Object.prototype.each src/client/sidescroller/lib/lib.sibilant:27:0 */
+    /* Object.prototype.each eval.sibilant:132:0 */
 
     return Object.keys(this).each(((k) => {
 
@@ -359,7 +363,7 @@ var green = {
         blue: 0
     };
 var memoize = (function memoize$(f) {
-    /* memoize src/client/sidescroller/lib/lib.sibilant:38:0 */
+    /* memoize eval.sibilant:143:0 */
 
     "create a memoized version of any function. A memoized function will return\n" + "previously calculated results from a cache if the arguments given to it are the same";
     var m = {};
@@ -377,7 +381,7 @@ var Ticker = Interface.define("Ticker", {
         return (1000 / this.fps);
 
     },
-    init(fps = this.fps, events = (new EventEmitter())) {
+    init(fps = this.fps, events = create(EventEmitter)()) {
 
         this.fps = fps;
         this.events = events;
@@ -451,7 +455,7 @@ var OrderedMap = Interface.define("OrderedMap", {
     map(callback = this.callback, [_members, _, _keys, _values] = [this._members, this._, this._keys, this._values]) {
 
         return (function(r) {
-            /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/scope.sibilant:12:9 */
+            /* eval.sibilant:1400:15 */
 
             _keys.each(((k) => {
 
@@ -459,7 +463,7 @@ var OrderedMap = Interface.define("OrderedMap", {
 
             }));
             return r;
-        })(create(OrderedMap)());
+        }).call(this, create(OrderedMap)());
 
     },
     delete(key = this.key, [_members, _keyPointers, _keys, _values] = [this._members, this._keyPointers, this._keys, this._values]) {
@@ -479,18 +483,15 @@ var OrderedMap = Interface.define("OrderedMap", {
             if (_members.has(key)) {
                 return _members.get(key);
             } else {
-                return (function(value) {
-                    /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/scope.sibilant:12:9 */
-
-                    _members.set(key, value);
-                    return value;
-                })((function() {
-                    /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/macros.sibilant:30:25 */
+                var r = (function() {
+                    /* eval.sibilant:1396:20 */
 
                     _keys.push(key);
                     _keyPointers.set(_values.push(value));
                     return value;
-                }).call(this));
+                }).call(this);
+                _members.set(key, r);
+                return r;
             }
         }).call(this);
 
@@ -519,18 +520,15 @@ var OrderedMap = Interface.define("OrderedMap", {
             if (_members.has(key)) {
                 return _members.get(key);
             } else {
-                return (function(value) {
-                    /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/scope.sibilant:12:9 */
-
-                    _members.set(key, value);
-                    return value;
-                })((function() {
-                    /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/macros.sibilant:30:25 */
+                var r = (function() {
+                    /* eval.sibilant:1396:20 */
 
                     _keys.unshift(key);
                     _keyPointers.set(_values.unshift(value));
                     return value;
-                }).call(this));
+                }).call(this);
+                _members.set(key, r);
+                return r;
             }
         }).call(this);
 
@@ -566,12 +564,12 @@ var search = R.curry(((value, array) => {
 
 }));
 var identity = (function identity$(a) {
-    /* identity src/client/sidescroller/lib/collection/ordered-bucket-map.sibilant:3:0 */
+    /* identity eval.sibilant:284:0 */
 
     return a;
 });
 var searchIfGiven = (function searchIfGiven$(array, value) {
-    /* search-if-given src/client/sidescroller/lib/collection/ordered-bucket-map.sibilant:5:0 */
+    /* search-if-given eval.sibilant:286:0 */
 
     return conditional(array, (() => {
 
@@ -580,7 +578,7 @@ var searchIfGiven = (function searchIfGiven$(array, value) {
     }), search(value), identity);
 });
 var fprint = (function fprint$($value, ...args) {
-    /* fprint src/client/sidescroller/lib/collection/ordered-bucket-map.sibilant:12:0 */
+    /* fprint eval.sibilant:293:0 */
 
     console.log($value, ...args);
     return $value;
@@ -594,10 +592,9 @@ var OrderedBucketMap = Interface.define("OrderedBucketMap", {
     },
     set(k = this.k, v = this.v, _buckets = this._buckets) {
 
-        console.log("setting", k, v);
         return (function() {
             if (_buckets.has(k)) {
-                return fprint(_buckets.get(k), "bucket at", k).push(v);
+                return _buckets.get(k).push(v);
             } else {
                 return _buckets.push([k, [v]]);
             }
@@ -637,7 +634,7 @@ var BucketedTree = Interface.define("BucketedTree", {
 });
 exports.BucketedTree = BucketedTree;
 var productOf = (function productOf$(a) {
-    /* product-of src/client/sidescroller/inc/math.sibilant:1:0 */
+    /* product-of eval.sibilant:333:0 */
 
     return a.reduce(((value, e) => {
 
@@ -646,12 +643,12 @@ var productOf = (function productOf$(a) {
     }), 1);
 });
 var randomUbyte = (function randomUbyte$() {
-    /* random-ubyte src/client/sidescroller/inc/math.sibilant:3:0 */
+    /* random-ubyte eval.sibilant:335:0 */
 
     return (Math.floor((Math.random() * (255 - 0))) + 0);
 });
 var setColor = (function setColor$(r, g, b, a, vert) {
-    /* set-color src/client/sidescroller/inc/vertex.sibilant:2:0 */
+    /* set-color eval.sibilant:342:0 */
 
     vert.color.r = r;
     vert.color.g = g;
@@ -659,7 +656,7 @@ var setColor = (function setColor$(r, g, b, a, vert) {
     return vert.color.a = a;
 });
 var setPoint = (function setPoint$(x, y, z, vert) {
-    /* set-point src/client/sidescroller/inc/vertex.sibilant:9:0 */
+    /* set-point eval.sibilant:349:0 */
 
     vert.point.x = x;
     vert.point.y = y;
@@ -710,11 +707,11 @@ var Group = Interface.define("Group", {
 
         "remove and return the element last in the groups ordering.";
         return (function(item) {
-            /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/scope.sibilant:12:9 */
+            /* eval.sibilant:1400:15 */
 
             _members.delete(item);
             return item;
-        })(_list.pop());
+        }).call(this, _list.pop());
 
     },
     push(value = this.value) {
@@ -735,12 +732,12 @@ var Group = Interface.define("Group", {
         return (function() {
             if (!(_members.has(member))) {
                 return (function(node) {
-                    /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/scope.sibilant:12:9 */
+                    /* eval.sibilant:1400:15 */
 
                     _members.set(member, node);
                     _list.pushNode(node);
                     return node;
-                })(_list.node(member));
+                }).call(this, _list.node(member));
             }
         }).call(this);
 
@@ -755,7 +752,7 @@ var Group = Interface.define("Group", {
 
         "Remove a specific member from the group.";
         return (function(node) {
-            /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/scope.sibilant:12:9 */
+            /* eval.sibilant:1400:15 */
 
             (function() {
                 if (node) {
@@ -764,7 +761,7 @@ var Group = Interface.define("Group", {
                 }
             }).call(this);
             return node;
-        })(_members.get(member));
+        }).call(this, _members.get(member));
 
     }
 });
@@ -792,7 +789,7 @@ var _assignId = ((m, k) => {
 });
 var ObjectPool = Interface.define("ObjectPool", {
     init(size = this.size, _interface = null, _array = (function(array) {
-        /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/scope.sibilant:12:9 */
+        /* eval.sibilant:1400:15 */
 
         (function() {
             /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/loops.sibilant:26:8 */
@@ -803,7 +800,7 @@ var ObjectPool = Interface.define("ObjectPool", {
                     /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/loops.sibilant:28:35 */
 
                     return array.push((function() {
-                        /* src/client/sidescroller/object-pool.sibilant:33:46 */
+                        /* eval.sibilant:464:46 */
 
                         return Object.create(_interface);
                     }).call(this));
@@ -812,7 +809,7 @@ var ObjectPool = Interface.define("ObjectPool", {
             return $for;
         }).call(this);
         return array;
-    })([]), _members = Group.from(_array), _available = Group.from(_array), _inUse = Group.create()) {
+    }).call(this, []), _members = Group.from(_array), _available = Group.from(_array), _inUse = Group.create()) {
 
         this.size = size;
         this._interface = _interface;
@@ -854,11 +851,11 @@ var ObjectPool = Interface.define("ObjectPool", {
 
         "remove an object from the collection of available ones,\n" + "adding it to the collection of objects currently in use,\n" + "and return it to the caller.";
         return (function(member) {
-            /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/scope.sibilant:12:9 */
+            /* eval.sibilant:1400:15 */
 
             _inUse.add(member);
             return member;
-        })(_available.pop());
+        }).call(this, _available.pop());
 
     },
     release(obj = this.obj, _available = this._available, _members = this._members, _inUse = this._inUse) {
@@ -906,11 +903,11 @@ var PooledSystem = Interface.define("PooledSystem", {
 
         "aquire an object from the systems pool, and initialize it.";
         return (function(r) {
-            /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/scope.sibilant:12:9 */
+            /* eval.sibilant:1400:15 */
 
             r.init(...args);
             return r;
-        })(this._pool.aquire());
+        }).call(this, this._pool.aquire());
 
     },
     despawn(obj) {
@@ -944,53 +941,53 @@ var feach = R.curry(((f, a) => {
 
 }));
 var bound = (function() {
-        /* src/client/sidescroller/systems/rendering/header.sibilant:14:11 */
+        /* eval.sibilant:565:51 */
 
         return arguments[0].bind();
     }),
     clear = (function() {
-        /* src/client/sidescroller/systems/rendering/header.sibilant:15:11 */
+        /* eval.sibilant:566:11 */
 
         return arguments[0].clear();
     }),
     rendered = (function() {
-        /* src/client/sidescroller/systems/rendering/header.sibilant:16:14 */
+        /* eval.sibilant:567:14 */
 
         return arguments[0].render();
     }),
     unbound = (function() {
-        /* src/client/sidescroller/systems/rendering/header.sibilant:18:13 */
+        /* eval.sibilant:569:13 */
 
         return arguments[0].unbind();
     }),
     disabled = (function() {
-        /* src/client/sidescroller/systems/rendering/header.sibilant:19:14 */
+        /* eval.sibilant:570:14 */
 
         return arguments[0].disable();
     }),
     enabled = (function() {
-        /* src/client/sidescroller/systems/rendering/header.sibilant:21:13 */
+        /* eval.sibilant:572:13 */
 
         return arguments[0].enable();
     });
 var Gl = {};
 Gl.shader = (function Gl$shader$(typeName, string, context) {
-    /* Gl.shader src/client/sidescroller/systems/rendering/gl.sibilant:3:0 */
+    /* Gl.shader eval.sibilant:576:0 */
 
     return (new Andy.Gl.Shader(Andy.Gl.Shader[typeName], string));
 });
 Gl.buffer = (function Gl$buffer$(_members, context) {
-    /* Gl.buffer src/client/sidescroller/systems/rendering/gl.sibilant:6:0 */
+    /* Gl.buffer eval.sibilant:579:0 */
 
     return (new Andy.Gl.Buffer(context.ARRAY_BUFFER, context.DYNAMIC_DRAW)).bind().data(_members.data).unbind();
 });
 Gl.context = (function Gl$context$(dimensions, blend) {
-    /* Gl.context src/client/sidescroller/systems/rendering/gl.sibilant:12:0 */
+    /* Gl.context eval.sibilant:585:0 */
 
     return (new Andy.Context()).makeCurrent().resize(...dimensions).clearColor(0, 0, 0, 0).blend(blend).clear();
 });
 Gl.uniform = (function Gl$uniform$(typeName, varName, value) {
-    /* Gl.uniform src/client/sidescroller/systems/rendering/gl.sibilant:20:0 */
+    /* Gl.uniform eval.sibilant:593:0 */
 
     return (new Andy.Gl.Uniform[typeName](varName, value));
 });
@@ -999,7 +996,7 @@ var uniforms = {
     scale: Gl.uniform("Float", "Scale", 1)
 };
 Gl.program = (function Gl$program$(vert, frag, context) {
-    /* Gl.program src/client/sidescroller/systems/rendering/gl.sibilant:32:0 */
+    /* Gl.program eval.sibilant:605:0 */
 
     return (new Andy.Gl.Program(Gl.shader("vertex", vert, context), Gl.shader("fragment", frag, context)));
 });
@@ -1062,7 +1059,6 @@ var Layer = Interface.define("Layer", {
 
         return (function() {
             if (!(this._pool.used === 0)) {
-                console.log("drawing");
                 return context.draw(context.POINTS, (this._pool.size - this._pool.used), this._pool.used);
             }
         }).call(this);
@@ -1078,17 +1074,16 @@ var Layer = Interface.define("Layer", {
     }
 });
 var defGlsl = (function defGlsl$(outType, name, inTypes, ...body) {
-    /* def-glsl src/client/sidescroller/systems/rendering/shader.sibilant:2:0 */
+    /* def-glsl eval.sibilant:680:0 */
 
     return (function(shader) {
-        /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/scope.sibilant:12:9 */
+        /* eval.sibilant:1400:15 */
 
-        console.log("shader", shader);
         return shader;
-    })([outType, name, "(", inTypes.join(","), ")", "{\n", ...body, "}"].join(" "));
+    }).call(this, [outType, name, "(", inTypes.join(","), ")", "{\n", ...body, "}"].join(" "));
 });
 var vertShader = (function vertShader$() {
-    /* vert-shader src/client/sidescroller/systems/rendering/shader.sibilant:10:0 */
+    /* vert-shader eval.sibilant:688:0 */
 
     return ("#version 300 es\n" + "in vec3 a_point;\n" + "in vec4 a_color;\n" + "in float a_size;\n" + "\n" + "out highp vec4 vColor;\n" + "\n" + "uniform vec2  u_Resolution;\n" + "uniform float u_Scale;" + defGlsl("vec4", "clipspace_coordinate", ["vec3 xyz", "float scale", "vec2 res"], "return vec4( (xyz * vec3(1.0,1.0,1.0) * scale) /", "(vec3(res,1.0)) * 1.98 - 0.99, 1.0) * vec4( 1.0,-1.0,1.0,1.0 ); ") + defGlsl("void", "main", ["void"], ("gl_Position  = clipspace_coordinate( a_point, u_Scale, u_Resolution );\n" + "              gl_PointSize = a_size;\n" + "//size * z\n" + "// so that the closer the vertex is (the larger z is), the larger the vertex will be relative to its physical size\n" + "\n" + "\n" + "              vColor       = a_color; ")));
 });
@@ -1118,14 +1113,12 @@ var Rendering = Interface.define("Rendering", {
         this.blend = blend;
         this.context = context;
         this.layers = layers;
-        console.log("initialziing rendering system", this);
         this.interface.context = context;
         this.interface.rendering = this;
         context.gl.enable(context.gl.BLEND);
         context.gl.blendEquation(context.gl.FUNC_ADD);
         context.gl.blendFuncSeparate(context.gl.SRC_ALPHA, context.gl.ONE_MINUS_SRC_ALPHA, context.gl.ONE, context.gl.ONE_MINUS_SRC_ALPHA);
         PooledSystem.init.call(this, limit);
-        console.log("done initializing rendering system", this);
         return this;
 
     },
@@ -1168,7 +1161,7 @@ var handleLag = (function handleLag$(handleLag = (() => {
 
 
 })) {
-    /* handle-lag eval.sibilant:87:0 */
+    /* handle-lag eval.sibilant:814:0 */
 
     return (function() {
         if (Ticker.elapsed > Ticker.rate) {
@@ -1202,7 +1195,7 @@ var Scalar = Interface.define("Scalar", {
     mul(array = this.array, value = this.value) {
 
         return array.map((function() {
-            /* eval.sibilant:105:16 */
+            /* eval.sibilant:832:16 */
 
             return (arguments[0] * value);
         }));
@@ -1211,7 +1204,7 @@ var Scalar = Interface.define("Scalar", {
     div(array = this.array, value = this.value) {
 
         return array.map((function() {
-            /* eval.sibilant:107:16 */
+            /* eval.sibilant:834:16 */
 
             return (arguments[0] / value);
         }));
@@ -1220,7 +1213,7 @@ var Scalar = Interface.define("Scalar", {
     sub(array = this.array, value = this.value) {
 
         return array.map((function() {
-            /* eval.sibilant:109:16 */
+            /* eval.sibilant:836:16 */
 
             return (arguments[0] - value);
         }));
@@ -1250,24 +1243,23 @@ createDocumentNode("div", {
     'id': "frame"
 }, [container]).render(DocumentRoot);
 var spawnVertexLayer = (function spawnVertexLayer$() {
-    /* spawn-vertex-layer src/client/sidescroller/systems/test.sibilant:2:0 */
+    /* spawn-vertex-layer eval.sibilant:864:0 */
 
     return rendering.spawn(1000000, Vertex, [uniforms.res, uniforms.scale], [vertShader(), fragmentShaderString]);
 });
 var assert = require("assert");
-var nothing = null;
 var freeSpace = (function freeSpace$(pool) {
-    /* free-space src/client/sidescroller/pools/dynamic.sibilant:2:0 */
+    /* free-space eval.sibilant:875:0 */
 
     return pool.free;
 });
 var sumOf = (function sumOf$(list, f) {
-    /* sum-of src/client/sidescroller/pools/dynamic.sibilant:3:0 */
+    /* sum-of eval.sibilant:876:0 */
 
     return list.map();
 });
 List.reduce = (function List$reduce$(f, r) {
-    /* List.reduce src/client/sidescroller/pools/dynamic.sibilant:4:0 */
+    /* List.reduce eval.sibilant:877:0 */
 
     this.each(((e, i, l) => {
 
@@ -1302,13 +1294,12 @@ List.find = (function List$find$(f = this.f, node = this.head) {
     }).call(this);
 });
 List.rotate = (function List$rotate$() {
-    /* List.rotate src/client/sidescroller/pools/dynamic.sibilant:15:0 */
+    /* List.rotate eval.sibilant:888:0 */
 
     return (function() {
-        /* src/client/sidescroller/systems/ecs.sibilant:4:8 */
+        /* eval.sibilant:18:27 */
 
-        this.push(this.shift());
-        return this;
+        return this.push(this.shift());
     }).call(this);
 });
 List.rotateUntil = (function List$rotateUntil$(predicate = this.predicate, t = 0) {
@@ -1346,19 +1337,18 @@ var DynamicPool = Interface.define("DynamicPool", {
     },
     grow(buckets = this.buckets, bucketSize = this.bucketSize, self = this) {
 
-        return (function() {
-            /* src/client/sidescroller/systems/ecs.sibilant:10:8 */
+        return (function(newPool) {
+            /* eval.sibilant:1400:15 */
 
-            var newPool = create(ObjectPool)(bucketSize, this.interface);
             buckets.unshift(newPool);
             return newPool;
-        }).call(this);
+        }).call(this, create(ObjectPool)(bucketSize, this.interface));
 
     },
     adjust(buckets = this.buckets) {
 
         var p = buckets.rotateUntil((function() {
-            /* src/client/sidescroller/pools/dynamic.sibilant:42:34 */
+            /* eval.sibilant:915:34 */
 
             return arguments[0].free > 0;
         }));
@@ -1367,19 +1357,18 @@ var DynamicPool = Interface.define("DynamicPool", {
     },
     aquire(buckets = this.buckets) {
 
-        return (function() {
-            /* src/client/sidescroller/systems/ecs.sibilant:10:8 */
+        return (function(object) {
+            /* eval.sibilant:1400:15 */
 
-            var object = (function() {
-                if (this.current.free) {
-                    return this.current.aquire();
-                } else {
-                    return this.adjust().aquire();
-                }
-            }).call(this);
             object.bucket = this.current;
             return object;
-        }).call(this);
+        }).call(this, (function() {
+            if (this.current.free) {
+                return this.current.aquire();
+            } else {
+                return this.adjust().aquire();
+            }
+        }).call(this));
 
     },
     release(object = this.object, buckets = this.buckets) {
@@ -1391,10 +1380,10 @@ var DynamicPool = Interface.define("DynamicPool", {
 
         var self = this;
         return buckets.each((function() {
-            /* src/client/sidescroller/pools/dynamic.sibilant:58:19 */
+            /* eval.sibilant:931:19 */
 
             return arguments[0]._inUse.each((function() {
-                /* src/client/sidescroller/pools/dynamic.sibilant:58:46 */
+                /* eval.sibilant:931:46 */
 
                 return self.despawn(arguments[0]);
             }));
@@ -1404,15 +1393,12 @@ var DynamicPool = Interface.define("DynamicPool", {
     spawn(...args) {
 
         "aquire an object from the systems pool, and initialize it.";
-        return (function() {
-            /* src/client/sidescroller/systems/ecs.sibilant:10:8 */
+        return (function(r) {
+            /* eval.sibilant:1400:15 */
 
-            var r = this.aquire();
-            console.log("spawning", r);
-            console.log("with init", r.init);
             r.init(...args);
             return r;
-        }).call(this);
+        }).call(this, this.aquire());
 
     },
     despawn(obj) {
@@ -1467,7 +1453,6 @@ var ComponentSystem = Interface.define("ComponentSystem", {
     template: false,
     build() {
 
-        console.log("building component system", this);
         return (function() {
             if (!((this.template))) {
                 return this.init();
@@ -1488,13 +1473,12 @@ var ComponentSystem = Interface.define("ComponentSystem", {
     },
     spawn(entity = this.entity, data = this.data, pool = this.pool, components = this.components) {
 
-        return (function() {
-            /* src/client/sidescroller/systems/ecs.sibilant:10:8 */
+        return (function(c) {
+            /* eval.sibilant:1400:15 */
 
-            var c = pool.spawn(entity, data, this);
             components.set(entity, c);
             return c;
-        }).call(this);
+        }).call(this, pool.spawn(entity, data, this));
 
     },
     _updateComponent(component, t) {
@@ -1513,11 +1497,11 @@ var ComponentSystem = Interface.define("ComponentSystem", {
     },
     update(t) {
 
-        return this.thread = this.thread.then(((nil) => {
+        return accumulate(this.thread, this._updateAll(t).then(((nil) => {
 
-            return this._updateAll(t);
 
-        }));
+
+        })));
 
     }
 });
@@ -1592,13 +1576,12 @@ var EntityGroup = Interface.define("EntityGroup", {
     },
     spawn(data = this.data, aspects = this.aspects, system = this.system, group = this.group) {
 
-        return (function() {
-            /* src/client/sidescroller/systems/ecs.sibilant:10:8 */
+        return (function(e) {
+            /* eval.sibilant:1400:15 */
 
-            var e = system.spawn(aspects, data);
             group.add(e);
             return e;
-        }).call(this);
+        }).call(this, system.spawn(aspects, data));
 
     }
 });
@@ -1743,7 +1726,7 @@ var DotInterface = Component.define("DotInterface", {
     }
 });
 var vertexLayer = (function vertexLayer$(limit) {
-    /* vertex-layer src/client/sidescroller/systems/components/dot.sibilant:7:0 */
+    /* vertex-layer eval.sibilant:1112:0 */
 
     return rendering.spawn(limit, Vertex, [uniforms.res, uniforms.scale], [vertShader(), fragmentShaderString]);
 });
@@ -1903,7 +1886,7 @@ var CollisionBounds = Component.define("CollisionBounds", {
 var Collision = ComponentSystem.define("Collision", {
     interface: CollisionBounds,
     _check: R.curry((function(c, c_) {
-        /* src/client/sidescroller/systems/components/collision.sibilant:7:28 */
+        /* eval.sibilant:1167:28 */
 
         return (function() {
             if (!((c_.checked || c === c_ || c.type === "static"))) {
@@ -2001,7 +1984,7 @@ var Physics = ComponentSystem.define("Physics", {
     _updateComponent(c) {
 
         return c.forces.each((function() {
-            /* src/client/sidescroller/systems/components/physics.sibilant:23:20 */
+            /* eval.sibilant:1244:20 */
 
             return arguments[0].apply(c);
         }));
@@ -2011,12 +1994,9 @@ var Physics = ComponentSystem.define("Physics", {
 Physics.Force = Interface.define("Physics.Force", {
     build() {
 
-        console.log("building force", this.name === "Physics.Force", this);
         return (function() {
             if (!(this.name === "Physics.Force")) {
-                console.log("adding force", this, Physics.forces);
-                Physics.forces.push(this);
-                return console.log("done adding force", Physics.forces);
+                return Physics.forces.push(this);
             }
         }).call(this);
 
@@ -2034,7 +2014,6 @@ var Gravity = Physics.Force.define("Gravity", {
         var collision = Collision.get(c.entity);
         return (function() {
             if (!(collision.colliding)) {
-                console.log("not colliding, applying gravity");
                 return v.yd += 9.8;
             }
         }).call(this);
@@ -2048,7 +2027,6 @@ var Friction = Physics.Force.define("Friction", {
         var collision = Collision.get(c.entity);
         return (function() {
             if (!(collision.colliding)) {
-                console.log("not colliding, applying friction.");
                 v.xd += (-1 * (v.xd / 32));
                 return v.yd += (-1 * (v.yd / 32));
             }
@@ -2070,7 +2048,7 @@ var Pixel = Interface.define("Pixel", {
                     /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/loops.sibilant:28:35 */
 
                     array.push((function() {
-                        /* src/client/sidescroller/systems/components/sprite.sibilant:16:46 */
+                        /* eval.sibilant:1278:46 */
 
                         return image.bitmap.data[(image.getPixelIndex(x, y) + i)];
                     }).call(this));
@@ -2110,60 +2088,6 @@ var Pixel = Interface.define("Pixel", {
 
     }
 });
-var MatrixMap = Interface.define("MatrixMap", {
-    init(dim = this.dim, array = []) {
-
-        this.dim = dim;
-        this.array = array;
-        return this;
-
-    },
-    extend: Matrix,
-    get([x, y]) {
-
-        return Matrix.get.call(this, x, y);
-
-    },
-    set([x, y], v) {
-
-        return Matrix.get.call(this, x, y, v);
-
-    },
-    has([x, y]) {
-
-        return (function() {
-            if (this.get([x, y])) {
-                return true;
-            } else {
-                return false;
-            }
-        }).call(this);
-
-    },
-    get width() {
-
-        return this.dim[0];
-
-    },
-    get height() {
-
-        return this.dim[1];
-
-    },
-    each(f = this.f, width = this.width, height = this.height) {
-
-        "standard itterative operator, accepts a function and applies it to every\n" + "element of the matrix";
-        var r = this;
-        for (var i = 0; i < width; ++(i)) {
-            for (var j = 0; j < height; ++(j)) {
-                f(r.get([i, j]), [i, j], r)
-            }
-
-        };
-        return r;
-
-    }
-});
 var Image = Interface.define("Image", {
     init(image = this.image, pixelMap = create(MatrixMap)([image.bitmap.width, image.bitmap.height])) {
 
@@ -2194,7 +2118,7 @@ var Image = Interface.define("Image", {
     loadList(...paths) {
 
         return Promise.all(fmap((function() {
-            /* src/client/sidescroller/systems/components/sprite.sibilant:42:18 */
+            /* eval.sibilant:1303:18 */
 
             return jimp.read(arguments[0]);
         }), paths)).then(fmap(Image.create));
@@ -2266,7 +2190,7 @@ var SpriteInterface = Component.define("SpriteInterface", {
                         /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/loops.sibilant:28:35 */
 
                         array.push((function() {
-                            /* src/client/sidescroller/systems/components/sprite.sibilant:16:46 */
+                            /* eval.sibilant:1278:46 */
 
                             return system.verts.spawn();
                         }).call(this));
@@ -2382,88 +2306,319 @@ var Sprite = ComponentSystem.define("Sprite", {
 
     }
 });
+var Pixel = Interface.define("Pixel", {
+    init(x = this.x, y = this.y, image = this.image, tuple = (function(array) {
+        /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/scope.sibilant:12:9 */
+
+        (function() {
+            /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/loops.sibilant:26:8 */
+
+            var $for = null;
+            for (var i = 0; i < 4; ++(i)) {
+                $for = (function() {
+                    /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/loops.sibilant:28:35 */
+
+                    array.push((function() {
+                        /* eval.sibilant:1403:46 */
+
+                        return image.bitmap.data[(image.getPixelIndex(x, y) + i)];
+                    }).call(this));
+                    return array;
+                }).call(this);
+            };
+            return $for;
+        }).call(this);
+        return array;
+    })([])) {
+
+        this.x = x;
+        this.y = y;
+        this.image = image;
+        this.tuple = tuple;
+        return this;
+
+    },
+    get r() {
+
+        return this.tuple[0];
+
+    },
+    get g() {
+
+        return this.tuple[1];
+
+    },
+    get b() {
+
+        return this.tuple[2];
+
+    },
+    get a() {
+
+        return this.tuple[3];
+
+    }
+});
+var Image = Interface.define("Image", {
+    init(image = this.image, pixelMap = create(MatrixMap)([image.bitmap.width, image.bitmap.height])) {
+
+        this.image = image;
+        this.pixelMap = pixelMap;
+        return this;
+
+    },
+    get bitmap() {
+
+        return this.image.bitmap.data;
+
+    },
+    get create() {
+
+        return ((image) => {
+
+            return create(this)(image);
+
+        });
+
+    },
+    load(path) {
+
+        return jimp.read(path).then(Image.create);
+
+    },
+    loadList(...paths) {
+
+        return Promise.all(fmap((function() {
+            /* eval.sibilant:1429:21 */
+
+            return jimp.read(arguments[0]);
+        }), paths)).then(fmap(Image.create));
+
+    },
+    get([x, y] = [this.x, this.y], bitmap = this.bitmap) {
+
+        var self = this;
+        return (function() {
+            if (self.pixelMap.has([x, y])) {
+                return self.pixelMap.get([x, y]);
+            } else {
+                return (function(value) {
+                    /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/scope.sibilant:12:9 */
+
+                    self.pixelMap.set([x, y], value);
+                    return value;
+                })((function() {
+                    /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/macros.sibilant:30:25 */
+
+                    return create(Pixel)(x, y, this.image);
+                }).call(this));
+            }
+        }).call(this);
+
+    },
+    scan(f = this.f, image = this.image, bitmap = this.bitmap) {
+
+        return (function() {
+            /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/loops.sibilant:26:8 */
+
+            var $for = null;
+            for (var x = 0; x > image.width; ++(x)) {
+                $for = (function() {
+                    /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/loops.sibilant:28:35 */
+
+                    return (function() {
+                        /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/loops.sibilant:26:8 */
+
+                        var $for = null;
+                        for (var y = 0; y > image.width; ++(y)) {
+                            $for = (function() {
+                                /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/loops.sibilant:28:35 */
+
+                                return f(this.get([x, y]), [x, y], this);
+                            }).call(this);
+                        };
+                        return $for;
+                    }).call(this);
+                }).call(this);
+            };
+            return $for;
+        }).call(this);
+
+    }
+});
+var SpriteInterface = Component.define("SpriteInterface", {
+    register(dim = this.dim, system = this.system) {
+
+        return this.verts = create(MatrixMap)(dim, (function(array) {
+            /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/scope.sibilant:12:9 */
+
+            (function() {
+                /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/loops.sibilant:26:8 */
+
+                var $for = null;
+                for (var i = 0; i < productOf(dim); ++(i)) {
+                    $for = (function() {
+                        /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/loops.sibilant:28:35 */
+
+                        array.push((function() {
+                            /* eval.sibilant:1403:46 */
+
+                            return system.verts.spawn();
+                        }).call(this));
+                        return array;
+                    }).call(this);
+                };
+                return $for;
+            }).call(this);
+            return array;
+        })([]));
+
+    },
+    frameId: 0,
+    delay: 1,
+    get pos() {
+
+        return Position.get(this.entity);
+
+    },
+    get dim() {
+
+        return this.data.dim;
+
+    },
+    get image() {
+
+        return Promise.resolve(this.data.image);
+
+    },
+    get frameCount() {
+
+        return this.data.frameCount;
+
+    },
+    get scale() {
+
+        return this.data.scale;
+
+    },
+    get height() {
+
+        return this.dim[1];
+
+    },
+    get width() {
+
+        return this.dim[0];
+
+    },
+    get x() {
+
+        return this.pos.x;
+
+    },
+    get y() {
+
+        return this.pos.y;
+
+    },
+    getFramePixel(i = this.i, j = this.j, bitMap = this.bitMap, width = this.width, frameId = this.frameId, frameCount = this.frameCount, image = this.image) {
+
+        return bitMap.get([(i + (width * (frameId % frameCount))), j]);
+
+    },
+    moveVertex(i = this.i, j = this.j, scale = this.scale, v = this.v, pos = this.pos, height = this.height, width = this.width) {
+
+        v.point.x = (((pos.x - ((width * scale) / 2)) + (i * scale)) % rendering.dimensions[0]);
+        v.point.y = (((pos.y - ((height * scale) / 2)) + (j * scale)) % rendering.dimensions[1]);
+        return v.point.z = 0;
+
+    },
+    setColor(v, pixel) {
+
+        v.color.r = pixel.r;
+        v.color.g = pixel.g;
+        v.color.b = pixel.b;
+        return v.color.a = pixel.a;
+
+    },
+    draw(verts = this.verts, image = this.image, frameId = this.frameId, frameCount = this.frameCount, pos = this.pos, height = this.height, width = this.width) {
+
+        ++(this.frameId);
+        var scale = 1;
+        return image.then(((bitMap) => {
+
+            verts.each(((v, [i, j]) => {
+
+                var pixel = this.getFramePixel(i, j, bitMap);
+                this.moveVertex(i, j, scale, v);
+                v.size = scale;
+                return this.setColor(v, pixel);
+
+            }));
+            return this.system.game.emit("draw", [bitMap, this]);
+
+        }));
+
+    }
+});
+var Sprite = ComponentSystem.define("Sprite", {
+    verts: rendering.spawn(1, Vertex, [uniforms.res, uniforms.scale], [vertShader(), fragmentShaderString]),
+    interface: SpriteInterface,
+    _updateComponent(sprite) {
+
+    }
+});
 var Mousetrap = require("mousetrap");
 var Keyboard = Interface.define("Keyboard", {
     on([key, state], f) {
 
         return (function() {
-            /* src/client/sidescroller/systems/ecs.sibilant:4:8 */
+            /* eval.sibilant:18:27 */
 
-            Mousetrap.bind(key, f, ("key" + state));
-            return this;
+            return Mousetrap.bind(key, f, ("key" + state));
         }).call(this);
 
     },
     once([key, stateName], f) {
 
         return (function() {
-            /* src/client/sidescroller/systems/ecs.sibilant:4:8 */
+            /* eval.sibilant:18:27 */
 
             var keyState = ("key" + stateName);
-            Mousetrap.bind(key, f, (() => {
+            return Mousetrap.bind(key, f, (() => {
 
                 f();
                 return Mousetrap.unbind(key, keyState);
 
             }), keyState);
-            return this;
         }).call(this);
 
     }
 });
-Keyboard.Controlled = Component.define("Keyboard.Controlled", {
-    get velocity() {
+var bindPlayerVelocityKey = (function bindPlayerVelocityKey$(key_d_s$43) {
+    /* bind-player-velocity-key eval.sibilant:1521:0 */
 
-        return Velocity.get(this.entity);
-
-    },
-    get sprite() {
-
-        return Sprite.get(this.entity);
-
-    }
-});
-Keyboard.Controller = ComponentSystem.define("Keyboard.Controller", {
-    interface: Keyboard.Controlled,
-    _updateComponent(c) {
-
-    }
-});
-var bindPlayerVelocityKey = (function bindPlayerVelocityKey$(key_d_s$1) {
-    /* bind-player-velocity-key src/client/sidescroller/systems/keyboard.sibilant:25:0 */
-
-    var key = key_d_s$1[0],
-        d = key_d_s$1[1],
-        s = key_d_s$1[2];
+    var key = key_d_s$43[0],
+        d = key_d_s$43[1],
+        s = key_d_s$43[2];
 
     var playerVelocity = Velocity.get(player);
-    var playerSprite = Sprite.get(player);
-    return Keyboard.on([key, "down"], (() => {
-
-        var vd = playerVelocity[d];
-        playerVelocity[d] = (vd + (s * velocityUnit));
-        return false;
-
-    }));
-});
-var bindKey = (function bindKey$(key, f) {
-    /* bind-key src/client/sidescroller/systems/keyboard.sibilant:37:0 */
-
+    var vd = playerVelocity[d];
     Keyboard.on([key, "down"], (() => {
 
-        f();
+        playerVelocity[d] = (vd + (s * velocityUnit));
         return false;
 
     }));
     return Keyboard.on([key, "up"], (() => {
 
-
+        playerVelocity[d] = 0;
+        return false;
 
     }));
 });
-var bindPlayerVelocityKeys = fmap(bindPlayerVelocityKey);
 var position = (function position$(x, y) {
-    /* position src/client/sidescroller/systems/misc.sibilant:5:0 */
+    /* position eval.sibilant:1534:0 */
 
     return {
         x,
@@ -2471,12 +2626,12 @@ var position = (function position$(x, y) {
     };
 });
 var velocity = (function velocity$(xd, yd) {
-    /* velocity src/client/sidescroller/systems/misc.sibilant:7:0 */
+    /* velocity eval.sibilant:1536:0 */
 
     return [xd, yd];
 });
 var dot = (function dot$(r, g, b, a) {
-    /* dot src/client/sidescroller/systems/misc.sibilant:9:0 */
+    /* dot eval.sibilant:1538:0 */
 
     return {
         r,
@@ -2486,55 +2641,58 @@ var dot = (function dot$(r, g, b, a) {
     };
 });
 var physics = (function physics$(mass, scale, forces) {
-    /* physics src/client/sidescroller/systems/misc.sibilant:12:0 */
+    /* physics eval.sibilant:1541:0 */
 
     return {
         mass,
         scale,
-        forces,
-        falling: false
+        forces
     };
 });
-var sprite = (function sprite$(image, frameCount, scale, dim, orientation) {
-    /* sprite src/client/sidescroller/systems/misc.sibilant:16:0 */
+var sprite = (function sprite$(image, frameCount, scale, dim) {
+    /* sprite eval.sibilant:1544:0 */
 
     return {
         image,
         frameCount,
         scale,
-        dim,
-        orientation
+        dim
     };
 });
-var collision = (function collision$(type) {
-    /* collision src/client/sidescroller/systems/misc.sibilant:19:0 */
+var collision = (function collision$() {
+    /* collision eval.sibilant:1547:0 */
 
-    return {
-        type
-    };
+    return null;
 });
 var entity = (function entity$(aspects, data) {
-    /* entity src/client/sidescroller/systems/misc.sibilant:22:0 */
+    /* entity eval.sibilant:1549:0 */
 
-    return game.ent.spawn(aspects, data);
+    return (function(b, ...others) {
+        /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/console.sibilant:10:8 */
+
+        console.log("spawning entity", b, ...others);
+        return b;
+    })(game.ent.spawn(aspects, data));
 });
 var floorTile = (function floorTile$(x, y) {
-    /* floor-tile src/client/sidescroller/systems/misc.sibilant:25:0 */
+    /* floor-tile eval.sibilant:1552:0 */
 
-    return [position((x * 32), (y * 32)), velocity(0, 0), dot(255, 255, 10, 255), physics(10, 32, []), collision("static")];
+    return [position((x * 32), (y * 32)), velocity(0, 0), physics(10, 32, []), collision()];
 });
-var TileMap = Interface.define("TileMap", {
-    tree: create(TreeMap)(),
-    get([x, y]) {
-
-        return this.tree.get([x, y]);
-
-    },
-    spawn([x, y]) {
-
-    }
-});
-console.log(physicalObject);
+var velocityUnit = 10;
+var bindPlayerVelocityKeys = fmap(bindPlayerVelocityKey);
+var movableDot = [Position, Dot, Velocity, Collision],
+    physicsDot = [Position, Dot, Velocity, Collision, Physics],
+    UP = -1,
+    DOWN = 1,
+    LEFT = -1,
+    RIGHT = 1;
+var physicsDot = [Position, Velocity, Dot, Physics, Collision],
+    UP = -1,
+    DOWN = 1,
+    LEFT = -1,
+    RIGHT = 1,
+    velocityUnit = 16;
 var Game = Interface.define("Game", {
     init(systems = [], gameSpeed = 1, entities = create(EntitySystem)(), events = create(EventEmitter)(), ticker = create(Ticker)((gameSpeed * 60), events)) {
 
@@ -2564,7 +2722,7 @@ var Game = Interface.define("Game", {
         return events.on("tick", ((t) => {
 
             systems.each((function() {
-                /* src/client/sidescroller/systems/game.sibilant:35:23 */
+                /* eval.sibilant:1599:23 */
 
                 return arguments[0].update();
             }));
@@ -2590,25 +2748,14 @@ var Game = Interface.define("Game", {
         entities.clear();
         events.removeAllListeners();
         return systems.each((function() {
-            /* src/client/sidescroller/systems/game.sibilant:46:19 */
+            /* eval.sibilant:1610:19 */
 
             return arguments[0].clear();
         }));
 
     }
 });
-var physicsDot = [Position, Velocity, Dot, Physics, Collision],
-    physicalObject = [Position, Velocity, Sprite, Physics, Collision],
-    UP = -1,
-    DOWN = 1,
-    LEFT = -1,
-    RIGHT = 1,
-    velocityUnit = 16,
-    walkLavo = Image.load("/home/aaron/Pictures/sprites/WalkLavo.png"),
-    floorTileImage = Image.load("/home/aaron/Pictures/sprites/floortile.png");
-console.log(physicalObject);
 var game = create(Game)([Physics, Velocity, Collision, Position, Dot, rendering]);
-var Lavo = [position(0, 0), velocity(0, 0), sprite(walkLavo, 4, 1, [32, 32], [1, 1]), physics(10, 32, [Gravity, Friction]), collision("dynamic")];
 var PlayerDot = [position(0, 0), velocity(0, 0), dot(0, 10, 255, 255), physics(10, 32, [Gravity, Friction]), collision("dynamic")];
 var player = entity(physicsDot, PlayerDot),
     floor = (function(array) {
@@ -2623,7 +2770,7 @@ var player = entity(physicsDot, PlayerDot),
                     /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/loops.sibilant:28:35 */
 
                     array.push((function() {
-                        /* src/client/sidescroller/systems/components/sprite.sibilant:16:46 */
+                        /* eval.sibilant:1403:46 */
 
                         return (function(b, ...others) {
                             /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/console.sibilant:10:8 */
@@ -2713,6 +2860,11 @@ game.events.on("move", ((v) => {
     var collision = Collision.get(v.entity);
     return collision.colliding = false;
 
+})).once("error", ((err) => {
+
+    console.log("error on", "move", "of", "game.events", "given", "v()");
+    return console.log(err);
+
 }));
 game.events.on("move", (function(b, ...others) {
     /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/console.sibilant:10:8 */
@@ -2720,28 +2872,21 @@ game.events.on("move", (function(b, ...others) {
     console.log("moved", b, ...others);
     return b;
 }));
-game.start();
 game.events.on("tick", (function(b, ...others) {
     /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/console.sibilant:10:8 */
 
     console.log("tick", b, ...others);
     return b;
 }));
-var Player = interface.define("Player", {
-    run() {
+Ticker.init(30).start().removeAllListeners("tick").on("tick", (() => {
 
-    },
-    jump() {
+    Position.update();
+    Physics.update();
+    Velocity.update();
+    Collision.update();
+    rendering.update();
+    return Dot.update();
 
-    },
-    fall() {
-
-    },
-    glide() {
-
-    },
-    fly() {
-
-    }
-});
+}));
+game.start();
 console.log("DONE LOADING");

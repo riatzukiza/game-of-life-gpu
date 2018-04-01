@@ -1,5 +1,6 @@
 (html (.head (.script .src "/js/bundle.js")
              (.script .src "/js/list.js")
-
-             (.script .src "/js/sidescroller/main.js")))
+             (.script .src "/js/utils.js")
+             (.script .src "/js/andy.js")
+             (.script .src "/js/side-scroller.js")))
 

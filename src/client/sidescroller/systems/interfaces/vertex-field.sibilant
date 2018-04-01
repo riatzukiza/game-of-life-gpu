@@ -1,6 +1,0 @@
-(def-interface Vertex-field (dim spacing *context)
-  (extend Field)
-
-  (init (.call Field.init  this dim))
-
-  )

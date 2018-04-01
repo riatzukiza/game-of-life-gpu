@@ -1,0 +1,40 @@
+
+(include "kit-interface/header")
+(import-namespace interface)
+(require! (lit Entity-system) "./ecs/entity"
+          (lit Event-emitter) "kit-events"
+          (lit Ticker) "./ticker")
+
+(define Game Interface
+
+  (init ((systems [])
+         (game-speed 1)
+         (entities ((create Entity-system)))
+         (events ((create Event-emitter)))
+         (ticker ((create Ticker) (* game-speed 60) events)))
+
+        (.each systems (=> (s) (assign s.game this))))
+
+  (rendering rendering)
+  (gett ent this.entities)
+
+  (def-generic start (systems events ticker rendering)
+
+    (.stop this)
+    (.start ticker)
+
+    (on events 'tick (t)
+        (.each systems (#-> (.update )))
+        (.update rendering)))
+
+  (def-generic stop (ticker events)
+    (.stop ticker)
+    (.remove-all-listeners events 'tick))
+
+  (def-generic clear (systems entities events ticker)
+    (.stop ticker)
+    (.clear entities )
+    (.remove-all-listeners events)
+    (.each systems (#-> .clear))))
+
+(export Game)

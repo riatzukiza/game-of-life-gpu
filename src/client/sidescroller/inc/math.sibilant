@@ -1,4 +1,0 @@
-(def product-of (a)
-  (.reduce a (=> (value e) (* value e)) 1))
-(def random-ubyte ()
-  (random-int 0 255))

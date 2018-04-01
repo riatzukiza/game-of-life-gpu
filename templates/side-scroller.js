@@ -3,5 +3,9 @@ create(HtmlElement)("html", {}, [create(HtmlElement)("head", {}, [create(HtmlEle
 }, []), create(HtmlElement)("script", {
     'src': "/js/list.js"
 }, []), create(HtmlElement)("script", {
-    'src': "/js/sidescroller/main.js"
+    'src': "/js/utils.js"
+}, []), create(HtmlElement)("script", {
+    'src': "/js/andy.js"
+}, []), create(HtmlElement)("script", {
+    'src': "/js/side-scroller.js"
 }, [])])]);

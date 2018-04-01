@@ -1,0 +1,15 @@
+(require! Mousetrap 'mousetrap)
+
+(define Keyboard Interface
+  (def on ([key state] f)
+       (fluently (.bind Mousetrap key f (+ "key" state))))
+
+  (def once ([key state-name] f)
+
+       (fluently
+        (var key-state (+ "key" state-name))
+
+        (.bind Mousetrap key f
+               (-> (f) (.unbind Mousetrap key key-state) )
+               key-state))))
+(export Keyboard)

@@ -1,9 +1,0 @@
-
-(def spawn-vertex-layer ()
-  (.spawn rendering 1000000 Vertex
-          [ uniforms.res uniforms.scale]
-          [(vert-shader) fragment-shader-string]))
-
-(require! 'assert)
-
-(include "./tests/current.sibilant")

@@ -15,7 +15,10 @@
 
   (client (.load File-system "./client"))
   (server (.load File-system "./server"))
-  (templates (.load File-system "./templates")))
+  (templates (.load File-system "./templates"))
+  (bundles (.load File-system "./client/bundles"))
+  (modules (.load File-system "./client/modules"))
+  )
 
 (define html Interface
   (files (.load File-system "./html")))
@@ -29,4 +32,6 @@
 (watch src.templates "." "change" (compile-module file js.templates))
 
 (watch js.templates "." "change" (compile-html file html.files))
+
+(watch js.modules "." "change" (bundle file js.bundles))
 

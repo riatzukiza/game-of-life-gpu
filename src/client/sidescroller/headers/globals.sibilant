@@ -1,8 +1,0 @@
-(set-for global
-         mixin
-         extend
-         create
-         cond
-         partially-apply-after
-         Event-emitter
-         curry)

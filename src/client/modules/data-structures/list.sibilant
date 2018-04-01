@@ -1,0 +1,24 @@
+;;(require! List "linked-list")
+(def List.reduce (f r) (.each this (=> (e i l) (assign r (f r e i l)))) r)
+
+(def-generic List.find-node (f (node this.head))
+  (if (f node)
+      node
+    (not (= node this.tail))
+    (List.find f node.next)
+    false))
+(def-generic List.find (f (node this.head))
+  (var r (List.find-node f node))
+  (if r r.value false))
+
+(def List.rotate ()
+     (fluently (.push this (.shift this))))
+
+(def-generic List.rotate-until (predicate (t 0))
+  (if (predicate this.head.item)
+      this.head.item
+    (not (> t this.size))
+    (pipe this .rotate (.rotate-until predicate (++ t)))
+    false))
+
+(export List)
