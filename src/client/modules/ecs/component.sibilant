@@ -17,14 +17,16 @@
 (define System Interface
   (interface Component)
   (def register ())
-  (init (game interface
-              (components ((create Ordered-map)))
-              (pool ((create Dynamic-pool)  interface))
-              (thread (Promise.resolve)))
+  (init (process interface
+                 (components ((create Ordered-map)))
+                 (pool ((create Dynamic-pool)  interface))
+                 (thread (Promise.resolve)))
         (.register this))
 
   (gett system this)
-  (template false)
+  (template true)
+
+  (gett game this.process)
 
   (def build ()
     (unless (or this.template )

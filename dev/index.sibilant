@@ -1,10 +1,14 @@
 (namespace dev)
-(import-namespace markup)
 
 (macro html (...body) `(markup (.html ...@body)))
 
 (include "./header"
          "./compile")
+
+(import-namespace kit)
+(import-namespace interface)
+(import-namespace async)
+(import-namespace markup)
 
 (define src Interface
   (client (.load File-system "./src/client"))
@@ -16,9 +20,7 @@
   (client (.load File-system "./client"))
   (server (.load File-system "./server"))
   (templates (.load File-system "./templates"))
-  (bundles (.load File-system "./client/bundles"))
-  (modules (.load File-system "./client/modules"))
-  )
+  (bundles (.load File-system "./bundles")))
 
 (define html Interface
   (files (.load File-system "./html")))
@@ -33,5 +35,5 @@
 
 (watch js.templates "." "change" (compile-html file html.files))
 
-(watch js.modules "." "change" (bundle file js.bundles))
+(watch js.client "." "change" (bundle file js.bundles))
 

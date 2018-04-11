@@ -1,6 +1,15 @@
 
 (include "kit-interface/header")
 (import-namespace interface)
+(require! (lit Group) "../data-structures/group")
+
+
+(var *assign-id (=> (m k) (assign  m.id k) m))
+
+
+(macro array-of (size ...body)
+       `(collect array []
+                 (do-times @size (.push array (scoped ...@body)) array)))
 
 (define Object-pool Interface
   (init (size
@@ -11,10 +20,11 @@
 
          (*available (Group.from *array))
 
-         (*in-use (.create Group ))))
+         (*in-use (.create Group )))
+        (.each *array *assign-id)
+        )
 
 
-  (init (.each *array *assign-id))
 
   (pools (new Map))
 
@@ -46,3 +56,4 @@ available ones, for later use"
 
     (.remove *in-use obj)
     (.add *available obj)))
+(export Object-pool)

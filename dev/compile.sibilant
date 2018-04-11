@@ -1,5 +1,9 @@
 (namespace dev)
 
+(import-namespace markup)
+(import-namespace interface)
+(import-namespace async)
+
 (var compiler (.spawn Compiler))
 (require! (lit (js beautify))  "js-beautify"
           'browserify)
@@ -11,15 +15,30 @@
      (Path.join
       (Path.dirname path)
       (Path.basename path ".sibilant")))
+(def-async compile-all-modules ()
+  (await (.each src.client (=> (file)
+                               (compile-module file  js.client))))
+  (print "done compiling modules")
+  )
+
+(var bundles (new Map))
 (def-async bundle (file dest)
   (print "bundling client file" file.path)
-  (var bundle (browserify))
-  (.require bundle file.path)
+
+  (var bundle (remember bundles file.rel
+                        (var b (browserify))
+
+                        (.require b file.path (lit (expose file.rel)))
+                        (.exclude b "webgl")
+                        b
+                        ))
+
+  (each bundles (b k) (.exclude b file.rel))
+
+
   (var dest-file (await (.insert dest file.rel)))
   (var reader (.bundle bundle))
   (var writer dest-file.write-stream)
-  (print "writer" writer)
-  (print "reader" reader)
 
   (await (make-promise
           (.on reader 'error fail)
@@ -35,13 +54,12 @@
   (var js (await (.send compiler (+ "(meta (assign sibilant.dir \"" (Path.dirname file.path) "\" ) null)"
                                     lisp))))
   (await (.send compiler "(meta (assign sibilant.dir \".\") null)"))
-  (print js)
   (var dest-path (+  (strip-sibilant-extension file.rel ) ".js"))
-  (print "creating" dest-path)
   (await (.insert dest dest-path ))
   (print "saving" dest-path)
 
-  (.set dest dest-path (beautify js)))
+  (await (.set dest dest-path (beautify js)))
+  (print "saved" dest-path))
 
 (def-async compile-html (file dest)
 

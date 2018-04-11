@@ -5,11 +5,11 @@ var feedingWeights = dl.variable(field(dim)),
     ants = dl.variable(field(dim));
 var home = Cartesian.point([(W / 4), (H / 4)], dim),
     goal = Cartesian.point([(W / 2), (H / 2)], dim);
-var kernelTensor = (function kernelTensor$(w_h$26, filter) {
+var kernelTensor = (function kernelTensor$(w_h$1, filter) {
     /* kernel-tensor eval.sibilant:13:0 */
 
-    var w = w_h$26[0],
-        h = w_h$26[1];
+    var w = w_h$1[0],
+        h = w_h$1[1];
 
     return dl.reshape(dl.tensor2d(filter), [w, h, 1, 1]);
 });
@@ -41,11 +41,11 @@ var move = (function move$() {
     var max = undefined;
     return dl.logicalAnd(dl.equal(ants, one));
 });
-var spawn = (function spawn$(x_y$199) {
+var spawn = (function spawn$(x_y$3) {
     /* spawn eval.sibilant:36:0 */
 
-    var x = x_y$199[0],
-        y = x_y$199[1];
+    var x = x_y$3[0],
+        y = x_y$3[1];
 
     return ants.assign(ants.buffer().set(1, x, y, 1, 1).toTensor());
 });

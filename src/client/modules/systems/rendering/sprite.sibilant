@@ -3,7 +3,8 @@
 (include "kit-interface/header")
 (import-namespace interface)
 
-(require! (lit Matrix-map) "../data-structures/matrix-map")
+(require! (lit Matrix-map) "../../data-structures/matrix-map"
+          (lit uniforms) "../../gl")
 
 (define Sprite-interface Component
 
@@ -36,11 +37,11 @@
     (set v.point
          'x (mod (+ (- pos.x (/ (* width scale (first orientation)) 2))
                     (* i scale (first orientation)))
-                 (first rendering.dimensions))
+                 (first this.game.rendering.dimensions))
 
          'y (mod (+ (- pos.y (/ (* height scale (second orientation)) 2))
                     (* j scale (second orientation)))
-                 (second rendering.dimensions))
+                 (second this.game.rendering.dimensions))
 
          'z 0))
 
@@ -65,12 +66,12 @@
 (export Sprite-interface)
 
 (define Sprite Component-system
-  (verts (.spawn rendering 1000000 Vertex
-                 [ uniforms.res uniforms.scale]
-                 [(vert-shader) fragment-shader-string]))
+  (def register ()
+       (assign this.verts (.spawn this.game.rendering 1000000 Vertex
+                                  [ uniforms.res uniforms.scale]
+                                  [(vert-shader) fragment-shader-string])))
   (interface Sprite-interface)
 
-  (def *update-component (sprite t)
-    (.draw sprite t)))
+  (def *update-component (sprite t) (.draw sprite t)))
 
 (export Sprite)

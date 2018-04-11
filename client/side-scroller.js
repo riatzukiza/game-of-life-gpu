@@ -1,14 +1,3 @@
-(function(a, b, c) {
-    /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/core/defs.sibilant:53:9 */
-
-    return foo(this);
-}).bind(this);
-
-
-
-
-
-;
 var R = require("ramda");
 var {
     create,
@@ -163,17 +152,34 @@ var DocumentHead = DocumentNode.define("DocumentHead", {
 var createDocumentNode = create(DocumentNode);
 console.log(document.appendChild);
 var assert = require("assert");
-var jimp = require("jimp");
-var Mousetrap = require("mousetrap");
-var _assignId = ((m, k) => {
-
-    m.id = k;
-    return m;
-
-});
 global.create = create;
 global.extend = extend;
 global.mixin = mixin;
+var Path = require("path");
+module.filename = Path.join(process.cwd(), "./src/client/antity.sibilant");
+var {
+    Rendering
+} = require("./modules/systems/rendering/rendering"), {
+    Scalar
+} = require("./modules/math/scalar"), {
+    fmap
+} = require("./modules/utils"), {
+    Position
+} = require("./modules/systems/position"), {
+    Velocity
+} = require("./modules/systems/velocity"), {
+    Dot
+} = require("./modules/systems/rendering/dot"), {
+    Physics,
+    Gravity,
+    Friction
+} = require("./modules/systems/physics"), {
+    Collision
+} = require("./modules/systems/collision"), {
+    Game
+} = require("./modules/game"), {
+    Keyboard
+} = require("./modules/keyboard");
 var green = {
         red: 0,
         green: 255,
@@ -211,47 +217,18 @@ var container = createDocumentNode("div", {
 createDocumentNode("div", {
     'id': "frame"
 }, [container]).render(DocumentRoot);
-var spawnVertexLayer = (function spawnVertexLayer$() {
-    /* spawn-vertex-layer eval.sibilant:54:0 */
-
-    return rendering.spawn(1000000, Vertex, [uniforms.res, uniforms.scale], [vertShader(), fragmentShaderString]);
-});
 var freeSpace = (function freeSpace$(pool) {
-    /* free-space eval.sibilant:59:0 */
+    /* free-space eval.sibilant:93:0 */
 
     return pool.free;
 });
 var sumOf = (function sumOf$(list, f) {
-    /* sum-of eval.sibilant:60:0 */
+    /* sum-of eval.sibilant:94:0 */
 
     return list.map();
 });
-var bindPlayerVelocityKey = (function bindPlayerVelocityKey$(key_d_s$1) {
-    /* bind-player-velocity-key eval.sibilant:62:0 */
-
-    var key = key_d_s$1[0],
-        d = key_d_s$1[1],
-        s = key_d_s$1[2];
-
-    var playerVelocity = Velocity.get(player);
-    var vd = playerVelocity[d];
-    Keyboard.on([key, "down"], (() => {
-
-        console.log("pressed", key, "key");
-        playerVelocity[d] = (vd + (s * velocityUnit));
-        return false;
-
-    }));
-    return Keyboard.on([key, "up"], (() => {
-
-        console.log(key, " key released");
-        playerVelocity[d] = 0;
-        return false;
-
-    }));
-});
 var position = (function position$(x, y) {
-    /* position eval.sibilant:75:0 */
+    /* position eval.sibilant:98:0 */
 
     return {
         x,
@@ -259,12 +236,12 @@ var position = (function position$(x, y) {
     };
 });
 var velocity = (function velocity$(xd, yd) {
-    /* velocity eval.sibilant:77:0 */
+    /* velocity eval.sibilant:100:0 */
 
     return [xd, yd];
 });
 var dot = (function dot$(r, g, b, a) {
-    /* dot eval.sibilant:79:0 */
+    /* dot eval.sibilant:102:0 */
 
     return {
         r,
@@ -274,7 +251,7 @@ var dot = (function dot$(r, g, b, a) {
     };
 });
 var physics = (function physics$(mass, scale, forces) {
-    /* physics eval.sibilant:82:0 */
+    /* physics eval.sibilant:105:0 */
 
     return {
         mass,
@@ -284,7 +261,7 @@ var physics = (function physics$(mass, scale, forces) {
     };
 });
 var sprite = (function sprite$(image, frameCount, scale, dim) {
-    /* sprite eval.sibilant:86:0 */
+    /* sprite eval.sibilant:109:0 */
 
     return {
         image,
@@ -294,45 +271,79 @@ var sprite = (function sprite$(image, frameCount, scale, dim) {
     };
 });
 var collision = (function collision$(type) {
-    /* collision eval.sibilant:89:0 */
+    /* collision eval.sibilant:112:0 */
 
     return {
         type
     };
 });
 var entity = (function entity$(aspects, data) {
-    /* entity eval.sibilant:92:0 */
+    /* entity eval.sibilant:115:0 */
 
     return game.ent.spawn(aspects, data);
 });
 var floorTile = (function floorTile$(x, y) {
-    /* floor-tile eval.sibilant:95:0 */
+    /* floor-tile eval.sibilant:118:0 */
 
     return [position((x * 32), (y * 32)), dot(255, 255, 10, 255), velocity(0, 0), physics(10, 32, []), collision("static")];
 });
 var velocityUnit = 16;
+var bindPlayerVelocityKey = (function bindPlayerVelocityKey$(key_d_s$10) {
+    /* bind-player-velocity-key eval.sibilant:126:0 */
+
+    var key = key_d_s$10[0],
+        d = key_d_s$10[1],
+        s = key_d_s$10[2];
+
+    var velocity = game.systems.get(Velocity, player),
+        collision = game.systems.get(Collision, player);
+    var vd = velocity[d];
+    return Keyboard.on([key, "down"], (() => {
+
+        console.log("pressed", key);
+        velocity[d] = (vd + (s * velocityUnit));
+        return false;
+
+    }));
+});
 var bindPlayerVelocityKeys = fmap(bindPlayerVelocityKey);
 var movableDot = [Position, Velocity, Dot, Physics, Collision],
     physicsDot = [Position, Dot, Velocity, Physics, Collision],
-    UP = -1,
-    DOWN = 1,
-    LEFT = -1,
-    RIGHT = 1;
-var game = create(Game)([Physics, Velocity, Collision, Position, Dot, rendering]);
+    UP = -50,
+    DOWN = 50,
+    LEFT = -50,
+    RIGHT = 50;
+var game = create(Game)(rendering, [Physics, Velocity, Collision, Position, Dot]);
 var PlayerDot = [position(0, 0), dot(0, 10, 255, 255), velocity(0, 0), physics(10, 32, [Gravity, Friction]), collision("dynamic")];
 var player = entity(physicsDot, PlayerDot),
-    floor = arrayOf(20, (function(b, ...others) {
-        /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/console.sibilant:10:8 */
+    floor = (function(array) {
+        /* inc/misc.sibilant:28:15 */
 
-        console.log("spawning floor", b, ...others);
-        return b;
-    })(entity(physicsDot, floorTile(i, 40))));
-bindPlayerVelocityKeys([
-    ["w", "yd", UP],
-    ["s", "yd", DOWN],
-    ["d", "xd", RIGHT],
-    ["a", "xd", LEFT]
-]);
+        (function() {
+            /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/loops.sibilant:26:8 */
+
+            var $for = null;
+            for (var i = 0; i < 20; ++(i)) {
+                $for = (function() {
+                    /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/loops.sibilant:28:35 */
+
+                    array.push((function() {
+                        /* inc/misc.sibilant:32:46 */
+
+                        return (function(b, ...others) {
+                            /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/console.sibilant:10:8 */
+
+                            console.log("spawning floor", b, ...others);
+                            return b;
+                        })(entity(physicsDot, floorTile(i, 20)));
+                    }).call(this));
+                    return array;
+                }).call(this);
+            };
+            return $for;
+        }).call(this);
+        return array;
+    }).call(this, []);
 var nothing = null;
 game.events.removeAllListeners("collision").on("collision", (([c, c_, d]) => {
 
@@ -342,7 +353,7 @@ game.events.removeAllListeners("collision").on("collision", (([c, c_, d]) => {
         d2y = d[3],
         max = Math.max.apply(null, d),
         min = Math.min.apply(null, d);
-    var physics = Physics.get(c.entity);
+    var physics = game.systems.get(Physics, c.entity);
     return (function() {
         if (c.type === "dynamic") {
             (function() {
@@ -384,15 +395,10 @@ game.events.removeAllListeners("collision").on("collision", (([c, c_, d]) => {
         }
     }).call(this);
 
-})).once("error", ((err) => {
-
-    console.log("error on", "collision", "of", "game.events.removeAllListeners(\"collision\")", "given", "[ c, c_, d ]()");
-    return console.log(err);
-
 }));
 game.events.on("move", ((v) => {
 
-    var collision = Collision.get(v.entity);
+    var collision = game.systems.get(Collision, v.entity);
     return collision.colliding = false;
 
 })).once("error", ((err) => {
@@ -401,5 +407,11 @@ game.events.on("move", ((v) => {
     return console.log(err);
 
 }));
+bindPlayerVelocityKeys([
+    ["w", "yd", UP],
+    ["s", "yd", DOWN],
+    ["d", "xd", RIGHT],
+    ["a", "xd", LEFT]
+]);
 game.start();
 console.log("DONE LOADING");

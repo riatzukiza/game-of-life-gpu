@@ -1,5 +1,5 @@
 var portfolioPiece = (function portfolioPiece$(name) {
-    /* portfolio-piece eval.sibilant:8:0 */
+    /* portfolio-piece eval.sibilant:9:0 */
 
     return create(HtmlElement)("article", {}, [create(HtmlElement)("iframe", {
         'height': 256,
@@ -15,11 +15,11 @@ var portfolioPiece = (function portfolioPiece$(name) {
 create(HtmlElement)("html", {}, [create(HtmlElement)("head", {}, [create(HtmlElement)("title", {}, ["Welcome to the Error Log"]), create(HtmlElement)("script", {
     'src': "/js/bundle.js"
 }, []), create(HtmlElement)("script", {}, [(function() {
-    /* eval.sibilant:14:46 */
+    /* eval.sibilant:15:46 */
 
 
 }).call(this)])]), create(HtmlElement)("body", {}, [create(HtmlElement)("header", {
     'style': "text-align:center;"
-}, [create(HtmlElement)("h1", {}, ["Error log"])]), create(HtmlElement)("nav", {}, []), create(HtmlElement)("section", {
+}, [create(HtmlElement)("h1", {}, ["Error log"])]), create(HtmlElement)("section", {
     'style': "display:flex;flex-wrap:wrap;margin:auto;width:80%;"
-}, [portfolioPiece("game-of-life"), portfolioPiece("simple-sun"), portfolioPiece("toroidal-coordinates")])])]);
+}, [portfolioPiece("game-of-life"), portfolioPiece("side-scroller")])])]);

@@ -1,14 +1,3 @@
-(function(a, b, c) {
-    /* ../../kit-lang/shell-utils/shell/node_modules/kit/inc/core/defs.sibilant:53:9 */
-
-    return foo(this);
-}).bind(this);
-
-
-
-
-
-;
 var R = require("ramda");
 var {
     create,
@@ -22,13 +11,13 @@ var {
     Interface
 } = require("kit-interface");;
 Array.prototype.each = (function Array$prototype$each$(f) {
-    /* Array.prototype.each inc/misc.sibilant:1:0 */
+    /* Array.prototype.each inc/misc.sibilant:39:0 */
 
     this.forEach(f);
     return this;
 });
 Object.prototype.each = (function Object$prototype$each$(f) {
-    /* Object.prototype.each inc/misc.sibilant:4:0 */
+    /* Object.prototype.each inc/misc.sibilant:42:0 */
 
     return Object.keys(this).forEach(((k) => {
 

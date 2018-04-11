@@ -1,6 +1,13 @@
-(html (.head (.script .src "/js/bundle.js")
-             (.script .src "/js/list.js")
-             (.script .src "/js/utils.js")
-             (.script .src "/js/andy.js")
-             (.script .src "/js/side-scroller.js")))
+(macro controller (...body)
+       `(markup (.script (quote (scoped ...@body)))))
+
+(macro scripts (...paths)
+       `(markup (.head ...@(.map paths (=> (p) `(.script .src @p))))))
+
+(html (.head  (scripts "/js/bundle.js"
+
+                       "/bundles/side-scroller.js"
+                       ))
+
+      (controller (require "side-scroller.js")))
 

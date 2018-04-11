@@ -1,6 +1,6 @@
 (include "kit-interface/header")
 (import-namespace interface)
-(require! (lit List) "../data-structures/list")
+(require! (lit List) "./list")
 
 (def-interface Group
     ((*list ((create List)))

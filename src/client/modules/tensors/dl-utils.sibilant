@@ -1,20 +1,20 @@
 
 (include "kit/header"
          "kit-interface/header"
-         "../../inc/async")
+         "../../../../inc/async.sibilant")
 
 
 (import-namespace async)
 (import-namespace kit)
 (import-namespace interface)
 
-(include "../../inc/misc.sibilant")
+(include "../../../../inc/misc.sibilant")
 ;;(include "./field.sibilant")
 
 ;; (include "kit-html/src/dom")
 ;; (import-namespace dom)
 
-(include "../../inc/dl")
+(include "../../../../inc/dl")
 (import-namespace dl)
 
 (require! dl 'deeplearn

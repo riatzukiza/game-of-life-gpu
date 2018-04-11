@@ -5,6 +5,7 @@
        `(def @name @args (markup @body)))
 
 
+
 (def portfolio-piece (name)
      (markup (.article (.iframe .height 256 .width 256 .src ("./" name ".html")
                          .style "display:block;")
@@ -16,17 +17,13 @@
 (html
  (.head (.title "Welcome to the Error Log")
         (.script .src "/js/bundle.js")
-        (controller
-         )
-        )
+        (controller))
  (.body
   (.header .style "text-align:center;" (.h1 "Error log") )
-  (.nav )
-
 
   (.section .style "display:flex;flex-wrap:wrap;margin:auto;width:80%;"
 
             (portfolio-piece "game-of-life")
-            (portfolio-piece "simple-sun")
-            (portfolio-piece "toroidal-coordinates")
+            (portfolio-piece "side-scroller")
+
             )))

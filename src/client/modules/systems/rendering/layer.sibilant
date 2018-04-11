@@ -1,4 +1,3 @@
-
 (include "kit-interface/header")
 (import-namespace interface)
 
@@ -6,6 +5,15 @@
           (lit Pooled-system) "../../pooling/pooled-system"
           (lit Renderable) "./renderable"
           (lit Gl) "../../gl")
+
+(var bound (#-> .bind )
+     clear (#-> .clear )
+     rendered (#-> .render)
+
+     unbound (#-> .unbind)
+     disabled (#-> .disable)
+
+     enabled (#-> .enable))
 
 
 (define Layer  Pooled-system
@@ -18,6 +26,8 @@
          (program (Gl.program (first shaders) (second shaders) context))
          (*members (interface.structure.Array limit))
          (buffer (Gl.buffer *members context)))
+        (print "creating layer" *members)
+
 
         (.call Pooled-system.init this
                limit
@@ -25,6 +35,8 @@
                ((create Object-pool) limit interface *members))
 
         (.push this.rendering.layers this))
+
+
 
   (def spawn () (pipe this.*pool (.aquire)))
 
@@ -62,3 +74,4 @@
     (.draw this )
 
     (.disable this)))
+(export Layer)

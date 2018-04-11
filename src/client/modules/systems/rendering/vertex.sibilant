@@ -2,6 +2,10 @@
 (include "kit-interface/header")
 (import-namespace interface)
 
+(require! (lit Andy) "../../gl")
+
+
+
 (def set-color (r g b a vert)
      (set vert.color
           'r r
@@ -15,11 +19,14 @@
           'y y
           'z z))
 
-(define Vertex Interface
+(require! (lit Renderable) "./renderable")
+(define Vertex Renderable
 
- (init (layer))
+  (init (layer))
 
   (structure (new Andy.Gl.Type.Composite
                   (lit (point Andy.Type.Vector3)
                        (color Andy.Color.RGBA)
                        (size Andy.Type.float)))))
+
+(export Vertex)

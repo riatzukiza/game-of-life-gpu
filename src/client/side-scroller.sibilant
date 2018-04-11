@@ -3,6 +3,7 @@
 (import-namespace kit)
 
 (include "kit-interface/header")
+
 (import-namespace interface)
 
 (include "kit-html/src/dom")
@@ -10,30 +11,68 @@
 
 (require! 'assert)
 
-
-
-
-(var *assign-id (=> (m k) (assign  m.id k) m))
-
 (set global
      'create create
      'extend extend
      'mixin mixin)
 
+(require! Path "path")
+
+(assign module.filename (Path.join (process.cwd) "./src/client/antity.sibilant"))
+
+(meta
+ (when (defined? process.versions.electron)
+   (print "defining macro require for electron context")
+   (def macros.require (name)
+        `(let ((*require global.require)
+               (path (global.require "path"))
+               (name @name))
+
+           (var module-path (path.dirname module.filename))
+           (print "requiring" name "from" module-path)
+           (*require (if (= (first name) ".")
+                         (path.join module-path name)
+                       name
+                       )))))
+ null)
+
+
+(require! (lit Rendering) "./modules/systems/rendering/rendering"
+          (lit Scalar) "./modules/math/scalar"
+          (lit fmap) "./modules/utils"
+          (lit Position) "./modules/systems/position"
+          (lit Velocity) "./modules/systems/velocity"
+          (lit Dot) "./modules/systems/rendering/dot"
+          (lit Physics Gravity Friction) "./modules/systems/physics"
+          (lit Collision) "./modules/systems/collision"
+          (lit Game) "./modules/game"
+          (lit Keyboard) "./modules/keyboard")
+
+
+
+
+
+
+
+
 (var green (color 0 255 0) yellow (color 255  255  0))
 
 (var despawned (fpipe .despawn))
+
+
 (const rendering (.load Rendering
                         (lit (size (.sub Scalar  (window.size) 8))
                              (limit 100)
                              (blend true))))
 
 (.resize rendering (.sub Scalar  (window.size) 4))
+
 (assign rendering.background-color
         (lit (r 0)
              (g 0)
              (b 0)
              (a 150)))
+
 
 (var wrap Document-node.wrap)
 
@@ -49,26 +88,12 @@
 (with-dom Document-root
   (.div .id 'frame container))
 
-(def spawn-vertex-layer ()
-     (.spawn rendering 1000000 Vertex
-             [ uniforms.res uniforms.scale]
-             [(vert-shader) fragment-shader-string]))
+
 
 (def free-space (pool) pool.free)
 (def sum-of (list f) (.map list))
 
-(def bind-player-velocity-key ([key d s])
 
-  (var player-velocity (.get Velocity player ))
-  (var vd (get player-velocity d))
-
-  (.on Keyboard [key 'down]
-       (-> (print "pressed" key "key")(set  player-velocity d (+ vd (* s velocity-unit)))
-           false))
-
-  (.on Keyboard [key 'up]
-       (-> (print key " key released")(set player-velocity d 0)
-           false)))
 
 (def position (x y) (lit x y))
 
@@ -98,17 +123,32 @@
       (collision 'static)])
 
 (var velocity-unit 16)
+(def bind-player-velocity-key ([key d s])
 
+     (var velocity (.get game.systems Velocity player)
+          collision (.get game.systems Collision player)
+          )
+
+     (var vd (get velocity d))
+
+     (.on Keyboard [key 'down]
+          (->
+           (print "pressed" key)
+           (set  velocity d (+ vd (* s velocity-unit)))
+              false)))
 (var bind-player-velocity-keys (fmap bind-player-velocity-key))
+
+
+
 
 (var movable-dot [ Position Velocity Dot    Physics Collision]
      physics-dot [Position Dot  Velocity  Physics Collision]
 
-     UP -1 DOWN 1 LEFT -1 RIGHT 1)
+     UP -50 DOWN 50 LEFT -50 RIGHT 50)
 
 
-(var game ((create Game) [,Physics  Velocity  Collision, , ,Position   Dot, rendering]
-           ))
+(var game ((create Game) rendering [,Physics  Velocity  Collision ,Position   Dot,]))
+
 
 (var Player-dot [(position 0 0)
                  (dot 0 10 255 255)
@@ -120,49 +160,56 @@
 
 (var player (entity physics-dot Player-dot)
 
-     floor (array-of 20 ((aprint "spawning floor") (entity physics-dot (floor-tile i 40)))))
+     floor (array-of 20 ((aprint "spawning floor") (entity physics-dot (floor-tile i 20)))))
+
+
+
+(var nothing null)
+
+(.on (.remove-all-listeners game.events 'collision)
+
+     'collision
+     (=> ([c c* d])
+
+         (var [d1x d1y d2x d2y] : d,
+
+              max : (Math.max.apply null d)
+              min : (Math.min.apply null d))
+
+
+         (var physics (.get game.systems Physics c.entity))
+
+
+         (when (= c.type 'dynamic)
+
+
+           (when (or (= d1x max)
+                     (= d2x max))
+             (set c.pos 'x (+ c.pos.x
+                              (if (= d1x max) -1 1)
+                              (* max (if (= d1x max) 1 -1))))
+
+             (set c.velocity.xd 0))
+
+           (when (or (= d1y max)
+                     (= d2y max))
+             (set c.pos 'y (+ c.pos.y
+                              (if (= d1y max) -1 1)
+                              (* max (if (= d1y max) 1 -1))))
+             (set c.velocity.yd 0)))))
+
+
+
+(on game.events 'move (v)
+    (var collision (.get game.systems Collision v.entity))
+    (set collision
+         'colliding false))
 
 (bind-player-velocity-keys
  [["w" 'yd UP]
   ["s" 'yd DOWN]
   ["d" 'xd RIGHT]
   ["a" 'xd LEFT]])
-
-(var nothing null)
-
-(on (.remove-all-listeners game.events 'collision)
-
-    'collision ([c c* d])
-
-    (var [d1x d1y d2x d2y] : d,
-
-         max : (Math.max.apply null d)
-         min : (Math.min.apply null d))
-
-    (var physics (.get Physics c.entity))
-
-
-    (when (= c.type 'dynamic)
-
-
-      (when (or (= d1x max)
-                (= d2x max))
-        (set c.pos 'x (+ c.pos.x
-                         (if (= d1x max) -1 1)
-                           (* max (if (= d1x max) 1 -1))))
-        (set c.velocity.xd 0))
-      (when (or (= d1y max)
-                (= d2y max))
-        (set c.pos 'y (+ c.pos.y
-                         (if (= d1y max) -1 1)
-                           (* max (if (= d1y max) 1 -1))))
-        (set c.velocity.yd 0))))
-
-
-(on game.events 'move (v)
-    (var collision (.get Collision v.entity))
-    (set collision
-         'colliding false))
 
 (.start game)
 

@@ -1,7 +1,8 @@
 
 (include "kit-interface/header")
 (import-namespace interface)
-(require! (lit Object-pool) "../pooling/object-pool")
+(require! (lit Object-pool) "./object-pool"
+          (lit List ) "../data-structures/list")
 
 (define Dynamic-pool Interface
   (bucket-size 256)
@@ -51,3 +52,5 @@
     "Associate an interface with a system,and add the system to the collection of all active systems."
 
     (assign interface.pool this)))
+
+(export Dynamic-pool)

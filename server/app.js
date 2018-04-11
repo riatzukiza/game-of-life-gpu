@@ -39,11 +39,13 @@ var {
 var staticDir = FileSystem.load("./");
 var app = create(Http.MiddleWare)();
 var js = Interface.define("js", {
-    client: FileSystem.load("./client")
+    client: FileSystem.load("./client"),
+    bundles: FileSystem.load("./bundles")
 });
 var html = Interface.define("html", {
     files: FileSystem.load("./html")
 });
 app.use("/html", serveStaticFiles(html.files));
 app.use("/js", serveStaticFiles(js.client));
+app.use("/bundles", serveStaticFiles(js.bundles));
 module.exports = app;

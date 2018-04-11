@@ -1,8 +1,12 @@
+(include "kit-interface/header")
 (require! Mousetrap 'mousetrap)
 
 (define Keyboard Interface
   (def on ([key state] f)
-       (fluently (.bind Mousetrap key f (+ "key" state))))
+       (fluently
+        (var key-state (+ "key" state))
+        (.unbind Mousetrap key key-state)
+        (.bind Mousetrap key f key-state)))
 
   (def once ([key state-name] f)
 

@@ -10,6 +10,7 @@
 
   (gett y this.data.y)
   (sett y y (assign this.data.y y)))
+(export Position-interface)
 
 (define Position System
 
@@ -27,9 +28,12 @@
        (.*update-component this c))
 
   (def *update-component (c)
-       (if (< c.x 0) (assign c.x (+ c.x (first rendering.dimensions))))
-       (if (< c.y 0) (assign c.y (+ c.y (second rendering.dimensions))))
+       (if (< c.x 0) (assign c.x (+ c.x (first this.process.rendering.dimensions))))
+       (if (< c.y 0) (assign c.y (+ c.y (second this.process.rendering.dimensions))))
 
        (set c
-            'x (mod c.x (first rendering.dimensions))
-            'y (mod c.y (second rendering.dimensions)))))
+            'x (mod c.x (first this.process.rendering.dimensions))
+            'y (mod c.y (second this.process.rendering.dimensions)))))
+
+
+(export Position)

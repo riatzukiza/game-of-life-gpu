@@ -1,14 +1,13 @@
 (namespace dev)
 
-(include "kit/header")
+(include "kit/header"
+         "kit-interface/header"
+         "kit-html/header"
+         "../inc/async"
+         )
 (import-namespace kit)
-
-(include "kit-interface/header")
 (import-namespace interface)
-
-(include "../inc/async")
 (import-namespace async)
-(include "kit-html/header")
 (import-namespace markup)
 
 (macro watch (fs path event ...body)

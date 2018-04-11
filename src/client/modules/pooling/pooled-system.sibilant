@@ -1,17 +1,19 @@
 
 (include "kit-interface/header")
+
 (import-namespace interface)
 
 (require! (lit Object-pool) "./object-pool")
 
-(define  Pooled-system
+(define  Pooled-system  Interface
   (init (limit
          interface
-         (*pool ((create Object-pool) limit interface))))
+         (*pool ((create Object-pool) limit interface)))
+        (.register this interface)
+        )
 
   (limit 10000)
 
-  (init (.register this interface))
 
   (systems (new Map))
 
@@ -47,3 +49,4 @@
 
        (each this.*pool.*in-use (member)
              (.update member))))
+(export Pooled-system)
