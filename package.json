@@ -1,7 +1,7 @@
 {
-    "name": "no-name",
-    "version": "0.0.1",
-    "description": "undescribed",
+    "name": "game-of-life",
+    "version": "0.1.0",
+    "description": "the increasingly inaccurately named bundle of code",
     "main": "main.js",
     "bin": {},
     "scripts": {

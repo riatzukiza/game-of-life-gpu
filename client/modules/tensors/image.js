@@ -1,5 +1,5 @@
 var rgb = (function rgb$(r, g, b) {
-    /* rgb eval.sibilant:2:0 */
+    /* rgb eval.sibilant:4:0 */
 
     return {
         r,
@@ -43,10 +43,11 @@ var grayscaleToRgb = (function grayscaleToRgb$(imgs) {
 
     }));
 });
+var uint8c = (function uint8c$(arr) {
+    /* uint8c eval.sibilant:11:0 */
 
-function(uint8c, arr(),
     return Uint8ClampedArray.from(arr);
-);
+});
 async function image(t) {
 
     return (new ImageData(uint8c(await t.data()), t.shape[1], t.shape[2]));

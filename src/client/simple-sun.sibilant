@@ -1,9 +1,18 @@
+(reload "./modules/tensors/dl-utils"
+         "./modules/tensors/image")
+
+
 (import-namespace async)
 (import-namespace kit)
 (import-namespace interface)
 (import-namespace dl)
 
 
+(var W window.inner-width
+     H window.inner-height)
+
+
+(var running? true)
 (var dim [W H])
 (var coords ((create Cartesian) dim))
 (var sun-pos (lit (x (* 0.5 W)) (y (* 0.5 H))))
@@ -46,5 +55,4 @@
           'margin 0
           'padding 0)
 
-     (start)
-     )
+     (tick))
