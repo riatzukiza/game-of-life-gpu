@@ -22,4 +22,4 @@ create(HtmlElement)("html", {}, [create(HtmlElement)("head", {}, [create(HtmlEle
     'style': "text-align:center;"
 }, [create(HtmlElement)("h1", {}, ["Error log"])]), create(HtmlElement)("section", {
     'style': "display:flex;flex-wrap:wrap;margin:auto;width:80%;"
-}, [portfolioPiece("game-of-life"), portfolioPiece("side-scroller"), portfolioPiece("simple-sun")])])]);
+}, [portfolioPiece("game-of-life"), portfolioPiece("side-scroller"), portfolioPiece("simple-sun"), portfolioPiece("toroidal-coordinates")])])]);

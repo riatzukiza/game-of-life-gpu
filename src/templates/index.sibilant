@@ -27,4 +27,6 @@
             (portfolio-piece "side-scroller")
             (portfolio-piece "simple-sun")
 
+            (portfolio-piece "toroidal-coordinates")
+
             )))

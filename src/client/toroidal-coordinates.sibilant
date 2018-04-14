@@ -1,4 +1,20 @@
 
+(reload "./modules/tensors/dl-utils"
+        "./modules/tensors/image")
+(var tau (* Math.PI 2))
+
+
+(import-namespace async)
+(import-namespace kit)
+(import-namespace interface)
+(import-namespace dl)
+
+
+(var W window.inner-width
+     H window.inner-height)
+
+
+(var running? true)
 
 (var dim [ W H])
 

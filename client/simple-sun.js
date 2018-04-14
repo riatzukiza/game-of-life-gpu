@@ -28,11 +28,11 @@ Object.prototype.each = (function Object$prototype$each$(f) {
 var dl = require("deeplearn"),
     m = require("mathjs");
 var zero = dl.scalar(0);
-var field = (function field$(w_h$4) {
+var field = (function field$(w_h$5) {
     /* field inc/dl.sibilant:3:8 */
 
-    var w = w_h$4[0],
-        h = w_h$4[1];
+    var w = w_h$5[0],
+        h = w_h$5[1];
 
     return dl.tidy((() => {
 
@@ -90,11 +90,11 @@ var modTensor = (function modTensor$(t, m) {
 
     }));
 });
-var coordinateGrid = (function coordinateGrid$(j_i$4, _point) {
+var coordinateGrid = (function coordinateGrid$(j_i$5, _point) {
     /* coordinate-grid inc/dl.sibilant:3:8 */
 
-    var j = j_i$4[0],
-        i = j_i$4[1];
+    var j = j_i$5[0],
+        i = j_i$5[1];
 
     return dl.tidy((() => {
 
@@ -110,13 +110,13 @@ var coordinateGrid = (function coordinateGrid$(j_i$4, _point) {
 
     }));
 });
-var pointTensor = (function pointTensor$(x_y$4, i_j$4, _point) {
+var pointTensor = (function pointTensor$(x_y$5, i_j$5, _point) {
     /* point-tensor inc/dl.sibilant:3:8 */
 
-    var x = x_y$4[0],
-        y = x_y$4[1],
-        i = i_j$4[0],
-        j = i_j$4[1];
+    var x = x_y$5[0],
+        y = x_y$5[1],
+        i = i_j$5[0],
+        j = i_j$5[1];
 
     return dl.tidy((() => {
 
@@ -263,7 +263,7 @@ var p = dl.variable(coords.point([(0.5 * W), (0.5 * H)]));
 var I = dl.scalar(0.1),
     c = dl.scalar(0);
 var calculateState = (function calculateState$() {
-    /* calculate-state eval.sibilant:27:0 */
+    /* calculate-state eval.sibilant:26:0 */
 
     return coords.inverseSquare(I, c, p);
 });
@@ -280,7 +280,7 @@ var move = (function move$() {
     }));
 });
 var tick = (function() {
-    /* eval.sibilant:37:10 */
+    /* eval.sibilant:36:10 */
 
     return dl.nextFrame(arguments[0]).then(((nil) => {
 
@@ -298,7 +298,7 @@ var tick = (function() {
 });
 var field = null;
 window.onload = (function window$onload$() {
-    /* window.onload eval.sibilant:45:0 */
+    /* window.onload eval.sibilant:44:0 */
 
     var white = rgb(255, 255, 255);
     var canvas = document.createElement("canvas");

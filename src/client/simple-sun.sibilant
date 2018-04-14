@@ -20,7 +20,6 @@
 (var p (dl.variable (.point coords [(* 0.5 W)
                                     (* 0.5 H)])))
 
-
 (var I (.scalar dl 0.1)
      c (.scalar dl 0))
 
