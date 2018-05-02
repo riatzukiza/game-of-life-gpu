@@ -5,28 +5,44 @@
        `(def @name @args (markup @body)))
 
 
+(var title-string (#-> (.replace (regex "-" "g") " ")))
 
 (def portfolio-piece (name)
      (markup (.article (.iframe .height 256 .width 256 .src ("./" name ".html")
                          .style "display:block;")
                 (.section .style "text-align:center;width:256px"
                           (.a .href ("/html/" name ".html")
-                              (pipe name (.replace (regex "-" "g") " ")))))))
+                              (title-string name))))))
+
 (macro controller (...body) `(markup (.script (scoped ...@body))))
+
+(def center-header (text)
+     (markup (.header .style "text-align:center;"
+                      (.h1 text) )))
+(def css-attributes (obj)
+     (pipe (Object.keys obj)
+           (.reduce (=> (css key) (+ css key ":" (get obj key) ";"))
+                    "")))
 
 (html
  (.head (.title "Welcome to the Error Log")
-        (.script .src "/js/bundle.js")
-        (controller))
+        (.script .src "/js/bundle.js"))
  (.body
-  (.header .style "text-align:center;" (.h1 "Error log") )
+  (center-header "Error Log")
 
-  (.section .style "display:flex;flex-wrap:wrap;margin:auto;width:80%;"
+  (.section .style " display:flex; flex-wrap:wrap; margin:auto; width:80%;"
+
+            (.article
+             "I am Error. The prototypical mistake, the flaw from which
+all others derive their primary attributes. This may sound bad, but usually
+I am not the one being thrown. Writing code with out the concept of an
+error would be a tedious task,we'd never know what was going wrong, where
+it was going wrong, or why we care.")
+
+            (.article "I am Error, and this is the Error Log. Where bugs go
+to be squashed.")
 
             (portfolio-piece "game-of-life")
-            (portfolio-piece "side-scroller")
             (portfolio-piece "simple-sun")
+            (portfolio-piece "toroidal-coordinates"))))
 
-            (portfolio-piece "toroidal-coordinates")
-
-            )))

@@ -7,5 +7,7 @@
  (.script .src "/js/utils.js")
  (.script .src "/js/gol.js")
 
-   (.body ))
+ (.body (.header (.h2 "Game of life")
+                 (.article "Conways game of life, a simple cellular automaton with complex behavior."))
+        (.div .id "sim-container")))
 

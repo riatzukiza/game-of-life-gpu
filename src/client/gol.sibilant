@@ -59,7 +59,12 @@
      (var red (rgb 255 0 0))
 
      (var canvas (.create-element document 'canvas))
-     (.append-child document.body canvas)
+
+     (var sim-container (.get-element-by-id
+                         document
+                         "sim-container"))
+
+     (.append-child sim-container canvas)
 
      (set canvas 'height  H 'width W)
 

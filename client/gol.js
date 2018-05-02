@@ -75,7 +75,8 @@ window.onload = (function window$onload$() {
     var black = rgb(0, 0, 0);
     var red = rgb(255, 0, 0);
     var canvas = document.createElement("canvas");
-    document.body.appendChild(canvas);
+    var simContainer = document.getElementById("sim-container");
+    simContainer.appendChild(canvas);
     canvas.height = H;
     canvas.width = W;
     var gameField = colored(canvas, red, [W, H], state);
